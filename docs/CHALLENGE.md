@@ -1,6 +1,8 @@
 # The "$10,000 Kill My SaaS" Challenge
 
-Source: competition brief + 37-page screenshot annex (Downloads). Organized by swyx / AI Engineer to replace Sessionboard (>$40k/yr) with an open source clone.
+Source: [competition brief](reference/competition-brief.pdf) + [walkthrough video 1](reference/walkthrough-1.mp4) ([transcript](reference/walkthrough-1.en.srt)) + 40 screenshots
+
+> Note: walkthrough videos (`walkthrough-*.mp4`) are gitignored due to size (~35MB each) — keep local copies in `docs/reference/`; transcripts and PDF are committed. (extracted to [docs/screenshots/](screenshots/), numbered to match the brief's sections — they are the UI spec). Organized by swyx / AI Engineer to replace Sessionboard (>$40k/yr) with an open source clone.
 
 **Posture: we build a good product that happens to win.** The brief is a real customer's annotated requirements — we honor it as the acceptance test, not as the product vision. Vision lives in BUSINESS_CONTEXT.md and MILESTONES.md.
 
@@ -50,6 +52,10 @@ Supporting surface shown in screenshots (expected in the walkthrough):
 - Dashboard — "optional but nice to have, best efforts" (but it's requirement #6's home; treat the speaker-tracking view as in-scope, fancy analytics as optional).
 - Exhibitors/sponsors groups — visible in screenshots, not in the six. Skip.
 
+## Nice-to-have backlog (only after the six are complete)
+
+- **Video submissions** — walkthrough mentions "abstracts or videos" as application types; screenshots don't show it. If ever built: file field accepts video uploads / video URL field in the form builder. Parked until everything else is done.
+
 ## Bonus points (stack signals)
 
 - Cloudflare infra deploy (mild bonus).
@@ -68,7 +74,7 @@ Supporting surface shown in screenshots (expected in the walkthrough):
 
 ## Open questions / freeze tracking
 
-- [x] Watch initial walkthrough video (youtu.be/vUuK4Knl7oc) — reviewed Aug 8: nothing beyond the screenshots/brief.
+- [x] Watch initial walkthrough video ([local copy](reference/walkthrough-1.mp4), [transcript](reference/walkthrough-1.en.srt); origin: youtu.be/vUuK4Knl7oc) — reviewed Aug 8: nothing beyond the screenshots/brief.
 - [ ] Absorb Saturday clarification video.
 - [ ] Absorb Sunday clarification video → **requirements freeze; update this doc, then stop touching it.**
 - [ ] Monitor Discord for clarifications that affect the six.

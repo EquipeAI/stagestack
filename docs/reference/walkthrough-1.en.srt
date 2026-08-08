@@ -1,0 +1,904 @@
+1
+00:00:00,719 --> 00:00:03,840
+Okay. Hi, [cough] thanks [clears throat]
+
+2
+00:00:02,639 --> 00:00:08,480
+for signing up for this crazy
+
+3
+00:00:03,840 --> 00:00:11,840
+experiment. Um, we are being uh I I I
+
+4
+00:00:08,480 --> 00:00:14,480
+think a lot of us are interested in
+
+5
+00:00:11,840 --> 00:00:16,960
+building software that people want to
+
+6
+00:00:14,480 --> 00:00:20,000
+pay money for, but also
+
+7
+00:00:16,960 --> 00:00:23,119
+uh don't really know the extent to which
+
+8
+00:00:20,000 --> 00:00:25,760
+uh they can build. And I think a time
+
+9
+00:00:23,119 --> 00:00:27,519
+scope thing like this exercise or this
+
+10
+00:00:25,760 --> 00:00:30,000
+game or this competition would be really
+
+11
+00:00:27,519 --> 00:00:32,079
+interesting. and we are a real customer.
+
+12
+00:00:30,000 --> 00:00:36,000
+Um, the reason I'm not being public is
+
+13
+00:00:32,079 --> 00:00:38,559
+to honestly just preserve their um their
+
+14
+00:00:36,000 --> 00:00:41,040
+privacy. Uh, but I think this will be a
+
+15
+00:00:38,559 --> 00:00:43,600
+fun exercise and uh, genuinely we are
+
+16
+00:00:41,040 --> 00:00:46,719
+looking at paying $40,000 for this
+
+17
+00:00:43,600 --> 00:00:48,719
+software which uh, I'll show you. Um,
+
+18
+00:00:46,719 --> 00:00:51,039
+you can go to sessionboard.com.
+
+19
+00:00:48,719 --> 00:00:52,879
+Uh, uh, this is the the rough spec which
+
+20
+00:00:51,039 --> 00:00:55,440
+you which I'm going to send to you guys
+
+21
+00:00:52,879 --> 00:00:56,800
+uh, of what we are actually using. So it
+
+22
+00:00:55,440 --> 00:01:00,079
+is not all the features that we're
+
+23
+00:00:56,800 --> 00:01:02,000
+looking to clone. Um we want the sort of
+
+24
+00:01:00,079 --> 00:01:05,040
+program submission you know I run a
+
+25
+00:01:02,000 --> 00:01:09,040
+conference and we uh get a lot of
+
+26
+00:01:05,040 --> 00:01:11,040
+submissions for uh for speakers and uh
+
+27
+00:01:09,040 --> 00:01:12,880
+you know people want to apply and we
+
+28
+00:01:11,040 --> 00:01:14,560
+have to evaluate them and put them on
+
+29
+00:01:12,880 --> 00:01:17,360
+the schedule and communicate them and
+
+30
+00:01:14,560 --> 00:01:19,840
+make them show up and all these things.
+
+31
+00:01:17,360 --> 00:01:23,040
+So session board is a type of software
+
+32
+00:01:19,840 --> 00:01:26,880
+in the industry uh which people pay
+
+33
+00:01:23,040 --> 00:01:29,119
+anywhere between $500 to $200,000 uh a
+
+34
+00:01:26,880 --> 00:01:33,040
+year to or you know potentially per
+
+35
+00:01:29,119 --> 00:01:35,280
+event uh to do these things. Um session
+
+36
+00:01:33,040 --> 00:01:36,960
+board seems very comprehensive. Uh there
+
+37
+00:01:35,280 --> 00:01:39,439
+are other competitor platforms like
+
+38
+00:01:36,960 --> 00:01:41,840
+session eyes uh they only do the program
+
+39
+00:01:39,439 --> 00:01:45,119
+but session board also does CRM also
+
+40
+00:01:41,840 --> 00:01:46,960
+does marketing also does CMS uh which
+
+41
+00:01:45,119 --> 00:01:50,159
+delivers content to your thing. So you
+
+42
+00:01:46,960 --> 00:01:52,159
+can also check this yourself. Um and
+
+43
+00:01:50,159 --> 00:01:53,840
+also you see uh what's what's nice here
+
+44
+00:01:52,159 --> 00:01:58,079
+is also you get to see a lot of
+
+45
+00:01:53,840 --> 00:02:00,399
+screenshots. You cannot do a self um
+
+46
+00:01:58,079 --> 00:02:02,479
+guided tour. You have to request a demo
+
+47
+00:02:00,399 --> 00:02:04,079
+uh which is part of the enterprise sales
+
+48
+00:02:02,479 --> 00:02:06,240
+tactics I don't really want. You can see
+
+49
+00:02:04,079 --> 00:02:08,640
+all the session boards competitors here.
+
+50
+00:02:06,240 --> 00:02:11,680
+Uh I think the main message is we are
+
+51
+00:02:08,640 --> 00:02:15,360
+probably only going to use the program
+
+52
+00:02:11,680 --> 00:02:17,520
+side of these things and we're probably
+
+53
+00:02:15,360 --> 00:02:21,680
+not really using the marketing side, not
+
+54
+00:02:17,520 --> 00:02:24,160
+really using uh the CRM side. Um but you
+
+55
+00:02:21,680 --> 00:02:28,239
+know, I'll I'll clone as much of of it
+
+56
+00:02:24,160 --> 00:02:29,599
+as you want uh for your exercise. Um
+
+57
+00:02:28,239 --> 00:02:33,280
+we're just going to pay attention to the
+
+58
+00:02:29,599 --> 00:02:36,560
+program side. Um
+
+59
+00:02:33,280 --> 00:02:38,080
+the the [clears throat] main idea um the
+
+60
+00:02:36,560 --> 00:02:40,879
+thing that you should set up with it
+
+61
+00:02:38,080 --> 00:02:42,720
+should look roughly like this. Um you
+
+62
+00:02:40,879 --> 00:02:44,640
+should probably have some settings where
+
+63
+00:02:42,720 --> 00:02:47,360
+you can set up the event details. Some
+
+64
+00:02:44,640 --> 00:02:50,239
+basic stuff here. Um I assume that you
+
+65
+00:02:47,360 --> 00:02:53,040
+can pause if you want uh to manage uh
+
+66
+00:02:50,239 --> 00:02:56,560
+this kind of thing. Uh all all good,
+
+67
+00:02:53,040 --> 00:02:58,239
+right? Um, and we'll we'll give you a
+
+68
+00:02:56,560 --> 00:02:59,360
+walk through if you want, but uh it
+
+69
+00:02:58,239 --> 00:03:03,280
+doesn't really matter as long as you
+
+70
+00:02:59,360 --> 00:03:07,280
+fulfill the uh the main core
+
+71
+00:03:03,280 --> 00:03:11,680
+um functionality that we describe in the
+
+72
+00:03:07,280 --> 00:03:13,680
+Google doc. Okay. Um so let's talk about
+
+73
+00:03:11,680 --> 00:03:17,040
+the Google doc.
+
+74
+00:03:13,680 --> 00:03:18,720
+Um we're looking at the program. Um and
+
+75
+00:03:17,040 --> 00:03:21,680
+here this is like a little dashboard
+
+76
+00:03:18,720 --> 00:03:23,200
+thing. Uh the main thing that the main
+
+77
+00:03:21,680 --> 00:03:26,720
+uh life cycle is that you have
+
+78
+00:03:23,200 --> 00:03:28,959
+submissions um uh which can either be
+
+79
+00:03:26,720 --> 00:03:30,799
+abstracts or uh videos which are sort of
+
+80
+00:03:28,959 --> 00:03:32,080
+applications to speak and sessions which
+
+81
+00:03:30,799 --> 00:03:33,680
+are people who are pretty much
+
+82
+00:03:32,080 --> 00:03:35,599
+guaranteed to speak uh let's say because
+
+83
+00:03:33,680 --> 00:03:38,400
+they're a sponsor
+
+84
+00:03:35,599 --> 00:03:41,360
+um uh and you can sort of set up some
+
+85
+00:03:38,400 --> 00:03:43,920
+kind of abstract session here. Um so I
+
+86
+00:03:41,360 --> 00:03:47,920
+have already set up um this kinds this
+
+87
+00:03:43,920 --> 00:03:50,560
+this series of abstracts. So, let me
+
+88
+00:03:47,920 --> 00:03:53,182
+just kind of part of this I also don't
+
+89
+00:03:50,560 --> 00:03:54,400
+love is that it's kind of slow.
+
+90
+00:03:53,182 --> 00:03:58,799
+[clears throat] Um, here you can enter
+
+91
+00:03:54,400 --> 00:04:01,599
+in manually or you can also um look for
+
+92
+00:03:58,799 --> 00:04:03,920
+the submission functionality. Uh, which
+
+93
+00:04:01,599 --> 00:04:06,920
+I can't really tell where it is. Let me
+
+94
+00:04:03,920 --> 00:04:06,920
+just
+
+95
+00:04:09,599 --> 00:04:13,920
+part this is this slowness is part of
+
+96
+00:04:11,680 --> 00:04:17,359
+why uh I think you guys can probably do
+
+97
+00:04:13,920 --> 00:04:21,359
+a better job than um
+
+98
+00:04:17,359 --> 00:04:23,120
+than session board.
+
+99
+00:04:21,359 --> 00:04:24,880
+Um
+
+100
+00:04:23,120 --> 00:04:27,199
+yeah, I don't know where this the sort
+
+101
+00:04:24,880 --> 00:04:29,440
+of form thing is. Let me just Oh yeah,
+
+102
+00:04:27,199 --> 00:04:31,600
+let's copy the form here. So uh in order
+
+103
+00:04:29,440 --> 00:04:33,520
+to create an abstract uh some
+
+104
+00:04:31,600 --> 00:04:35,840
+application page you create a form that
+
+105
+00:04:33,520 --> 00:04:37,120
+looks like this. Um you [clears throat]
+
+106
+00:04:35,840 --> 00:04:39,440
+want you want abstracts or you want
+
+107
+00:04:37,120 --> 00:04:42,080
+sessions you can choose down down here.
+
+108
+00:04:39,440 --> 00:04:44,479
+Uh you have a welcome screen blah blah
+
+109
+00:04:42,080 --> 00:04:46,800
+blah all the sort of messaging and
+
+110
+00:04:44,479 --> 00:04:49,120
+customization. Uh let's just go ahead
+
+111
+00:04:46,800 --> 00:04:50,880
+and select all these things. So you have
+
+112
+00:04:49,120 --> 00:04:52,880
+like a form builder is what you're being
+
+113
+00:04:50,880 --> 00:04:55,680
+asked to build here. This is just a very
+
+114
+00:04:52,880 --> 00:04:57,600
+fancy form builder. That's all it is. Um
+
+115
+00:04:55,680 --> 00:04:59,199
+you have some limits in terms of the
+
+116
+00:04:57,600 --> 00:05:01,280
+number of speakers and sponsors uh
+
+117
+00:04:59,199 --> 00:05:04,639
+speakers and biography and all these
+
+118
+00:05:01,280 --> 00:05:06,400
+things. Um all of which uh has very
+
+119
+00:05:04,639 --> 00:05:08,320
+standard validation rules and all these
+
+120
+00:05:06,400 --> 00:05:12,000
+things. Um
+
+121
+00:05:08,320 --> 00:05:15,058
+and looks like it doesn't even have full
+
+122
+00:05:12,000 --> 00:05:16,880
+validation. Very nice. Okay, great.
+
+123
+00:05:15,058 --> 00:05:18,240
+[clears throat] Um we don't really care
+
+124
+00:05:16,880 --> 00:05:21,039
+about payment, so you can skip this one
+
+125
+00:05:18,240 --> 00:05:23,199
+if you're cloning it. Um and then you
+
+126
+00:05:21,039 --> 00:05:26,160
+have a close date. Let's just call it, I
+
+127
+00:05:23,199 --> 00:05:28,639
+don't know, September 15th. Doesn't
+
+128
+00:05:26,160 --> 00:05:32,400
+matter. You can send a reminder email.
+
+129
+00:05:28,639 --> 00:05:36,320
+Set a submission limit. Um, multiple
+
+130
+00:05:32,400 --> 00:05:37,759
+draft submissions. Thank you email. Uh,
+
+131
+00:05:36,320 --> 00:05:41,039
+multi- language. We only care about
+
+132
+00:05:37,759 --> 00:05:44,560
+English. Um, you should be able to enter
+
+133
+00:05:41,039 --> 00:05:48,080
+in admins. Um, this one also optional,
+
+134
+00:05:44,560 --> 00:05:49,919
+you know, uh, just show us the the rough
+
+135
+00:05:48,080 --> 00:05:52,240
+format. Again, the higher fidelity, the
+
+136
+00:05:49,919 --> 00:05:54,960
+more usefulness. You are allowed to use
+
+137
+00:05:52,240 --> 00:05:56,639
+your own judgment as to what this is.
+
+138
+00:05:54,960 --> 00:05:58,639
+So, we created a form here, uh, form
+
+139
+00:05:56,639 --> 00:06:00,400
+three, and let's just go and see it
+
+140
+00:05:58,639 --> 00:06:02,000
+publicly. So, this is this would be the
+
+141
+00:06:00,400 --> 00:06:05,600
+public link. Um, I'm going to show you
+
+142
+00:06:02,000 --> 00:06:07,759
+how in incognito we can access this. Um,
+
+143
+00:06:05,600 --> 00:06:12,080
+and you can submit that form. Um, so
+
+144
+00:06:07,759 --> 00:06:15,360
+this is the uh, it looks like it's
+
+145
+00:06:12,080 --> 00:06:18,080
+asking me to to use a password. Uh, I
+
+146
+00:06:15,360 --> 00:06:20,479
+probably have a password stored, so good
+
+147
+00:06:18,080 --> 00:06:24,960
+enough. Fill in some blanks. It has some
+
+148
+00:06:20,479 --> 00:06:27,520
+required fields. Um,
+
+149
+00:06:24,960 --> 00:06:32,160
+and let's see if uh we can get a quick
+
+150
+00:06:27,520 --> 00:06:36,199
+submission down here. Excellent.
+
+151
+00:06:32,160 --> 00:06:36,199
+Excellent. Okay.
+
+152
+00:06:43,759 --> 00:06:50,319
+Okay. Excellent. Submit.
+
+153
+00:06:46,400 --> 00:06:52,400
+Um, that was stupid. Obviously, I should
+
+154
+00:06:50,319 --> 00:06:54,720
+not have a minimum of two speakers.
+
+155
+00:06:52,400 --> 00:06:56,240
+That's not something that we do. Uh, so
+
+156
+00:06:54,720 --> 00:06:59,680
+now once you have a login, you can
+
+157
+00:06:56,240 --> 00:07:01,919
+actually see um your login with the your
+
+158
+00:06:59,680 --> 00:07:03,599
+speakers and your your tasks. Uh, and
+
+159
+00:07:01,919 --> 00:07:05,360
+this is this is an important part of it
+
+160
+00:07:03,599 --> 00:07:07,599
+whether or not you have been accepted or
+
+161
+00:07:05,360 --> 00:07:09,680
+not. Um, I think that's that's a that's
+
+162
+00:07:07,599 --> 00:07:11,360
+a key part as well as once you've been
+
+163
+00:07:09,680 --> 00:07:12,960
+accepted, what tasks do you have to
+
+164
+00:07:11,360 --> 00:07:15,039
+complete?
+
+165
+00:07:12,960 --> 00:07:16,880
+That also is kind of optional, but it is
+
+166
+00:07:15,039 --> 00:07:20,319
+it is very very handy for for people
+
+167
+00:07:16,880 --> 00:07:23,360
+using this. Um, [snorts] so, oh my god,
+
+168
+00:07:20,319 --> 00:07:25,440
+this is so slow. Okay. Um, you can see
+
+169
+00:07:23,360 --> 00:07:27,840
+the the session we just submitted down
+
+170
+00:07:25,440 --> 00:07:29,520
+here with the two speakers. Uh, as well
+
+171
+00:07:27,840 --> 00:07:31,840
+as you being able to update your own
+
+172
+00:07:29,520 --> 00:07:34,240
+biography. Uh, this is a very important
+
+173
+00:07:31,840 --> 00:07:35,759
+part of the the overall submissions and
+
+174
+00:07:34,240 --> 00:07:38,720
+obviously being able to send email is
+
+175
+00:07:35,759 --> 00:07:42,080
+great. Okay, so [clears throat] that is
+
+176
+00:07:38,720 --> 00:07:43,840
+the bulk of it. Um I think there will be
+
+177
+00:07:42,080 --> 00:07:46,639
+others. So for example if we go over to
+
+178
+00:07:43,840 --> 00:07:49,440
+evaluations uh we can create evaluation
+
+179
+00:07:46,639 --> 00:07:52,160
+plans on the admin side on the uh
+
+180
+00:07:49,440 --> 00:07:54,319
+conference committee side and we can
+
+181
+00:07:52,160 --> 00:07:56,479
+assign sessions to be evaluated by
+
+182
+00:07:54,319 --> 00:07:59,039
+conference committees. So here we can
+
+183
+00:07:56,479 --> 00:08:02,240
+say all right this team is evaluating uh
+
+184
+00:07:59,039 --> 00:08:05,199
+whatever numbers of submissions
+
+185
+00:08:02,240 --> 00:08:08,000
+and uh as a submitter as a as an
+
+186
+00:08:05,199 --> 00:08:10,240
+evaluator I can um look at look through
+
+187
+00:08:08,000 --> 00:08:12,879
+all these all these things uh so I think
+
+188
+00:08:10,240 --> 00:08:14,960
+that's really helpful um once things
+
+189
+00:08:12,879 --> 00:08:17,599
+have been evaluated accepted and and
+
+190
+00:08:14,960 --> 00:08:20,560
+information is put out there then we can
+
+191
+00:08:17,599 --> 00:08:22,639
+um add these um add this add the
+
+192
+00:08:20,560 --> 00:08:25,360
+accepted sessions in here for the agenda
+
+193
+00:08:22,639 --> 00:08:28,639
+on putting out publicly uh as well as
+
+194
+00:08:25,360 --> 00:08:32,000
+obviously um showing them or embedding
+
+195
+00:08:28,639 --> 00:08:33,919
+them in uh some external environment uh
+
+196
+00:08:32,000 --> 00:08:37,120
+where you can get the code for example.
+
+197
+00:08:33,919 --> 00:08:41,519
+Um and here it's roughly how it should
+
+198
+00:08:37,120 --> 00:08:43,599
+look. Um it's a very standard sort of uh
+
+199
+00:08:41,519 --> 00:08:45,839
+event display with uh all every
+
+200
+00:08:43,599 --> 00:08:48,000
+everything all linked uh and what have
+
+201
+00:08:45,839 --> 00:08:51,040
+you. So that [cough and clears throat]
+
+202
+00:08:48,000 --> 00:08:53,360
+is the rough idea. Um there's a lot in
+
+203
+00:08:51,040 --> 00:08:56,320
+here that I'm I'm skimming over uh that
+
+204
+00:08:53,360 --> 00:08:58,800
+I think we'll have to scope out what the
+
+205
+00:08:56,320 --> 00:09:01,040
+requirements are. I think there's a lot
+
+206
+00:08:58,800 --> 00:09:03,360
+uh in in this video itself that can get
+
+207
+00:09:01,040 --> 00:09:05,680
+you started. I think as long as you
+
+208
+00:09:03,360 --> 00:09:09,200
+roughly get the idea that we that we
+
+209
+00:09:05,680 --> 00:09:11,839
+have uh in here uh with this basis you
+
+210
+00:09:09,200 --> 00:09:13,920
+can also use the session board website
+
+211
+00:09:11,839 --> 00:09:16,320
+where you can say you can look at the
+
+212
+00:09:13,920 --> 00:09:18,560
+individual screens. Um you don't it's
+
+213
+00:09:16,320 --> 00:09:21,440
+not about the fidelity to session board.
+
+214
+00:09:18,560 --> 00:09:23,120
+It's about filling the job to be done uh
+
+215
+00:09:21,440 --> 00:09:26,480
+that that fits it. I don't care about
+
+216
+00:09:23,120 --> 00:09:29,360
+the AI workflow thing. I just care that
+
+217
+00:09:26,480 --> 00:09:32,800
+uh we have an accepted industry standard
+
+218
+00:09:29,360 --> 00:09:35,519
+tool that we have open source and we can
+
+219
+00:09:32,800 --> 00:09:38,399
+clone it in a weekend. Um I think it is
+
+220
+00:09:35,519 --> 00:09:42,080
+very doable if you're focused on on it.
+
+221
+00:09:38,399 --> 00:09:44,160
+Um and I think having all these public
+
+222
+00:09:42,080 --> 00:09:46,320
+uh bullet points gives you some idea of
+
+223
+00:09:44,160 --> 00:09:48,720
+what that can be. I will be available to
+
+224
+00:09:46,320 --> 00:09:51,200
+you in the Discord um in order to answer
+
+225
+00:09:48,720 --> 00:09:55,600
+any questions and probably record a more
+
+226
+00:09:51,200 --> 00:09:55,600
+professional demo of this.
+
