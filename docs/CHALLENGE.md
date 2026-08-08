@@ -32,6 +32,7 @@ Supporting surface shown in screenshots (expected in the walkthrough):
 
 ## From the walkthrough video (transcript reviewed Aug 8)
 
+- **Program-side scope, not CRM/marketing**: Sessionboard exposes separate Program, CRM, Marketing, and CMS products. At 00:02:06–00:02:24, swyx says AIE will "only" use the program side and is "not really using" the marketing or CRM sides. This is a strong scope signal rather than a formal prohibition: operational event email remains required, but CRM, campaigns, and marketing tooling are not challenge expectations.
 - **Abstracts vs. Sessions**: abstracts = applications to speak; sessions = guaranteed speakers (e.g. sponsors, invited). Manual/pre-accepted entry is a first-class path, not just a CFP outcome.
 - **Evaluation by committees**: reviewer teams assigned to batches of submissions, plus per-reviewer scoring views.
 - **Portal**: acceptance status visibility is "a key part"; bio self-editing "very important"; post-acceptance tasks "optional, but very very handy".
@@ -48,6 +49,7 @@ Supporting surface shown in screenshots (expected in the walkthrough):
 
 - ~~AI-assisted review rounds~~ · ~~Accelevents integration~~ · ~~Wiki/resource pages in portal~~
 - Payments/fees on submission forms ("NOT NEEDED" annotation).
+- CRM, prospect management, and marketing campaigns — absent from the requested feature set and explicitly deprioritized in the walkthrough. Do not confuse these with required transactional speaker communications.
 - CMS embeds (speaker gallery, schedule) — OPTIONAL.
 - Dashboard — "optional but nice to have, best efforts" (but it's requirement #6's home; treat the speaker-tracking view as in-scope, fancy analytics as optional).
 - Exhibitors/sponsors groups — visible in screenshots, not in the six. Skip.
@@ -68,9 +70,22 @@ Supporting surface shown in screenshots (expected in the walkthrough):
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| 1 | Real DB as source of truth; Airtable via one-way sync/export, not primary store | Airtable API is rate-limited (~5 req/s) and slow — conflicts with the explicit speed bonus. Sync gives them the bonus without the latency. |
+| 1 | Real DB as source of truth; defer Airtable persistence and synchronization | Airtable is a bonus, not a requirement, and its rate limits conflict with the explicit speed bonus. Reconsider it only after the judged workflow is complete. |
 | 2 | Calendar invites via iCalendar email (METHOD:REQUEST .ics), not Google/Outlook OAuth APIs | Lands natively in Gmail/Outlook/Apple with zero OAuth verification risk; achievable and reliable in the timeline. |
 | 3 | Form builder covers the shown field types + conditional logic, not a generic Typeform clone | Breadth-over-polish is the trap; the walkthrough tests the shown fields. |
+| 4 | One active CFP form per event; organizer-defined answers and conditional sections handle routing | The brief explicitly tests custom forms, conditional logic, and category routing, but does not require multiple independently active forms or a platform-owned category taxonomy. This preserves the judged workflow without adding separate URLs, deadlines, and lifecycle management. |
+| 5 | Create an event with name, start/end, and timezone; generate its editable slug and private starter CFP | Screenshot 03 marks only name, slug, start, and end as required, while the walkthrough calls Event Details “basic stuff” and prioritizes core functionality. Type, location, branding, tracks, and CFP-specific dates/settings remain available after creation. |
+| 6 | Implement Import as an agent using StageStack's normal domain tools, not a mapping wizard | The screenshots expose Import but do not prescribe its interface. Upload → agent plan → organizer confirmation → validated tool calls is faster for startup users, reuses the product's core actions, and remains distinct from the struck AI-assisted review feature. |
+| 7 | Model breaks, meals, registration, and ceremonies as lightweight agenda items, not fake submissions or sessions | A credible published agenda needs operational blocks, but forcing them through CFP, review, speaker, and readiness workflows would add meaningless data and slow organizers down. |
+| 8 | Store audience-specific virtual/hybrid links without provisioning meeting rooms | Public attendee, private backstage, and organizer-only host links connect StageStack to real event delivery while avoiding provider integrations and protecting privileged access details. |
+| 9 | Keep post-event recordings, slides, and resources on the original session, with explicit publication | This extends the program's useful life without creating a second content system. Task submissions remain private by default, and external video/CMS automation stays outside v1. |
+| 10 | Limit v1 data output to public program content plus the shown Abstracts CSV/XLSX export | Broad operational export packs and full backups are product hardening, not challenge requirements. Public API/embeds support the optional content-out story, while the narrow private export preserves the walkthrough surface. |
+| 11 | Unpublish public content without cancelling its internal workflow record | Organizers need a safe correction for accidental or temporarily inappropriate publication. Removing public visibility must not destroy schedule, confirmation, task, or audit state or surprise speakers with an automatic message. |
+| 12 | Serve one shared published program to every public channel | Pages, embeds, API, and public export should never disagree about which version or fields are public. Different presentation is useful; channel-specific content copies and visibility rules are unnecessary v1 complexity. |
+| 13 | Build one shareable public event page; treat embedding its sections as a stretch | The page makes published output usable and directly testable without creating a microsite product. The optional embed can reuse that same surface after core challenge work, with no separate layout or configuration system. |
+| 14 | Build UI and agent workflows on the same authorized domain capabilities; ship the public read API without a developer platform | Reusable actions make agent execution and later APIs natural instead of parallel rewrites. V1 gains the public content API while deferring mutation endpoints, credential management, webhooks, SDKs, and integration-specific support. |
+| 15 | Agents inherit the initiating user's permissions and require confirmation at consequential boundaries | Agent assistance should remove repetitive work without creating a hidden super-admin or an annoying confirmation for every reversible action. Bulk ambiguity and externally visible or destructive effects deserve an explicit final check and complete attribution. |
+| 16 | Keep StageStack authoritative; public integrations are read-only and Import is the reviewed inbound bridge | Copies may feed websites and other systems, but external edits and bidirectional sync would create competing workflow truth. Organizer-confirmed import supports migration without surrendering StageStack's ownership of state. |
 
 ## Open questions / freeze tracking
 
