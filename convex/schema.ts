@@ -118,6 +118,9 @@ export default defineSchema({
     reminderCadenceDays: v.optional(v.number()),
     // Reply-to address for outgoing event email (M5); inherits nothing yet.
     replyTo: v.optional(v.string()),
+    // Public event page toggle (M7). Lineup and agenda publish independently
+    // of each other and of speaker release (decision log #13; M6 rule).
+    publicPageEnabled: v.optional(v.boolean()),
     archivedAt: v.optional(v.number()),
   })
     .index("by_orgId", ["orgId"])
@@ -516,6 +519,32 @@ export default defineSchema({
     updatedAt: v.number(),
     updatedBy: v.id("users"),
   }).index("by_eventId_and_key", ["eventId", "key"]),
+
+  // ── Public program (M7) ──────────────────────────────────────────────
+  // One row per event holding the LAST EXPLICITLY PUBLISHED projection —
+  // the single shared program consumed by the public page, read API and
+  // embeds. Never the organizer's working state. Per-item unpublish rewrites
+  // this projection (decision log #12).
+  publishedPrograms: defineTable({
+    eventId: v.id("events"),
+    version: v.number(),
+    publishedAt: v.number(),
+    publishedBy: v.id("users"),
+    // Denormalized, already-privacy-filtered snapshot (only Confirmed
+    // participants' event-profile fields; no backstage/host links).
+    program: v.any(),
+  }).index("by_eventId", ["eventId"]),
+
+  // Per-item publication flags — which sessions/speakers/agenda items the
+  // organizer has chosen to expose. Publishing the program reads these.
+  publicationFlags: defineTable({
+    eventId: v.id("events"),
+    // "session" | "agendaItem" | "speaker" (eventContact) | "lineup" | "agenda"
+    targetType: v.string(),
+    targetId: v.string(),
+    published: v.boolean(),
+    updatedAt: v.number(),
+  }).index("by_eventId_and_target", ["eventId", "targetType", "targetId"]),
 
   // ── Comms log (starts M1; grows in M5) ───────────────────────────────
   // Every email StageStack sends is recorded here; the Resend webhook
