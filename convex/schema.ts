@@ -20,4 +20,13 @@ export default defineSchema({
     claimedAt: v.optional(v.number()),
     finishedAt: v.optional(v.number()),
   }).index("by_status", ["status"]),
+
+  // CFP wizard drafts, created unauthenticated (public path, rate-limited).
+  // anonKey is the client-generated session key; the draft is linked to a
+  // real account at the wizard's account step (M1).
+  cfpDrafts: defineTable({
+    talkTitle: v.string(),
+    anonKey: v.string(),
+    status: v.literal("draft"),
+  }).index("by_anonKey", ["anonKey"]),
 });
