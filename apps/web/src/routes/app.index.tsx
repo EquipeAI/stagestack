@@ -17,6 +17,7 @@ import {
 import { PageBody } from '~/components/PageBody'
 import { EventCard, EventGrid } from '~/components/EventCard'
 import { usePending } from '~/lib/usePending'
+import { useHydrated } from '~/lib/useHydrated'
 import { pushToast } from '~/components/toast'
 import { browserTimezone, formatDateTime } from '~/lib/datetime'
 import { PROPOSAL_STATUS_LABEL } from '~/components/cfp/model'
@@ -29,6 +30,7 @@ export const Route = createFileRoute('/app/')({
 function Home() {
   const home = useQuery(api.orgs.myHome, {})
   const [creating, setCreating] = useState(false)
+  const hydrated = useHydrated()
 
   if (home === undefined) {
     return (
@@ -54,7 +56,11 @@ function Home() {
         title="My StageStack"
         description="Organizations you belong to, and the events you can work on."
         actions={
-          <Button iconLeft="plus" onClick={() => setCreating(true)}>
+          <Button
+            iconLeft="plus"
+            disabled={!hydrated}
+            onClick={() => setCreating(true)}
+          >
             New organization
           </Button>
         }

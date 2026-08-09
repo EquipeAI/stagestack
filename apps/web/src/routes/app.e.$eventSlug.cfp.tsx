@@ -356,7 +356,11 @@ function Builder({
             </Button>
           }
         >
-          Publish the form, then turn on "CFP published" in Settings.
+          Two switches gate it: "Publish form" here decides which version
+          speakers see, and "CFP published" in Settings makes the page
+          reachable. The Opens/Closes window in Settings controls when
+          submissions are accepted — and tracks, tags, rooms and custom
+          fields live in Settings too, not in this builder.
         </Callout>
       ) : null}
 
@@ -706,7 +710,15 @@ function FieldRow({
           }}
         >
           <div style={twoCol}>
-            <Field label="Label" htmlFor={`f-${field.id}-label`}>
+            <Field
+              label="Label"
+              htmlFor={`f-${field.id}-label`}
+              hint={
+                locked
+                  ? 'Rename freely — answers keep feeding the proposal record.'
+                  : undefined
+              }
+            >
               <Input
                 id={`f-${field.id}-label`}
                 value={field.label}

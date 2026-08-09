@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Doc } from '@convex/_generated/dataModel'
@@ -517,8 +517,12 @@ function CfpSection({
           onChange={(e) => form.set('published', e.target.checked)}
         />
         <p style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
-          Publishing makes the public CFP page reachable. The form builder
-          arrives with M1.
+          Publishing makes the public CFP page reachable; the window above
+          controls when submissions are accepted. Build the questions in the{' '}
+          <Link to="/app/e/$eventSlug/cfp" params={{ eventSlug }}>
+            form builder
+          </Link>
+          .
         </p>
       </div>
     </Card>

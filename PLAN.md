@@ -129,6 +129,16 @@ the new team.ts `now` args (team/org/invite/BulkBar via useNow+useLastLoaded).
   them first (none expected: portal claims live on eventContacts.userId and
   no job ever reached "running").
 
+## QA-walk fixes — Aug 9
+
+From an external CFP-flow QA table (5 items):
+
+- [x] "Create organization"/"New organization" header button dropped pre-hydration clicks — now disabled until hydrated (new lib/useHydrated.ts; onboarding-card variant was already SSR-disabled)
+- [x] Stale Settings copy "The form builder arrives with M1" — replaced with accurate two-gate copy + link to the builder
+- [x] Builder "isn't public" callout now explains both gates (Publish form vs CFP published) + that the submission window and tracks/tags/rooms/custom fields live in Settings (QA spec-deviation #2)
+- [x] Locked-field label hint clarifies what IS editable (label/help) vs fixed (type/required/removal) (QA "not-the-right-flow")
+- [x] "Conditional logic is section-level, not field-level" — NOT a deviation: field-level visibleIf is fully wired (formDef.ts:56, evaluator :106, builder ConditionEditor at cfp.tsx field editor); the editor lives inside the expanded field row, which the QA agent likely never opened. No change beyond the discoverability of the callout copy above.
+
 ## Done: M7 — Public content out — Aug 9
 
 - [x] One shared published-program projection (model/publish.ts): only Confirmed speakers named, awaiting -> "to be announced", NO contact/backstage/host data in the blob; republish is the sole writer; unpublish = flag flip + rewrite
