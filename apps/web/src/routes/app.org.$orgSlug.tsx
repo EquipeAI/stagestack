@@ -22,6 +22,7 @@ import {
 } from '~/ds'
 import { PageBody } from '~/components/PageBody'
 import { EventCard, EventGrid } from '~/components/EventCard'
+import { QueryBoundary } from '~/components/QueryBoundary'
 import { pushToast } from '~/components/toast'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
@@ -60,6 +61,9 @@ function OrgPage() {
   }
 
   const events = orgEvents ?? []
+  // Org owners and admins. A null role means the person reached this page
+  // through an event membership: they can look, but every org-wide mutation
+  // the backend offers here would refuse them.
   const isAdmin = org.role !== null
 
   const tabs = [
@@ -86,10 +90,23 @@ function OrgPage() {
             orgSlug={orgSlug}
             events={events}
             loading={orgEvents === undefined}
+            canCreate={isAdmin}
           />
         ) : null}
-        {tab === 'contacts' ? <ContactsTab orgSlug={orgSlug} /> : null}
-        {tab === 'team' && isAdmin ? <OrgTeamTab orgSlug={orgSlug} /> : null}
+        {tab === 'contacts' ? (
+          // The directory is open to event organizers too, which is not
+          // knowable from `org.role` — so the tab stays, and a refusal is
+          // reported here instead of taking the page down.
+          <QueryBoundary
+            resetKey={orgSlug}
+            title="The contact directory is not available to you"
+          >
+            <ContactsTab orgSlug={orgSlug} />
+          </QueryBoundary>
+        ) : null}
+        {tab === 'team' && isAdmin ? (
+          <OrgTeamTab orgSlug={orgSlug} canGrantOwner={org.role === 'owner'} />
+        ) : null}
       </div>
     </PageBody>
   )
@@ -101,22 +118,26 @@ function EventsTab({
   orgSlug,
   events,
   loading,
+  canCreate,
 }: {
   orgSlug: string
   events: Array<Doc<'events'>>
   loading: boolean
+  canCreate: boolean
 }) {
   const [creating, setCreating] = useState(false)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-      <Toolbar
-        right={
-          <Button variant="primary" iconLeft="plus" onClick={() => setCreating(true)}>
-            New event
-          </Button>
-        }
-      />
+      {canCreate ? (
+        <Toolbar
+          right={
+            <Button variant="primary" iconLeft="plus" onClick={() => setCreating(true)}>
+              New event
+            </Button>
+          }
+        />
+      ) : null}
       {loading ? (
         <p style={{ color: 'var(--text-tertiary)' }}>Loading events…</p>
       ) : events.length === 0 ? (
@@ -124,11 +145,17 @@ function EventsTab({
           <EmptyState
             icon="calendar-days"
             title="No events yet"
-            description="Create an event to open a CFP, build a team and run your program."
+            description={
+              canCreate
+                ? 'Create an event to open a CFP, build a team and run your program.'
+                : 'Nothing here yet. Only organization owners and admins can create events.'
+            }
             action={
-              <Button variant="primary" iconLeft="plus" onClick={() => setCreating(true)}>
-                New event
-              </Button>
+              canCreate ? (
+                <Button variant="primary" iconLeft="plus" onClick={() => setCreating(true)}>
+                  New event
+                </Button>
+              ) : undefined
             }
           />
         </Card>
@@ -504,7 +531,13 @@ type OrgTeamMember = {
   role: 'owner' | 'admin' | 'organizer' | 'reviewer'
 }
 
-function OrgTeamTab({ orgSlug }: { orgSlug: string }) {
+function OrgTeamTab({
+  orgSlug,
+  canGrantOwner,
+}: {
+  orgSlug: string
+  canGrantOwner: boolean
+}) {
   const team = useQuery(api.team.listForOrg, { orgSlug })
   const revoke = useMutation(api.team.revokeOrgInvitation)
   const revokeState = usePending()
@@ -519,7 +552,7 @@ function OrgTeamTab({ orgSlug }: { orgSlug: string }) {
       await invite({
         orgSlug,
         email: email.trim(),
-        role: role === 'owner' ? 'owner' : 'admin',
+        role: role === 'owner' && canGrantOwner ? 'owner' : 'admin',
       })
       pushToast('Invitation sent', `${email.trim()} was invited as ${role}.`, 'mail')
       setEmail('')
@@ -642,10 +675,16 @@ function OrgTeamTab({ orgSlug }: { orgSlug: string }) {
             <Select
               id="org-invite-role"
               value={role}
-              options={[
-                { value: 'admin', label: 'Admin' },
-                { value: 'owner', label: 'Owner' },
-              ]}
+              // Only an owner can make another owner — offering it to an admin
+              // would be offering a refusal.
+              options={
+                canGrantOwner
+                  ? [
+                      { value: 'admin', label: 'Admin' },
+                      { value: 'owner', label: 'Owner' },
+                    ]
+                  : [{ value: 'admin', label: 'Admin' }]
+              }
               onChange={(e) => setRole(e.target.value)}
             />
           </Field>

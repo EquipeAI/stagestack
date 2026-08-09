@@ -233,13 +233,20 @@ function ProposalEditor({
   proposalId: Id<'proposals'>
   self?: { firstName: string; lastName: string; email: string }
 }) {
-  const answersDraft = useAnswersDraft(proposalId, data.proposal.answers)
-  const speakersDraft = useSpeakersDraft(proposalId, data.speakers)
+  // A draft is the submitter's alone, so it saves as it is typed. Anything
+  // already submitted is on an organizer's screen: it may only change at the
+  // moment the submitter says "resubmit", never a keystroke at a time.
+  const isResubmit = data.proposal.status !== 'draft'
+  const autosave = !isResubmit
+
+  const answersDraft = useAnswersDraft(proposalId, data.proposal.answers, {
+    autosave,
+  })
+  const speakersDraft = useSpeakersDraft(proposalId, data.speakers, { autosave })
   const submitProposal = useMutation(api.cfp.submitProposal)
   const submit = usePending()
   const [flagged, setFlagged] = useState<ReadonlySet<string>>(() => new Set())
 
-  const isResubmit = data.proposal.status === 'pending'
   const missing = missingAnswers(data.form, answersDraft.answers)
   const nameless = incompleteSpeakers(speakersDraft.speakers)
   const blockers = missing.length + nameless.length
@@ -266,8 +273,9 @@ function ProposalEditor({
     }, 0)
   }
 
-  const saveLabel =
-    answersDraft.autosave.status === 'idle'
+  const saveLabel = isResubmit
+    ? 'Changes are local until you resubmit'
+    : answersDraft.autosave.status === 'idle'
       ? saveStatusLabel(speakersDraft.autosave.status)
       : saveStatusLabel(answersDraft.autosave.status)
 
@@ -277,9 +285,13 @@ function ProposalEditor({
     >
       <PageHeader
         title="Your submission"
-        description="Changes save as you type. Nothing reaches the organizers until you resubmit."
+        description={
+          isResubmit
+            ? 'Your edits stay on this page until you resubmit — the organizers keep reading the version you sent them.'
+            : 'Changes save as you type. Nothing reaches the organizers until you resubmit.'
+        }
       />
-      {answersDraft.autosave.error !== null ? (
+      {!isResubmit && answersDraft.autosave.error !== null ? (
         <Callout tone="blocked" title="Your last change was not saved">
           {answersDraft.autosave.error}
         </Callout>
@@ -296,9 +308,9 @@ function ProposalEditor({
 
       <PageHeader
         title="Speakers"
-        description="At least one speaker is required. The primary contact hears from the organizers first."
+        description="At least one speaker is required. Everything about this proposal goes to your account email."
       />
-      {speakersDraft.autosave.error !== null ? (
+      {!isResubmit && speakersDraft.autosave.error !== null ? (
         <Callout tone="blocked" title="Your last change was not saved">
           {speakersDraft.autosave.error}
         </Callout>
@@ -363,15 +375,18 @@ function ProposalEditor({
           borderTop: 'var(--space-px) solid var(--border-subtle)',
         }}
       >
-        <Button
-          iconLeft="download"
-          onClick={() => {
-            void answersDraft.saveNow()
-            void speakersDraft.saveNow()
-          }}
-        >
-          Save draft
-        </Button>
+        {isResubmit ? null : (
+          <Button
+            iconLeft="download"
+            onClick={() => {
+              // The indicator already carries the outcome of these.
+              void answersDraft.saveNow().catch(() => {})
+              void speakersDraft.saveNow().catch(() => {})
+            }}
+          >
+            Save draft
+          </Button>
+        )}
         <div
           style={{
             marginLeft: 'auto',
@@ -410,7 +425,7 @@ function ProposalEditor({
         }}
       >
         {isResubmit
-          ? 'Resubmitting notifies the organizers that your proposal changed.'
+          ? 'Resubmitting saves your changes and notifies the organizers that your proposal changed.'
           : 'Submitting notifies the organizers and sends you a confirmation email.'}
       </p>
     </div>

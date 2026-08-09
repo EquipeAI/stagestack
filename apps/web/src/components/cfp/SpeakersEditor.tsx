@@ -265,7 +265,7 @@ function SpeakerCard({
       title={named.length > 0 ? named : `Speaker ${index + 1}`}
       subtitle={
         speaker.isPrimary
-          ? 'Primary contact — organizers write to this person first.'
+          ? 'Lead speaker — listed first in the program. Proposal email goes to your account.'
           : undefined
       }
       actions={

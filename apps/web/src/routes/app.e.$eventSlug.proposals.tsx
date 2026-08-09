@@ -1,57 +1,55 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQuery } from 'convex/react'
+import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
-import type { Doc, Id } from '@convex/_generated/dataModel'
-import type { AnswerValue, FormDef } from '@convex/shared/formDef'
-import type * as React from 'react'
+import type { Doc } from '@convex/_generated/dataModel'
+import type {
+  AbstractsSearch,
+  ColumnId,
+  ProposalId,
+  ProposalStatus,
+  SortKey,
+  ViewDef,
+} from '~/components/abstracts/model'
+import { Button, Callout, Card, EmptyState, SearchInput, Toolbar } from '~/ds'
+import { AbstractsTable } from '~/components/abstracts/AbstractsTable'
+import { AddProposalDialog } from '~/components/abstracts/AddProposalDialog'
+import { BulkBar } from '~/components/abstracts/BulkBar'
+import { ProposalDetailDialog } from '~/components/abstracts/ProposalDetailDialog'
 import {
-  Button,
-  Callout,
-  Card,
-  DataTable,
-  DescriptionList,
-  Dialog,
-  EmptyState,
-  Field,
-  Input,
-  StatusPill,
-  Tabs,
-  Toolbar,
-} from '~/ds'
-import { usePending } from '~/lib/usePending'
-import { pushToast } from '~/components/toast'
-import { formatDateTime, fromInputValue, toInputValue } from '~/lib/datetime'
+  ColumnsMenu,
+  ExportMenu,
+  StatusChips,
+  ViewsMenu,
+} from '~/components/abstracts/TableMenus'
+import {
+  ALL_COLUMN_IDS,
+  filterRows,
+  loadSavedViews,
+  loadStoredColumns,
+  parseSearch,
+  searchFromState,
+  searchIndex,
+  sortRows,
+  stateFromSearch,
+  storeColumns,
+  storeSavedViews,
+  systemFieldIds,
+} from '~/components/abstracts/model'
+
+// The abstracts table — the surface an organizer lives in during a CFP. Every
+// piece of table state is a URL search param, so a view is a link, a saved
+// view is a stored link, and the back button works. Filtering, sorting and
+// export all run over the same in-memory rows: the list query is bounded, and
+// nothing here makes a round trip to change what is on screen.
 
 export const Route = createFileRoute('/app/e/$eventSlug/proposals')({
   component: ProposalsRoute,
+  validateSearch: parseSearch,
 })
 
-type Row = { proposal: Doc<'proposals'>; speakerCount: number }
-
-// The stored status ids mapped onto the product's own vocabulary. `pending`
-// is a proposal that has been sent and is waiting on a decision.
-const STATUS_LABEL: Record<Doc<'proposals'>['status'], string> = {
-  draft: 'Draft',
-  pending: 'Submitted',
-  acceptQueue: 'Accept queue',
-  declineQueue: 'Decline queue',
-  accepted: 'Accepted',
-  declined: 'Declined',
-  withdrawn: 'Withdrawn',
-}
-
-const FILTERS = [
-  { id: 'all', label: 'All' },
-  { id: 'pending', label: 'Submitted' },
-  { id: 'draft', label: 'Draft' },
-  { id: 'withdrawn', label: 'Withdrawn' },
-] as const
-
-type FilterId = (typeof FILTERS)[number]['id']
-
-/** Default reopen window: a week from now, in the event's own zone. */
-const A_WEEK = 7 * 24 * 60 * 60 * 1000
+/** Text sorts ascending first; counts and dates read newest/most first. */
+const ASCENDING_FIRST: ReadonlySet<SortKey> = new Set(['title', 'submitter', 'status'])
 
 function ProposalsRoute() {
   const { eventSlug } = Route.useParams()
@@ -63,14 +61,15 @@ function ProposalsRoute() {
   if (data.role !== 'organizer') {
     return (
       <Callout tone="blocked" title="Proposals are organizer-only">
-        You have reviewer access to this event. Reviewing arrives with M2.
+        You have reviewer access to this event. Your assignments live under
+        Reviews.
       </Callout>
     )
   }
-  return <Proposals eventSlug={eventSlug} event={data.event} />
+  return <Abstracts eventSlug={eventSlug} event={data.event} />
 }
 
-function Proposals({
+function Abstracts({
   eventSlug,
   event,
 }: {
@@ -79,25 +78,156 @@ function Proposals({
 }) {
   const rows = useQuery(api.cfp.listProposals, { eventSlug })
   const form = useQuery(api.cfp.getForm, { eventSlug })
-  const [filter, setFilter] = useState<FilterId>('all')
-  const [openId, setOpenId] = useState<Id<'proposals'> | null>(null)
+  const progress = useQuery(api.reviews.progress, { eventSlug })
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+
+  // Preferences live in this browser, so they are read after mount — the
+  // server render always uses the defaults and never mismatches.
+  const [storedCols, setStoredCols] = useState<Array<ColumnId> | null>(null)
+  const [savedViews, setSavedViews] = useState<Array<ViewDef>>([])
+  useEffect(() => {
+    setStoredCols(loadStoredColumns(eventSlug))
+    setSavedViews(loadSavedViews(eventSlug))
+  }, [eventSlug])
+
+  const state = useMemo(
+    () => stateFromSearch(search, storedCols),
+    [search, storedCols],
+  )
+
+  // The search box is local and instant; the URL catches up a beat later so
+  // typing never queues a navigation per keystroke.
+  const [q, setQ] = useState(search.q ?? '')
+  const pushedQ = useRef(search.q ?? '')
+  useEffect(() => {
+    const fromUrl = search.q ?? ''
+    if (fromUrl !== pushedQ.current) {
+      pushedQ.current = fromUrl
+      setQ(fromUrl)
+    }
+  }, [search.q])
+  useEffect(() => {
+    const next = q.trim()
+    if (next === pushedQ.current) return
+    const timer = window.setTimeout(() => {
+      pushedQ.current = next
+      void navigate({
+        search: (prev: AbstractsSearch) => ({
+          ...prev,
+          q: next === '' ? undefined : next,
+        }),
+        replace: true,
+      })
+    }, 200)
+    return () => window.clearTimeout(timer)
+  }, [q, navigate])
+
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const [failures, setFailures] = useState<ReadonlyMap<string, string>>(new Map())
+  const [openId, setOpenId] = useState<ProposalId | null>(null)
+  const [adding, setAdding] = useState(false)
   const [copied, setCopied] = useState(false)
+  const lastIndex = useRef<number | null>(null)
+
+  const ids = useMemo(
+    () => systemFieldIds(form === undefined ? null : (form.published ?? form.working)),
+    [form],
+  )
+  const def = form === undefined ? null : (form.published ?? form.working)
+
+  const all = useMemo(() => rows ?? [], [rows])
+  const index = useMemo(() => searchIndex(all, ids), [all, ids])
+  const visible = useMemo(() => {
+    const live = { ...state, q }
+    return sortRows(filterRows(all, live, index), live, ids, progress)
+  }, [all, state, q, index, ids, progress])
 
   const counts = useMemo(() => {
-    const out: Record<string, number> = { all: rows?.length ?? 0 }
-    for (const row of rows ?? []) {
+    const out: Record<string, number> = { all: all.length }
+    for (const row of all) {
       out[row.proposal.status] = (out[row.proposal.status] ?? 0) + 1
     }
     return out
-  }, [rows])
+  }, [all])
 
-  if (rows === undefined) {
-    return <p style={{ color: 'var(--text-tertiary)' }}>Loading proposals…</p>
+  const selection = useMemo(
+    () => all.filter((r) => selected.has(r.proposal._id)),
+    [all, selected],
+  )
+
+  const apply = useCallback(
+    (next: AbstractsSearch) => {
+      pushedQ.current = next.q ?? ''
+      setQ(next.q ?? '')
+      void navigate({ search: () => next, replace: true })
+    },
+    [navigate],
+  )
+
+  const patch = useCallback(
+    (part: AbstractsSearch) => {
+      void navigate({
+        search: (prev: AbstractsSearch) => ({ ...prev, ...part }),
+        replace: true,
+      })
+    },
+    [navigate],
+  )
+
+  const onSort = (key: SortKey) => {
+    if (state.sort === key) {
+      patch({ sort: key, dir: state.dir === 'asc' ? 'desc' : 'asc' })
+    } else {
+      patch({ sort: key, dir: ASCENDING_FIRST.has(key) ? 'asc' : 'desc' })
+    }
   }
 
-  const visible =
-    filter === 'all' ? rows : rows.filter((r) => r.proposal.status === filter)
-  const open = rows.find((r) => r.proposal._id === openId) ?? null
+  const onToggleStatus = (status: ProposalStatus) => {
+    const next = state.statuses.includes(status)
+      ? state.statuses.filter((s) => s !== status)
+      : [...state.statuses, status]
+    patch({ status: next.length === 0 ? undefined : next.join(',') })
+  }
+
+  const onColumns = (cols: Array<ColumnId>) => {
+    const ordered = ALL_COLUMN_IDS.filter((c) => c === 'title' || cols.includes(c))
+    setStoredCols(ordered)
+    storeColumns(eventSlug, ordered)
+    patch({
+      cols:
+        ordered.length === ALL_COLUMN_IDS.length ? undefined : ordered.join(','),
+    })
+  }
+
+  const onToggleRow = (id: ProposalId, shiftKey: boolean) => {
+    const position = visible.findIndex((r) => r.proposal._id === id)
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (shiftKey && lastIndex.current !== null && position >= 0) {
+        const [from, to] = [lastIndex.current, position].sort((a, b) => a - b)
+        for (const row of visible.slice(from, to + 1)) next.add(row.proposal._id)
+      } else if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+    lastIndex.current = position
+  }
+
+  const onToggleAll = () => {
+    setSelected((prev) => {
+      const everything = visible.every((r) => prev.has(r.proposal._id))
+      return everything ? new Set() : new Set(visible.map((r) => r.proposal._id))
+    })
+  }
+
+  const clearSelection = () => {
+    setSelected(new Set())
+    lastIndex.current = null
+  }
 
   const copyLink = () => {
     if (typeof window === 'undefined') return
@@ -109,25 +239,82 @@ function Proposals({
       })
   }
 
+  if (rows === undefined) {
+    return <p style={{ color: 'var(--text-tertiary)' }}>Loading proposals…</p>
+  }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
       <Toolbar
         left={
-          <Tabs
-            variant="pill"
-            value={filter}
-            tabs={FILTERS.map((f) => ({
-              id: f.id,
-              label: f.label,
-              count: f.id === 'all' ? counts.all : (counts[f.id] ?? 0),
-            }))}
-            onChange={(id) => setFilter(id as FilterId)}
-          />
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
+              flexWrap: 'wrap',
+            }}
+          >
+            <SearchInput
+              value={q}
+              placeholder="Search titles, submitters, answers"
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <ViewsMenu
+              search={searchFromState({ ...state, q })}
+              saved={savedViews}
+              onApply={apply}
+              onSave={(name) => {
+                const next = [
+                  ...savedViews.filter((v) => v.name !== name),
+                  { name, search: searchFromState({ ...state, q }) },
+                ]
+                setSavedViews(next)
+                storeSavedViews(eventSlug, next)
+              }}
+              onDelete={(name) => {
+                const next = savedViews.filter((v) => v.name !== name)
+                setSavedViews(next)
+                storeSavedViews(eventSlug, next)
+              }}
+            />
+          </div>
         }
         right={
-          <Button size="sm" iconLeft="copy" onClick={copyLink}>
-            {copied ? 'Copied' : 'Copy CFP link'}
-          </Button>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-2)',
+              flexWrap: 'wrap',
+            }}
+          >
+            <ColumnsMenu cols={state.cols} onChange={onColumns} />
+            <ExportMenu
+              eventSlug={eventSlug}
+              eventName={event.name}
+              visibleCount={visible.length}
+              buildInput={() => ({
+                rows: visible,
+                state: { ...state, q },
+                ids,
+                def,
+                progress,
+                timezone: event.timezone,
+              })}
+            />
+            <Button size="sm" iconLeft="copy" onClick={copyLink}>
+              {copied ? 'Copied' : 'Copy CFP link'}
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              iconLeft="plus"
+              onClick={() => setAdding(true)}
+            >
+              Add proposal
+            </Button>
+          </div>
         }
       />
 
@@ -138,312 +325,98 @@ function Proposals({
             title="No proposals yet"
             description={`Proposals arrive through the public CFP page at /cfp/${eventSlug}. Publish the form and turn on "CFP published" in Settings, then share the link.`}
             action={
-              <Button iconLeft="copy" onClick={copyLink}>
-                {copied ? 'Copied' : 'Copy CFP link'}
-              </Button>
+              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                <Button iconLeft="copy" onClick={copyLink}>
+                  {copied ? 'Copied' : 'Copy CFP link'}
+                </Button>
+                <Button variant="primary" iconLeft="plus" onClick={() => setAdding(true)}>
+                  Add proposal
+                </Button>
+              </div>
             }
           />
         </Card>
       ) : (
-        <Card padded={false}>
-          <DataTable
-            rowKey="_id"
-            rows={visible.map((r) => ({ ...r, _id: r.proposal._id }))}
-            onRowClick={(row: Row) => setOpenId(row.proposal._id)}
-            columns={[
-              {
-                key: 'title',
-                header: 'Title',
-                cell: (row: Row) =>
-                  row.proposal.title.trim() === '' ? (
-                    <span style={{ color: 'var(--text-tertiary)' }}>Untitled</span>
-                  ) : (
-                    row.proposal.title
-                  ),
-              },
-              {
-                key: 'submitter',
-                header: 'Submitter',
-                cell: (row: Row) => <Submitter proposal={row.proposal} />,
-              },
-              {
-                key: 'speakers',
-                header: 'Speakers',
-                align: 'right',
-                width: '6rem',
-                cell: (row: Row) => (
-                  <span style={{ fontFamily: 'var(--font-mono)' }}>
-                    {row.speakerCount}
-                  </span>
-                ),
-              },
-              {
-                key: 'status',
-                header: 'Status',
-                width: '9rem',
-                cell: (row: Row) => (
-                  <StatusPill status={STATUS_LABEL[row.proposal.status]} />
-                ),
-              },
-              {
-                key: 'submittedAt',
-                header: 'Submitted',
-                width: '13rem',
-                cell: (row: Row) => (
-                  <Mono>
-                    {row.proposal.submittedAt === undefined
-                      ? '—'
-                      : formatDateTime(row.proposal.submittedAt, event.timezone)}
-                  </Mono>
-                ),
-              },
-              {
-                key: 'updatedAt',
-                header: 'Updated',
-                width: '13rem',
-                cell: (row: Row) => (
-                  <Mono>{formatDateTime(row.proposal.updatedAt, event.timezone)}</Mono>
-                ),
-              },
-            ]}
-          />
-        </Card>
+        <>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 'var(--space-4)',
+              flexWrap: 'wrap',
+            }}
+          >
+            <StatusChips
+              counts={counts}
+              active={state.statuses}
+              onToggle={onToggleStatus}
+              onClear={() => patch({ status: undefined })}
+            />
+            <span
+              style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-xs)',
+                color: 'var(--text-tertiary)',
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              Showing {visible.length} of {all.length}
+            </span>
+          </div>
+
+          <Card padded={false}>
+            {visible.length === 0 ? (
+              <EmptyState
+                icon="search"
+                title="Nothing matches"
+                description="No proposal matches this search and filter combination. Clear the filters to see the whole event again."
+                action={<Button onClick={() => apply({})}>Clear filters</Button>}
+              />
+            ) : (
+              <AbstractsTable
+                rows={visible}
+                state={state}
+                ids={ids}
+                progress={progress}
+                timezone={event.timezone}
+                selected={selected}
+                failures={failures}
+                onSort={onSort}
+                onToggle={onToggleRow}
+                onToggleAll={onToggleAll}
+                onOpen={setOpenId}
+              />
+            )}
+          </Card>
+        </>
       )}
 
-      {visible.length === 0 && rows.length > 0 ? (
-        <p style={{ color: 'var(--text-tertiary)' }}>
-          No proposals with that status.
-        </p>
+      {selection.length > 0 ? (
+        <BulkBar
+          eventSlug={eventSlug}
+          selection={selection}
+          onFailures={setFailures}
+          onClear={() => {
+            clearSelection()
+            setFailures(new Map())
+          }}
+        />
       ) : null}
 
-      {open !== null ? (
-        <ProposalDialog
+      {openId !== null ? (
+        <ProposalDetailDialog
           eventSlug={eventSlug}
           event={event}
-          row={open}
-          def={form === undefined ? null : (form.published ?? form.working)}
+          proposalId={openId}
+          def={def}
           onClose={() => setOpenId(null)}
         />
       ) : null}
-    </div>
-  )
-}
 
-function Mono({ children }: { children: React.ReactNode }) {
-  return (
-    <span
-      style={{
-        fontFamily: 'var(--font-mono)',
-        fontSize: 'var(--text-xs)',
-        color: 'var(--text-tertiary)',
-      }}
-    >
-      {children}
-    </span>
-  )
-}
-
-/** The submitter as the form itself captured them (the locked system fields). */
-function Submitter({ proposal }: { proposal: Doc<'proposals'> }) {
-  const name = [proposal.answers.firstName, proposal.answers.lastName]
-    .map((v) => (typeof v === 'string' ? v.trim() : ''))
-    .filter((v) => v !== '')
-    .join(' ')
-  const email = proposal.answers.email
-  return (
-    <span style={{ display: 'flex', flexDirection: 'column' }}>
-      <span>{name === '' ? '—' : name}</span>
-      {typeof email === 'string' && email !== '' ? (
-        <span style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
-          {email}
-        </span>
+      {adding ? (
+        <AddProposalDialog eventSlug={eventSlug} onClose={() => setAdding(false)} />
       ) : null}
-    </span>
-  )
-}
-
-// ── Detail ────────────────────────────────────────────────────────────────
-
-function ProposalDialog({
-  eventSlug,
-  event,
-  row,
-  def,
-  onClose,
-}: {
-  eventSlug: string
-  event: Doc<'events'>
-  row: Row
-  def: FormDef | null
-  onClose: () => void
-}) {
-  const { proposal } = row
-  const items = useMemo(() => answerItems(proposal.answers, def), [proposal, def])
-
-  return (
-    <Dialog
-      title={proposal.title.trim() === '' ? 'Untitled proposal' : proposal.title}
-      description={`${STATUS_LABEL[proposal.status]} · ${row.speakerCount} speaker${row.speakerCount === 1 ? '' : 's'} · updated ${formatDateTime(proposal.updatedAt, event.timezone)}`}
-      width={860}
-      onClose={onClose}
-      footer={<Button onClick={onClose}>Close</Button>}
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-        <DescriptionList
-          items={[
-            {
-              term: 'Status',
-              value: <StatusPill status={STATUS_LABEL[proposal.status]} />,
-            },
-            {
-              term: 'Submitted',
-              value:
-                proposal.submittedAt === undefined
-                  ? 'Not submitted'
-                  : formatDateTime(proposal.submittedAt, event.timezone),
-            },
-            { term: 'Speakers', value: String(row.speakerCount) },
-            { term: 'Form version', value: `v${proposal.formVersion}` },
-          ]}
-        />
-        {items.length === 0 ? (
-          <p style={{ color: 'var(--text-tertiary)' }}>
-            No answers have been entered yet.
-          </p>
-        ) : (
-          <DescriptionList items={items} stacked />
-        )}
-        {proposal.status === 'pending' ? (
-          <ReopenPanel
-            eventSlug={eventSlug}
-            event={event}
-            proposal={proposal}
-          />
-        ) : null}
-      </div>
-    </Dialog>
-  )
-}
-
-/** Answers in form order, with anything no longer on the form listed after. */
-function answerItems(
-  answers: Record<string, AnswerValue>,
-  def: FormDef | null,
-): Array<{ term: string; value: React.ReactNode }> {
-  const ordered: Array<{ term: string; value: React.ReactNode }> = []
-  const used = new Set<string>()
-  for (const section of def?.sections ?? []) {
-    for (const field of section.fields) {
-      if (!(field.id in answers)) continue
-      used.add(field.id)
-      ordered.push({
-        term: field.label.trim() === '' ? field.id : field.label,
-        value: renderAnswer(answers[field.id], field.kind === 'file'),
-      })
-    }
-  }
-  for (const [key, value] of Object.entries(answers)) {
-    if (used.has(key)) continue
-    ordered.push({ term: key, value: renderAnswer(value, false) })
-  }
-  return ordered
-}
-
-function renderAnswer(value: AnswerValue, isFile: boolean): React.ReactNode {
-  if (value === null || value === '') {
-    return <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-  }
-  if (Array.isArray(value)) {
-    return value.length === 0 ? (
-      <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-    ) : (
-      value.join(', ')
-    )
-  }
-  if (isFile) {
-    return <Mono>attached file {String(value)}</Mono>
-  }
-  return <span style={{ whiteSpace: 'pre-wrap' }}>{String(value)}</span>
-}
-
-function ReopenPanel({
-  eventSlug,
-  event,
-  proposal,
-}: {
-  eventSlug: string
-  event: Doc<'events'>
-  proposal: Doc<'proposals'>
-}) {
-  const reopen = useMutation(api.cfp.reopenProposal)
-  const { pending, error, setError, run } = usePending()
-  const [until, setUntil] = useState(
-    toInputValue(proposal.reopenedUntil ?? Date.now() + A_WEEK, event.timezone),
-  )
-
-  const closed =
-    event.cfpCloseAt !== undefined && event.cfpCloseAt < Date.now()
-
-  const submit = () => {
-    const at = fromInputValue(until, event.timezone)
-    if (at === null) return setError('Set the date the window closes again.')
-    if (at < Date.now()) return setError('That moment has already passed.')
-    void run(async () => {
-      await reopen({ eventSlug, proposalId: proposal._id, until: at })
-      pushToast(
-        'Editing reopened',
-        `The submitter can edit until ${formatDateTime(at, event.timezone)}.`,
-      )
-    })
-  }
-
-  return (
-    <Card
-      variant="flat"
-      title="Reopen editing"
-      subtitle={
-        closed
-          ? 'The CFP has closed. Grant this submitter a window to edit their proposal.'
-          : 'The CFP is still open — a grant only matters once it closes.'
-      }
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-        {proposal.reopenedUntil !== undefined ? (
-          <p style={{ color: 'var(--text-secondary)', font: 'var(--type-caption)' }}>
-            Currently editable until{' '}
-            {formatDateTime(proposal.reopenedUntil, event.timezone)}.
-          </p>
-        ) : null}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-end',
-            gap: 'var(--space-3)',
-            flexWrap: 'wrap',
-          }}
-        >
-          <Field
-            label="Editable until"
-            htmlFor="reopen-until"
-            hint={`Stated in ${event.timezone}.`}
-          >
-            <Input
-              id="reopen-until"
-              type="datetime-local"
-              value={until}
-              onChange={(e) => setUntil(e.target.value)}
-            />
-          </Field>
-          <Button variant="primary" onClick={submit} disabled={pending}>
-            {pending ? 'Reopening…' : 'Reopen editing'}
-          </Button>
-        </div>
-        {error !== null ? (
-          <span style={{ color: 'var(--text-danger)', font: 'var(--type-caption)' }}>
-            {error}
-          </span>
-        ) : null}
-      </div>
-    </Card>
+    </div>
   )
 }

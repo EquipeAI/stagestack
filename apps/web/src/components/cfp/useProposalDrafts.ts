@@ -17,6 +17,13 @@ import type { Answers, UploadedNames } from './model'
 // The submitter is the only writer, so the local copy wins for the lifetime of
 // the editor and the reactive query is only used to seed it.
 
+/**
+ * `autosave: false` keeps every edit local until `saveNow()` is called. That is
+ * how an already-submitted proposal behaves: organizers are reading it, so it
+ * must not change underneath them one keystroke at a time.
+ */
+export type DraftOptions = { autosave?: boolean }
+
 export type AnswersDraft = {
   answers: Answers
   setAnswer: (fieldId: string, value: AnswerValue) => void
@@ -29,7 +36,9 @@ export type AnswersDraft = {
 export function useAnswersDraft(
   proposalId: Id<'proposals'>,
   initial: Answers,
+  options: DraftOptions = {},
 ): AnswersDraft {
+  const autosaveEnabled = options.autosave ?? true
   const saveAnswers = useMutation(api.cfp.saveAnswers)
   const [answers, setAnswers] = useState<Answers>(initial)
   const [uploadedNames, setUploadedNames] = useState<UploadedNames>({})
@@ -49,9 +58,9 @@ export function useAnswersDraft(
       const next = { ...current.current, [fieldId]: value }
       current.current = next
       setAnswers(next)
-      autosave.schedule(next)
+      if (autosaveEnabled) autosave.schedule(next)
     },
-    [autosave],
+    [autosave, autosaveEnabled],
   )
 
   const noteUpload = useCallback((fieldId: string, filename: string) => {
@@ -78,7 +87,9 @@ export type SpeakersDraft = {
 export function useSpeakersDraft(
   proposalId: Id<'proposals'>,
   initial: Array<Doc<'proposalSpeakers'>>,
+  options: DraftOptions = {},
 ): SpeakersDraft {
+  const autosaveEnabled = options.autosave ?? true
   const setSpeakersMutation = useMutation(api.cfp.setSpeakers)
   const [speakers, setState] = useState<Array<SpeakerDraft>>(() =>
     speakersFromDocs(initial),
@@ -102,9 +113,9 @@ export function useSpeakersDraft(
       current.current = next
       setState(next)
       // A nameless card is rejected by the backend, so it is never sent.
-      if (speakersComplete(next)) autosave.schedule(next)
+      if (autosaveEnabled && speakersComplete(next)) autosave.schedule(next)
     },
-    [autosave],
+    [autosave, autosaveEnabled],
   )
 
   const saveNow = useCallback(async () => {

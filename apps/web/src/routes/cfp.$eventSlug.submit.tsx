@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { Show, SignInButton, SignUpButton, useUser } from '@clerk/tanstack-react-start'
 import { useMutation, useQuery } from 'convex/react'
@@ -137,11 +137,22 @@ function Wizard({ eventSlug, cfp }: { eventSlug: string; cfp: PublicCfp }) {
   const [success, setSuccess] = useState<{ message: string | null } | null>(null)
   const [flagged, setFlagged] = useState<ReadonlySet<string>>(() => new Set())
 
+  // A stored id is only ever trusted after it has been matched against the
+  // signed-in user's proposals for THIS event.
+  const validated = useRef(false)
+
   // sessionStorage is read after mount so the server and client render the
-  // same first frame.
+  // same first frame. Re-running on eventSlug also drops an id adopted for a
+  // different event — the wizard stays mounted across /cfp/<a> → /cfp/<b>.
   useEffect(() => {
     const stored = readStoredProposal(eventSlug)
-    if (stored !== null) setProposalId(stored as Id<'proposals'>)
+    validated.current = false
+    setProposalId(stored === null ? null : (stored as Id<'proposals'>))
+    setStep((current) =>
+      stored === null && current !== 'welcome' && current !== 'account'
+        ? 'welcome'
+        : current,
+    )
   }, [eventSlug])
 
   const mine = useQuery(api.cfp.myProposals, provisioned ? {} : 'skip')
@@ -150,12 +161,19 @@ function Wizard({ eventSlug, cfp }: { eventSlug: string; cfp: PublicCfp }) {
       (row) => row.eventSlug === eventSlug && row.proposal.status === 'draft',
     ) ?? null
 
-  // A stored id can point at a draft that was withdrawn from another tab.
-  const validated = useRef(false)
+  const forgetProposal = useCallback(() => {
+    validated.current = false
+    setProposalId(null)
+    clearStoredProposal(eventSlug)
+  }, [eventSlug])
+
+  // A stored id can point at a draft that was withdrawn from another tab, or
+  // at a proposal that belongs to another event entirely.
   useEffect(() => {
     if (mine === undefined || proposalId === null || validated.current) return
     validated.current = true
-    if (!mine.some((row) => row.proposal._id === proposalId)) {
+    const match = mine.find((row) => row.proposal._id === proposalId)
+    if (match === undefined || match.eventSlug !== eventSlug) {
       setProposalId(null)
       clearStoredProposal(eventSlug)
     }
@@ -166,16 +184,13 @@ function Wizard({ eventSlug, cfp }: { eventSlug: string; cfp: PublicCfp }) {
   const starting = useRef(false)
 
   const adoptProposal = (id: Id<'proposals'>) => {
+    validated.current = true
     setProposalId(id)
     writeStoredProposal(eventSlug, id)
     setStep('submission')
   }
 
-  const beginProposal = () => {
-    if (proposalId !== null) {
-      setStep('submission')
-      return
-    }
+  const createProposal = () => {
     if (starting.current) return
     starting.current = true
     void start
@@ -186,6 +201,22 @@ function Wizard({ eventSlug, cfp }: { eventSlug: string; cfp: PublicCfp }) {
       .finally(() => {
         starting.current = false
       })
+  }
+
+  const beginProposal = () => {
+    if (proposalId !== null) {
+      setStep('submission')
+      return
+    }
+    createProposal()
+  }
+
+  // "Start another proposal" has to mean a new one — the resumed id and its
+  // stored copy both go before the mutation runs.
+  const startAnotherProposal = () => {
+    if (starting.current) return
+    forgetProposal()
+    createProposal()
   }
 
   if (success !== null) {
@@ -245,6 +276,7 @@ function Wizard({ eventSlug, cfp }: { eventSlug: string; cfp: PublicCfp }) {
             if (existingDraft !== null) adoptProposal(existingDraft.proposal._id)
           }}
           onContinue={beginProposal}
+          onStartAnother={startAnotherProposal}
           onBack={() => {
             setStep('welcome')
           }}
@@ -267,6 +299,7 @@ function Wizard({ eventSlug, cfp }: { eventSlug: string; cfp: PublicCfp }) {
             clearStoredProposal(eventSlug)
             setSuccess({ message })
           }}
+          onWrongEvent={forgetProposal}
         />
       ) : null}
     </PageBody>
@@ -441,7 +474,7 @@ function WelcomeStep({
           edit or withdraw the proposal later.
         </li>
         <li>
-          You can list up to 10 speakers. One of them is the primary contact.
+          You can list up to 10 speakers. Proposal email goes to your account.
         </li>
       </ul>
     </Card>
@@ -459,6 +492,7 @@ function AccountStep({
   hasDraft,
   onResume,
   onContinue,
+  onStartAnother,
   onBack,
 }: {
   isLoading: boolean
@@ -471,6 +505,7 @@ function AccountStep({
   hasDraft: boolean
   onResume: () => void
   onContinue: () => void
+  onStartAnother: () => void
   onBack: () => void
 }) {
   const { user } = useUser()
@@ -590,7 +625,7 @@ function AccountStep({
                     <Button variant="primary" onClick={onResume}>
                       Resume draft
                     </Button>
-                    <Button onClick={onContinue} disabled={startPending}>
+                    <Button onClick={onStartAnother} disabled={startPending}>
                       Start another proposal
                     </Button>
                   </>
@@ -613,7 +648,10 @@ function AccountStep({
 
 // ── Proposal-backed steps ────────────────────────────────────────────────
 
-function ProposalSteps(props: {
+function ProposalSteps({
+  onWrongEvent,
+  ...props
+}: {
   proposalId: Id<'proposals'>
   eventSlug: string
   zone: string
@@ -623,12 +661,21 @@ function ProposalSteps(props: {
   setFlagged: (next: ReadonlySet<string>) => void
   windowState: WindowState
   onSubmitted: (message: string | null) => void
+  onWrongEvent: () => void
 }) {
   const data = useQuery(api.cfp.getMyProposal, {
     proposalId: props.proposalId,
   })
 
-  if (data === undefined) {
+  // The authoritative check on a resumed id: the proposal itself names its
+  // event. If it is not this one, the wizard starts fresh instead of writing
+  // this event's answers into another event's proposal.
+  const wrongEvent = data !== undefined && data.event.slug !== props.eventSlug
+  useEffect(() => {
+    if (wrongEvent) onWrongEvent()
+  }, [wrongEvent, onWrongEvent])
+
+  if (data === undefined || wrongEvent) {
     return (
       <Card>
         <p style={{ color: 'var(--text-tertiary)' }}>Loading your draft…</p>
@@ -685,8 +732,10 @@ function ProposalStepsInner({
         }
 
   const goto = (next: StepId) => {
-    void answersDraft.autosave.flush()
-    void speakersDraft.autosave.flush()
+    // Leaving a step writes what is pending; a failure stays on the step's
+    // indicator rather than blocking the move.
+    void answersDraft.autosave.flush().catch(() => {})
+    void speakersDraft.autosave.flush().catch(() => {})
     if (next === 'review') {
       setFlagged(new Set(missing.map((m) => m.field.id)))
     }
@@ -751,7 +800,8 @@ function ProposalStepsInner({
               <Button
                 iconLeft="download"
                 onClick={() => {
-                  void answersDraft.saveNow()
+                  // The indicator already carries the outcome.
+                  void answersDraft.saveNow().catch(() => {})
                 }}
                 disabled={!editable}
               >
@@ -786,7 +836,7 @@ function ProposalStepsInner({
       >
         <PageHeader
           title="Who is speaking?"
-          description="At least one speaker is required. The primary contact receives everything about this proposal."
+          description="At least one speaker is required. Everything about this proposal goes to your account email."
         />
         {speakersDraft.autosave.error !== null ? (
           <Callout tone="blocked" title="Your last change was not saved">

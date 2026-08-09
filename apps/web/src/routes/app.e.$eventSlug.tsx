@@ -22,20 +22,38 @@ const TAB_PATHS = {
   overview: '/app/e/$eventSlug',
   cfp: '/app/e/$eventSlug/cfp',
   proposals: '/app/e/$eventSlug/proposals',
+  reviews: '/app/e/$eventSlug/reviews',
+  sessions: '/app/e/$eventSlug/sessions',
   settings: '/app/e/$eventSlug/settings',
   team: '/app/e/$eventSlug/team',
 } as const
 
 type TabId = keyof typeof TAB_PATHS
 
-// Later milestones append to this list — Reviews, Agenda, Speakers — without
-// touching the shell.
-const NAV_GROUPS = [
+/** `requires` hides an entry from anyone without that role on this event. */
+type NavItem = {
+  id: TabId
+  label: string
+  icon: string
+  requires?: 'organizer'
+}
+
+// Later milestones append to this list — Agenda, Speakers — without touching
+// the shell.
+const NAV_GROUPS: Array<{ items: Array<NavItem> }> = [
   {
     items: [
       { id: 'overview', label: 'Overview', icon: 'layout-grid' },
       { id: 'cfp', label: 'Call for speakers', icon: 'mic-vocal' },
       { id: 'proposals', label: 'Proposals', icon: 'inbox' },
+      // Reviewers are assigned proposals to score, so Reviews is theirs too.
+      { id: 'reviews', label: 'Reviews', icon: 'star' },
+      {
+        id: 'sessions',
+        label: 'Sessions',
+        icon: 'presentation',
+        requires: 'organizer',
+      },
       { id: 'settings', label: 'Settings', icon: 'settings' },
       { id: 'team', label: 'Team', icon: 'users' },
     ],
@@ -53,6 +71,15 @@ function EventLayout() {
     (Object.keys(TAB_PATHS) as Array<TabId>).find(
       (id) => TAB_PATHS[id].replace('$eventSlug', eventSlug) === current,
     ) ?? 'overview'
+
+  // Role-gated entries stay hidden until the role is known, so a reviewer
+  // never sees an organizer tab flash on load.
+  const groups = NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter(
+      (item) => item.requires === undefined || data?.role === item.requires,
+    ),
+  }))
 
   const onSelect = (id: string) => {
     const to = id in TAB_PATHS ? TAB_PATHS[id as TabId] : TAB_PATHS.overview
@@ -83,7 +110,7 @@ function EventLayout() {
               {data === undefined ? 'Loading…' : data.event.name}
             </span>
           }
-          groups={NAV_GROUPS}
+          groups={groups}
           activeId={activeId}
           onSelect={onSelect}
         />
