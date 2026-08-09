@@ -2,6 +2,8 @@ import { v } from "convex/values";
 import { eventMutation, eventQuery } from "./lib/functions";
 import { vv } from "./lib/validators";
 import * as Sessions from "./model/sessions";
+import * as Portal from "./model/portal";
+import { vPortalContext } from "./portal";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public surface for the decision pipeline and sessions (M2). Thin wrappers;
@@ -117,5 +119,75 @@ export const list = eventQuery({
   ),
   handler: async (ctx) => {
     return await Sessions.listSessions(ctx, ctx.caller);
+  },
+});
+
+// ── Organizer side of the speaker portal (M3) ────────────────────────────
+// The portal's own surface is convex/portal.ts (signed-in speakers and
+// managers). These are the organizer's controls over it, so they ride the
+// event-scoped wrappers.
+
+/** Record a participation decision for a speaker. Organizers may also reset
+ * one to Awaiting Response; speakers and managers cannot. */
+export const setParticipationState = eventMutation({
+  args: {
+    participantId: v.id("sessionParticipants"),
+    to: v.union(
+      v.literal("awaiting"),
+      v.literal("confirmed"),
+      v.literal("declined"),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Portal.organizerSetParticipationState(
+      ctx,
+      ctx.caller,
+      args.participantId,
+      args.to,
+    );
+    return null;
+  },
+});
+
+/** Invite a speaker to claim their own portal access. */
+export const invitePortal = eventMutation({
+  args: { eventContactId: v.id("eventContacts") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Portal.invitePortal(ctx, ctx.caller, args.eventContactId);
+    return null;
+  },
+});
+
+export const startManagerHandoff = eventMutation({
+  args: { sessionId: v.id("sessions"), email: v.string() },
+  returns: vv.id("managerHandoffs"),
+  handler: async (ctx, args) => {
+    return await Portal.startManagerHandoff(ctx, ctx.caller, args);
+  },
+});
+
+export const revokeHandoff = eventMutation({
+  args: { handoffId: v.id("managerHandoffs") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Portal.revokeHandoff(ctx, ctx.caller, args.handoffId);
+    return null;
+  },
+});
+
+/** Read-only "Preview speaker portal" (M3). Organizer-only; the banner name
+ * comes back with the data so the preview can never be mistaken for the real
+ * thing. */
+export const previewPortalContext = eventQuery({
+  args: { eventContactId: v.id("eventContacts") },
+  returns: vPortalContext.extend({ contactName: v.string() }),
+  handler: async (ctx, args) => {
+    return await Portal.previewPortalContext(
+      ctx,
+      ctx.caller,
+      args.eventContactId,
+    );
   },
 });

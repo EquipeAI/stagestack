@@ -712,6 +712,66 @@ export async function importSession(
   return sessionId;
 }
 
+// ── Participation state (M3) ─────────────────────────────────────────────
+
+/**
+ * Record a participation decision. The single write path for Awaiting
+ * Response → Confirmed/Declined, shared by the speaker, their primary manager
+ * and organizers (MILESTONES M3), so the actor and timestamp are always
+ * captured the same way.
+ *
+ * Authorization happens in the CALLER (portal ownership check, or
+ * `requireOrganizer`): this function only knows the transition rules.
+ *
+ * Withdrawn is terminal here — it is reached only through the portal's
+ * withdrawal capability, which also alerts organizers. Re-setting the current
+ * state is a no-op rather than an error so a double-click is harmless.
+ */
+export async function setParticipationState(
+  ctx: MutationCtx,
+  args: {
+    event: Doc<"events">;
+    participant: Doc<"sessionParticipants">;
+    actorUserId: Id<"users">;
+    to: "awaiting" | "confirmed" | "declined";
+  },
+): Promise<void> {
+  assertEventActive(args.event);
+  const from = args.participant.state;
+  if (from === "withdrawn") {
+    throw new ConvexError({
+      code: "invalid_state",
+      message: "This speaker withdrew; their participation can't be changed.",
+    });
+  }
+  if (from === args.to) return;
+
+  const contact = await ctx.db.get(
+    "eventContacts",
+    args.participant.eventContactId,
+  );
+  await ctx.db.patch("sessionParticipants", args.participant._id, {
+    state: args.to,
+    stateSetBy: args.actorUserId,
+    stateSetAt: Date.now(),
+  });
+  await logAudit(ctx, {
+    orgId: args.event.orgId,
+    eventId: args.event._id,
+    actorUserId: args.actorUserId,
+    action: "participation.setState",
+    targetType: "sessionParticipant",
+    targetId: args.participant._id,
+    meta: {
+      from,
+      to: args.to,
+      // True when a manager or organizer answered for the speaker — M3 wants
+      // that visible, not hidden behind an anonymous state change.
+      onBehalf: contact?.userId !== args.actorUserId,
+    },
+  });
+}
+
 // ── Organizer session list ───────────────────────────────────────────────
 
 export type SessionParticipantRow = {
