@@ -13,6 +13,8 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as AppIndexRouteImport } from './routes/app.index'
 import { Route as CfpEventSlugRouteImport } from './routes/cfp.$eventSlug'
+import { Route as ESlugRouteImport } from './routes/e.$slug'
+import { Route as EmbedSlugRouteImport } from './routes/embed.$slug'
 import { Route as InviteTokenRouteImport } from './routes/invite.$token'
 import { Route as PortalEventSlugRouteImport } from './routes/portal.$eventSlug'
 import { Route as AppEEventSlugRouteImport } from './routes/app.e.$eventSlug'
@@ -26,6 +28,7 @@ import { Route as AppEEventSlugCommsRouteImport } from './routes/app.e.$eventSlu
 import { Route as AppEEventSlugDashboardRouteImport } from './routes/app.e.$eventSlug.dashboard'
 import { Route as AppEEventSlugImportRouteImport } from './routes/app.e.$eventSlug.import'
 import { Route as AppEEventSlugProposalsRouteImport } from './routes/app.e.$eventSlug.proposals'
+import { Route as AppEEventSlugPublishRouteImport } from './routes/app.e.$eventSlug.publish'
 import { Route as AppEEventSlugReviewsRouteImport } from './routes/app.e.$eventSlug.reviews'
 import { Route as AppEEventSlugSessionsRouteImport } from './routes/app.e.$eventSlug.sessions'
 import { Route as AppEEventSlugSettingsRouteImport } from './routes/app.e.$eventSlug.settings'
@@ -51,6 +54,16 @@ const AppIndexRoute = AppIndexRouteImport.update({
 const CfpEventSlugRoute = CfpEventSlugRouteImport.update({
   id: '/cfp/$eventSlug',
   path: '/cfp/$eventSlug',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ESlugRoute = ESlugRouteImport.update({
+  id: '/e/$slug',
+  path: '/e/$slug',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EmbedSlugRoute = EmbedSlugRouteImport.update({
+  id: '/embed/$slug',
+  path: '/embed/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
 const InviteTokenRoute = InviteTokenRouteImport.update({
@@ -118,6 +131,11 @@ const AppEEventSlugProposalsRoute = AppEEventSlugProposalsRouteImport.update({
   path: '/proposals',
   getParentRoute: () => AppEEventSlugRoute,
 } as any)
+const AppEEventSlugPublishRoute = AppEEventSlugPublishRouteImport.update({
+  id: '/publish',
+  path: '/publish',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
 const AppEEventSlugReviewsRoute = AppEEventSlugReviewsRouteImport.update({
   id: '/reviews',
   path: '/reviews',
@@ -154,6 +172,8 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/app': typeof AppRouteWithChildren
   '/cfp/$eventSlug': typeof CfpEventSlugRouteWithChildren
+  '/e/$slug': typeof ESlugRoute
+  '/embed/$slug': typeof EmbedSlugRoute
   '/invite/$token': typeof InviteTokenRoute
   '/portal/$eventSlug': typeof PortalEventSlugRoute
   '/app/': typeof AppIndexRoute
@@ -167,6 +187,7 @@ export interface FileRoutesByFullPath {
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
+  '/app/e/$eventSlug/publish': typeof AppEEventSlugPublishRoute
   '/app/e/$eventSlug/reviews': typeof AppEEventSlugReviewsRoute
   '/app/e/$eventSlug/sessions': typeof AppEEventSlugSessionsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
@@ -177,6 +198,8 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/e/$slug': typeof ESlugRoute
+  '/embed/$slug': typeof EmbedSlugRoute
   '/invite/$token': typeof InviteTokenRoute
   '/portal/$eventSlug': typeof PortalEventSlugRoute
   '/app': typeof AppIndexRoute
@@ -189,6 +212,7 @@ export interface FileRoutesByTo {
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
+  '/app/e/$eventSlug/publish': typeof AppEEventSlugPublishRoute
   '/app/e/$eventSlug/reviews': typeof AppEEventSlugReviewsRoute
   '/app/e/$eventSlug/sessions': typeof AppEEventSlugSessionsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
@@ -202,6 +226,8 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/app': typeof AppRouteWithChildren
   '/cfp/$eventSlug': typeof CfpEventSlugRouteWithChildren
+  '/e/$slug': typeof ESlugRoute
+  '/embed/$slug': typeof EmbedSlugRoute
   '/invite/$token': typeof InviteTokenRoute
   '/portal/$eventSlug': typeof PortalEventSlugRoute
   '/app/': typeof AppIndexRoute
@@ -215,6 +241,7 @@ export interface FileRoutesById {
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
+  '/app/e/$eventSlug/publish': typeof AppEEventSlugPublishRoute
   '/app/e/$eventSlug/reviews': typeof AppEEventSlugReviewsRoute
   '/app/e/$eventSlug/sessions': typeof AppEEventSlugSessionsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
@@ -229,6 +256,8 @@ export interface FileRouteTypes {
     | '/'
     | '/app'
     | '/cfp/$eventSlug'
+    | '/e/$slug'
+    | '/embed/$slug'
     | '/invite/$token'
     | '/portal/$eventSlug'
     | '/app/'
@@ -242,6 +271,7 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug/dashboard'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
+    | '/app/e/$eventSlug/publish'
     | '/app/e/$eventSlug/reviews'
     | '/app/e/$eventSlug/sessions'
     | '/app/e/$eventSlug/settings'
@@ -252,6 +282,8 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/e/$slug'
+    | '/embed/$slug'
     | '/invite/$token'
     | '/portal/$eventSlug'
     | '/app'
@@ -264,6 +296,7 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug/dashboard'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
+    | '/app/e/$eventSlug/publish'
     | '/app/e/$eventSlug/reviews'
     | '/app/e/$eventSlug/sessions'
     | '/app/e/$eventSlug/settings'
@@ -276,6 +309,8 @@ export interface FileRouteTypes {
     | '/'
     | '/app'
     | '/cfp/$eventSlug'
+    | '/e/$slug'
+    | '/embed/$slug'
     | '/invite/$token'
     | '/portal/$eventSlug'
     | '/app/'
@@ -289,6 +324,7 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug/dashboard'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
+    | '/app/e/$eventSlug/publish'
     | '/app/e/$eventSlug/reviews'
     | '/app/e/$eventSlug/sessions'
     | '/app/e/$eventSlug/settings'
@@ -302,6 +338,8 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AppRoute: typeof AppRouteWithChildren
   CfpEventSlugRoute: typeof CfpEventSlugRouteWithChildren
+  ESlugRoute: typeof ESlugRoute
+  EmbedSlugRoute: typeof EmbedSlugRoute
   InviteTokenRoute: typeof InviteTokenRoute
   PortalEventSlugRoute: typeof PortalEventSlugRoute
 }
@@ -334,6 +372,20 @@ declare module '@tanstack/react-router' {
       path: '/cfp/$eventSlug'
       fullPath: '/cfp/$eventSlug'
       preLoaderRoute: typeof CfpEventSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/e/$slug': {
+      id: '/e/$slug'
+      path: '/e/$slug'
+      fullPath: '/e/$slug'
+      preLoaderRoute: typeof ESlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/embed/$slug': {
+      id: '/embed/$slug'
+      path: '/embed/$slug'
+      fullPath: '/embed/$slug'
+      preLoaderRoute: typeof EmbedSlugRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/invite/$token': {
@@ -427,6 +479,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEEventSlugProposalsRouteImport
       parentRoute: typeof AppEEventSlugRoute
     }
+    '/app/e/$eventSlug/publish': {
+      id: '/app/e/$eventSlug/publish'
+      path: '/publish'
+      fullPath: '/app/e/$eventSlug/publish'
+      preLoaderRoute: typeof AppEEventSlugPublishRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
     '/app/e/$eventSlug/reviews': {
       id: '/app/e/$eventSlug/reviews'
       path: '/reviews'
@@ -479,6 +538,7 @@ interface AppEEventSlugRouteChildren {
   AppEEventSlugDashboardRoute: typeof AppEEventSlugDashboardRoute
   AppEEventSlugImportRoute: typeof AppEEventSlugImportRoute
   AppEEventSlugProposalsRoute: typeof AppEEventSlugProposalsRoute
+  AppEEventSlugPublishRoute: typeof AppEEventSlugPublishRoute
   AppEEventSlugReviewsRoute: typeof AppEEventSlugReviewsRoute
   AppEEventSlugSessionsRoute: typeof AppEEventSlugSessionsRoute
   AppEEventSlugSettingsRoute: typeof AppEEventSlugSettingsRoute
@@ -494,6 +554,7 @@ const AppEEventSlugRouteChildren: AppEEventSlugRouteChildren = {
   AppEEventSlugDashboardRoute: AppEEventSlugDashboardRoute,
   AppEEventSlugImportRoute: AppEEventSlugImportRoute,
   AppEEventSlugProposalsRoute: AppEEventSlugProposalsRoute,
+  AppEEventSlugPublishRoute: AppEEventSlugPublishRoute,
   AppEEventSlugReviewsRoute: AppEEventSlugReviewsRoute,
   AppEEventSlugSessionsRoute: AppEEventSlugSessionsRoute,
   AppEEventSlugSettingsRoute: AppEEventSlugSettingsRoute,
@@ -540,6 +601,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AppRoute: AppRouteWithChildren,
   CfpEventSlugRoute: CfpEventSlugRouteWithChildren,
+  ESlugRoute: ESlugRoute,
+  EmbedSlugRoute: EmbedSlugRoute,
   InviteTokenRoute: InviteTokenRoute,
   PortalEventSlugRoute: PortalEventSlugRoute,
 }
