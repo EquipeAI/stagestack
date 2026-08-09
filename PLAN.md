@@ -16,6 +16,9 @@ Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md
 - [x] Vercel production deploy working (nitro plugin → .vercel/output; deployed via CLI)
 - [ ] Resend: DNS records added, **waiting on propagation** → then component install, real send + webhook, .ics attachment test
 - [ ] Walking skeleton part 2: worker job claim on exe.dev VM, Flue hello-agent (OpenRouter/GPT-5.6-Luna), public unauthenticated mutation + rate limiter
+  - [x] exe.dev VM **stagestackdev** created (ssh stagestackdev.exe.xyz, use `-i ~/.ssh/pedro_exe_dev`); Node 24.19 installed; env file at `/home/exedev/stagestack/worker.env` (CONVEX_URL, WORKER_SECRET, OPENROUTER_API_KEY, chmod 600) — systemd unit should use `EnvironmentFile=` pointing there
+  - [x] WORKER_SECRET generated → root `.env.local` + Convex dev deployment
+  - [ ] Repo onto VM: set up exe.dev GitHub integration (tokenless private-repo access) or deploy key; then systemd unit `stagestack-worker.service` running `npm run start -w apps/worker`
 - [ ] Signed-in auth test (Alvaro) → then M0: orgs, events, library (see MILESTONES.md)
 - [x] Domain: **stagestack.dev** (via Vercel)
 
