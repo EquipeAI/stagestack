@@ -92,3 +92,30 @@ M1–M7 schema work; update it when a milestone lands and reality diverges.
   speakers: [...], agenda: [...] }` — the single shared program consumed by
   public page, API, embeds. Per-item unpublish rewrites the projection.
   If size becomes a concern, split per-session rows; start with one doc.
+
+## M7 — Public program (settled design)
+
+Live in schema: `publishedPrograms` (one row/event, holds the last published
+`program` blob + version), `publicationFlags` (per-item published booleans),
+`events.publicPageEnabled`.
+
+- **`program` blob shape** (built at publish time, already privacy-filtered so
+  the public read path does zero authorization): `{ event: {name, slug,
+  startsAt, endsAt, timezone, location?, description?, website?, logoUrl?},
+  lineup: [{ sessionId, title, description?, format?, trackName?, speakers:
+  [{ name, tagline?, bio?, headshotUrl?, links? }] }], agenda: [{ kind:
+  "session"|"break", title, startsAt, endsAt, roomName?, trackName?,
+  speakers?: [name] }] }`. Only **Confirmed** participants appear by
+  name/profile; unconfirmed → "speaker to be announced". Backstage/host links
+  never enter the blob.
+- **Two independent publish actions** (decision log #13, M6 rule): publish
+  *lineup* (accepted sessions + confirmed speaker profiles, no slots needed)
+  and publish *agenda* (only released+slotted sessions + agenda items).
+  `publicationFlags` gate per session/item; `publishProgram` recomputes the
+  whole blob from current flags + confirmed state and bumps version.
+- **Public read path** (`convex/http.ts` + a public `publicProgram` query):
+  serves `publishedPrograms.program` verbatim — never the working state, never
+  a per-request join over private tables. Unpublish = flip a flag + republish
+  (rewrites the blob); the API/page/embed all read the one blob so they can't
+  disagree. HTTP actions on `.convex.site` with `corsRouter` for the API +
+  the embed snippet; the TanStack public page SSRs from the same query.
