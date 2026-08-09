@@ -20,7 +20,7 @@ Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md
   - VM **stagestackdev** (ssh stagestackdev.exe.xyz, key `~/.ssh/pedro_exe_dev`), Node 24.19; env at `/home/exedev/stagestack/worker.env`; repo at `/home/exedev/stagestack/app` via **read-only deploy key** (chose over exe.dev GitHub integration — no OAuth dance, narrower grant); systemd `stagestack-worker.service` (Restart=always, enabled at boot)
   - Deploy updates: `scripts/deploy-worker.sh` (pull → npm ci → restart)
   - WORKER_SECRET in root `.env.local` + Convex dev deployment
-- [ ] Flue hello-agent in worker (OpenRouter/GPT-5.6-Luna — key already on VM)
+- [x] Flue hello-agent in worker, **end-to-end verified on VM**: `@flue/runtime@2.0.3` pinned, `hello-agent` job type runs one guaranteed `get_server_time` tool call via `openrouter/openai/gpt-5.6-luna`; job result carries tool-call evidence; ~2s round trip (commit a94e861)
 - [ ] Public unauthenticated mutation + rate limiter (CFP path)
 - [ ] Signed-in auth test (Alvaro) → then M0: orgs, events, library (see MILESTONES.md)
 - [x] Domain: **stagestack.dev** (via Vercel)

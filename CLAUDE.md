@@ -34,6 +34,15 @@ Several of our dependencies are **newer than any model's training data or move f
 - Convex `auth.config.ts` runs in an isolate without Node types — it declares its own `process` type.
 - Vite loads env from `apps/web/.env.local` (mirrored from root `.env.local`); root file is the source of truth.
 - Dev server: killing the root `npm run dev` can orphan the Vite child on port 3000 — `lsof -ti :3000 | xargs kill` before restarting.
+- Resend component (`@convex-dev/resend`): batch `sendEmail` has NO attachment support — .ics invites go through `sendEmailManually` + raw `fetch` to Resend `/emails` (base64 attachment, `Idempotency-Key: <emailId>`); status/webhook tracking still works. `convex/emails.ts` needs the same `declare const process` line as `auth.config.ts`.
+
+## Flue 2.0.3 facts (from hello-agent verification; docs-first still applies)
+
+- **Read the shipped docs**: `node_modules/@flue/runtime/docs/` (guide + reference, version-exact) — better than the website.
+- No build step under tsx: `'use agent'` is only a build-scan marker. Register agents explicitly with `start({ agents: [...] })` from `@flue/runtime/node`. `start()` is once-per-process → lazy singleton in the worker (`apps/worker/src/hello-agent.ts`).
+- Tool-call evidence comes from `agent.read(receipt, { onEvent })` stream chunks (`tool-input` / `tool-output`); `AgentReply` only carries `text`/`data`/`metadata`.
+- `defineTool` `run` returns `{ output }` envelope (bare string is shorthand); input schema is optional Valibot — omit for zero-arg tools.
+- Model slug format `provider-id/model-id` (model-id may contain slashes): `openrouter/openai/gpt-5.6-luna`. Runtime resolves `OPENROUTER_API_KEY` from env itself; agent code never touches keys. Default `thinkingLevel` is `medium`.
 
 ## Deploy targets
 
