@@ -2,14 +2,21 @@
 
 Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) · [docs/CHALLENGE.md](docs/CHALLENGE.md) · milestones: [docs/MILESTONES.md](docs/MILESTONES.md)
 
-## Now: M1 — CFP UI (form builder + public wizard)
+## Now: M2 — Review & decisions UI + Import agent
 
-M1 backend is done and tested (see session log). Remaining: organizer form-builder UI, public CFP page + submission wizard, submitter's proposal pages in My StageStack, browser + prod verification, codex review of M1 as a whole.
+M2 backend is done and tested (95 tests; reviews, decision queues/release/correction, sessions, direct invitations). Remaining: abstracts admin table (search/filter/sort/saved views/export), review screens (assignments queue + Submit & Next), decision release UI, sessions list, direct-invite dialog, Import-with-AI agent (worker/Flue), browser + prod verification, codex triage (running).
 
-Folded into M1 UI work (from codex review of M0):
-- Capability flags from `orgs.get` gate org-page controls (New event, Contacts, Owner invite option) instead of showing controls the API will reject.
-- AuthGate clears its provisioning error on retry/auth change.
-- Window-open state computed client-side from timestamps (queries shouldn't read the clock).
+Carry-overs into M2 UI: org-page capability gating (hide New event/Contacts for event-scoped members; Owner invite option only for owners) — small, from M0 codex review.
+
+## Done: M1 — CFP forms & public submission — Aug 9
+
+- [x] Form builder: sections/fields, locked system fields, conditional show/hide editor, options/kinds, live preview, versioned publish (working/published boundary), form settings (per-user limit, success message)
+- [x] Public wizard: Welcome → Account (Clerk) → Submission → Participants → Review; autosave drafts; conditional logic live; file uploads; validation with jump-to-blockers; mobile-friendly
+- [x] Proposal manage page (edit/resubmit until close, withdraw); reopen-by-organizer; My proposals on home
+- [x] Fixed transactional emails on submit (submitter confirmation + admin notification), recorded in `messages` with webhook-updated delivery status — VERIFIED delivered end-to-end
+- [x] Organizer proposals list + detail
+- [x] Browser-verified locally end to end (incl. conditional field appearing on Workshop selection); tests 95 green
+- [x] Prod deploy via git push (auto-deploy fixed in M0 session)
 
 ## Done: M0 — Foundation (orgs, events, library, team) — Aug 8
 
