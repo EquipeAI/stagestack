@@ -103,11 +103,12 @@ async function resolveOrgCaller(
       eventMemberships: [],
     };
   }
-  const eventMemberships = await ctx.db
+  const inOrg = await ctx.db
     .query("eventMembers")
-    .withIndex("by_userId", (q) => q.eq("userId", user._id))
+    .withIndex("by_userId_and_orgId", (q) =>
+      q.eq("userId", user._id).eq("orgId", org._id),
+    )
     .take(200);
-  const inOrg = eventMemberships.filter((m) => m.orgId === org._id);
   if (inOrg.length === 0) {
     forbidden("You are not a member of this organization.");
   }

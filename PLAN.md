@@ -2,7 +2,27 @@
 
 Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) · [docs/CHALLENGE.md](docs/CHALLENGE.md) · milestones: [docs/MILESTONES.md](docs/MILESTONES.md)
 
-## Now: Phase 0 — Docs & architecture
+## Now: M1 — CFP UI (form builder + public wizard)
+
+M1 backend is done and tested (see session log). Remaining: organizer form-builder UI, public CFP page + submission wizard, submitter's proposal pages in My StageStack, browser + prod verification, codex review of M1 as a whole.
+
+Folded into M1 UI work (from codex review of M0):
+- Capability flags from `orgs.get` gate org-page controls (New event, Contacts, Owner invite option) instead of showing controls the API will reject.
+- AuthGate clears its provisioning error on retry/auth change.
+- Window-open state computed client-side from timestamps (queries shouldn't read the clock).
+
+## Done: M0 — Foundation (orgs, events, library, team) — Aug 8
+
+- [x] Capability layer: `convex/lib/functions.ts` wrappers (authed/org/event × query/mutation) resolving { user, org, event, role } once; domain logic in `convex/model/*`; UI and future agents share the same authorized functions
+- [x] Job-type registry (`convex/shared/jobTypes.ts`) typed end-to-end into the worker handler map; worker e2e re-verified after refactor (ping claimed/done on VM)
+- [x] Schema: users/organizations/members/eventMembers/invitations/events/contacts/tracks/tags/rooms/customFields/auditLog (+ M1 tables below)
+- [x] Web M0: My StageStack home, self-service org onboarding, org page (events/contacts/team), event shell (overview/settings incl. library CRUD/team), invite accept page, landing
+- [x] Tests: 72 green (convex-test incl. negative authz: cross-org scope, reviewer write rejection, unauthenticated); components (resend, rate-limiter) registered for real
+- [x] Browser-verified locally (org create → event create → settings → library add/remove → team) AND signed-in on https://stagestack.dev (My StageStack renders live data)
+- [x] Simplify pass applied (validation/organizer-check single-sourced, read-amplification fixes, dead skeleton path removed)
+- [x] codex review triaged (see log)
+
+## Phase 0 — Docs & architecture
 
 - [x] Business context doc
 - [x] Challenge doc (requirements, decision log, freeze tracking)
@@ -29,6 +49,18 @@ Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md
 
 - Aug 8 (Sat night): docs frozen pending Sun video; stack researched & decided; scaffold + walking skeleton pt 1 + prod deploy done. Lessons captured in CLAUDE.md ("fresh-docs-first", landmines). Next session: design system integration + walking skeleton pt 2 + M0.
 - Aug 8 (later): scaffold architecture review → fixed `enqueueTest` (public→internal; was an unauthenticated OpenRouter-credit spend vector), dev-gated prod stack traces, loud-fail on missing `VITE_CONVEX_URL`, DS adherence allowlists extended for event handlers (was blocking M0 UI work), `cfp.startDraft` input validation + limiter order, shared `convex/env.d.ts`. Deferred items above.
+- Aug 8-9 (overnight, autonomous): **M0 complete + M1 backend complete.**
+  - Test suite caught a real authz hole (event-A organizer could revoke event-B invitations) — fixed; also made invitation tokens organizer-only in team lists (a reviewer could have copied an organizer-invite link and escalated).
+  - M1 backend: cfpForms (working/published FormDef, conditional visibility), proposals + speakers + submit/resubmit/withdraw/reopen, per-user limits, submission window, comms log (`messages` table fed by Resend webhook), starter form on event creation. 72 tests.
+  - Simplify pass (4-agent review, triaged): single-sourced validation + organizer checks, Promise.all on hot listings, compound indexes for submission-limit/speaker-count/org-membership queries, removed dead `cfpDrafts` skeleton path, web cleanups (shared ROLE_LABEL, memoized tz options, one contact subscription).
+  - **Vercel git auto-deploys had never worked** (only CLI deploys had): the build installs only the apps/web workspace subtree, so repo-root deps used by `convex/` types were missing; plus a tsc bin ambiguity (TS6 alias vs TS7 native — TS6's inference collapses on convex-helpers generics). Fixed: convex packages declared as apps/web devDeps + typecheck pinned to `@typescript/native` via script. Deploys green from git now.
+  - codex review triaged: fixed org-membership scan false-deny risk (new compound index); logged for M2: archived-event mutation gating (when automations exist), acceptQueue/declineQueue must stay submitter-editable + invisible (M2 statuses), model-layer role re-checks before the agent adapter lands, typed `initiatedBy` on jobs. (Note: review output got tail-truncated — re-run reviews without piping through tail.)
+  - Signed-in prod verification done via Clerk backend-API sign-in token (ephemeral ticket; credentials never in transcript/logs).
+
+## Before submission (accumulating)
+
+- **Switch Vercel to the production Clerk instance** — prod currently runs dev-instance keys (orange "Development mode" watermark visible in the sign-in modal; dev instances also cap users).
+- Deploy worker after any worker-touching milestone (`scripts/deploy-worker.sh`).
 
 ## Next
 

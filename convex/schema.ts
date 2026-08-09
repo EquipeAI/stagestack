@@ -66,6 +66,9 @@ export default defineSchema({
   })
     .index("by_eventId_and_userId", ["eventId", "userId"])
     .index("by_userId", ["userId"])
+    // Org-scoped membership resolution without scanning all of a user's
+    // memberships (a >200-membership user must never be falsely denied).
+    .index("by_userId_and_orgId", ["userId", "orgId"])
     .index("by_eventId", ["eventId"]),
 
   invitations: defineTable({
