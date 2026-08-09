@@ -20,6 +20,7 @@ import { Route as AppOrgOrgSlugRouteImport } from './routes/app.org.$orgSlug'
 import { Route as CfpEventSlugIndexRouteImport } from './routes/cfp.$eventSlug.index'
 import { Route as CfpEventSlugSubmitRouteImport } from './routes/cfp.$eventSlug.submit'
 import { Route as AppEEventSlugIndexRouteImport } from './routes/app.e.$eventSlug.index'
+import { Route as AppEEventSlugAgendaRouteImport } from './routes/app.e.$eventSlug.agenda'
 import { Route as AppEEventSlugCfpRouteImport } from './routes/app.e.$eventSlug.cfp'
 import { Route as AppEEventSlugCommsRouteImport } from './routes/app.e.$eventSlug.comms'
 import { Route as AppEEventSlugDashboardRouteImport } from './routes/app.e.$eventSlug.dashboard'
@@ -85,6 +86,11 @@ const CfpEventSlugSubmitRoute = CfpEventSlugSubmitRouteImport.update({
 const AppEEventSlugIndexRoute = AppEEventSlugIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
+const AppEEventSlugAgendaRoute = AppEEventSlugAgendaRouteImport.update({
+  id: '/agenda',
+  path: '/agenda',
   getParentRoute: () => AppEEventSlugRoute,
 } as any)
 const AppEEventSlugCfpRoute = AppEEventSlugCfpRouteImport.update({
@@ -155,6 +161,7 @@ export interface FileRoutesByFullPath {
   '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
   '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
   '/cfp/$eventSlug/': typeof CfpEventSlugIndexRoute
+  '/app/e/$eventSlug/agenda': typeof AppEEventSlugAgendaRoute
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
   '/app/e/$eventSlug/comms': typeof AppEEventSlugCommsRoute
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
@@ -176,6 +183,7 @@ export interface FileRoutesByTo {
   '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
   '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
   '/cfp/$eventSlug': typeof CfpEventSlugIndexRoute
+  '/app/e/$eventSlug/agenda': typeof AppEEventSlugAgendaRoute
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
   '/app/e/$eventSlug/comms': typeof AppEEventSlugCommsRoute
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
@@ -201,6 +209,7 @@ export interface FileRoutesById {
   '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
   '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
   '/cfp/$eventSlug/': typeof CfpEventSlugIndexRoute
+  '/app/e/$eventSlug/agenda': typeof AppEEventSlugAgendaRoute
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
   '/app/e/$eventSlug/comms': typeof AppEEventSlugCommsRoute
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
@@ -227,6 +236,7 @@ export interface FileRouteTypes {
     | '/app/org/$orgSlug'
     | '/cfp/$eventSlug/submit'
     | '/cfp/$eventSlug/'
+    | '/app/e/$eventSlug/agenda'
     | '/app/e/$eventSlug/cfp'
     | '/app/e/$eventSlug/comms'
     | '/app/e/$eventSlug/dashboard'
@@ -248,6 +258,7 @@ export interface FileRouteTypes {
     | '/app/org/$orgSlug'
     | '/cfp/$eventSlug/submit'
     | '/cfp/$eventSlug'
+    | '/app/e/$eventSlug/agenda'
     | '/app/e/$eventSlug/cfp'
     | '/app/e/$eventSlug/comms'
     | '/app/e/$eventSlug/dashboard'
@@ -272,6 +283,7 @@ export interface FileRouteTypes {
     | '/app/org/$orgSlug'
     | '/cfp/$eventSlug/submit'
     | '/cfp/$eventSlug/'
+    | '/app/e/$eventSlug/agenda'
     | '/app/e/$eventSlug/cfp'
     | '/app/e/$eventSlug/comms'
     | '/app/e/$eventSlug/dashboard'
@@ -373,6 +385,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEEventSlugIndexRouteImport
       parentRoute: typeof AppEEventSlugRoute
     }
+    '/app/e/$eventSlug/agenda': {
+      id: '/app/e/$eventSlug/agenda'
+      path: '/agenda'
+      fullPath: '/app/e/$eventSlug/agenda'
+      preLoaderRoute: typeof AppEEventSlugAgendaRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
     '/app/e/$eventSlug/cfp': {
       id: '/app/e/$eventSlug/cfp'
       path: '/cfp'
@@ -454,6 +473,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppEEventSlugRouteChildren {
+  AppEEventSlugAgendaRoute: typeof AppEEventSlugAgendaRoute
   AppEEventSlugCfpRoute: typeof AppEEventSlugCfpRoute
   AppEEventSlugCommsRoute: typeof AppEEventSlugCommsRoute
   AppEEventSlugDashboardRoute: typeof AppEEventSlugDashboardRoute
@@ -468,6 +488,7 @@ interface AppEEventSlugRouteChildren {
 }
 
 const AppEEventSlugRouteChildren: AppEEventSlugRouteChildren = {
+  AppEEventSlugAgendaRoute: AppEEventSlugAgendaRoute,
   AppEEventSlugCfpRoute: AppEEventSlugCfpRoute,
   AppEEventSlugCommsRoute: AppEEventSlugCommsRoute,
   AppEEventSlugDashboardRoute: AppEEventSlugDashboardRoute,

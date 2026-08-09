@@ -26,6 +26,7 @@ const TAB_PATHS = {
   proposals: '/app/e/$eventSlug/proposals',
   reviews: '/app/e/$eventSlug/reviews',
   sessions: '/app/e/$eventSlug/sessions',
+  agenda: '/app/e/$eventSlug/agenda',
   settings: '/app/e/$eventSlug/settings',
   tasks: '/app/e/$eventSlug/tasks',
   team: '/app/e/$eventSlug/team',
@@ -62,6 +63,12 @@ const NAV_GROUPS: Array<{ items: Array<NavItem> }> = [
         id: 'sessions',
         label: 'Sessions',
         icon: 'presentation',
+        requires: 'organizer',
+      },
+      {
+        id: 'agenda',
+        label: 'Agenda',
+        icon: 'calendar-days',
         requires: 'organizer',
       },
       {

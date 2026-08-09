@@ -7,11 +7,18 @@ import type { SpeakingItem } from './model'
 import { Button, Callout, Card, DescriptionList, Dialog, StatusPill } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
+import { browserTimezone, formatDateRange } from '~/lib/datetime'
 import {
   ActionError,
   ButtonRow,
   PreviewLock,
 } from '~/components/portal/PortalChrome'
+
+const ACK_LABEL: Record<'awaitingAck' | 'acknowledged' | 'conflict', string> = {
+  awaitingAck: 'Awaiting Acknowledgement',
+  acknowledged: 'Acknowledged',
+  conflict: 'Conflict',
+}
 
 // One participation: what the organizers asked this speaker for, what state it
 // is in, and the two answers that resolve it. This card is the reason the
@@ -22,16 +29,33 @@ export function SpeakingCard({
   eventSlug,
   item,
   readOnly,
+  timezone,
 }: {
   eventSlug: string
   item: SpeakingItem
   readOnly: boolean
+  /** Event timezone — the slot is shown in it and, if different, viewer local. */
+  timezone: string
 }) {
   const confirm = useMutation(api.portal.confirmParticipation)
   const withdraw = useMutation(api.portal.withdrawParticipation)
+  const acknowledge = useMutation(api.portal.acknowledgeSlot)
   const { pending, error, run } = usePending()
   const [intent, setIntent] = useState<'confirmed' | 'declined' | null>(null)
   const [withdrawing, setWithdrawing] = useState(false)
+
+  const ackSlot = (response: 'acknowledged' | 'conflict') => {
+    void run(async () => {
+      await acknowledge({ eventSlug, participantId: item.participantId, response })
+      pushToast(
+        response === 'acknowledged' ? 'Schedule acknowledged' : 'Conflict flagged',
+        response === 'acknowledged'
+          ? `You acknowledged your slot for "${item.sessionTitle}".`
+          : `The organizers were told your slot for "${item.sessionTitle}" clashes. Your participation is unchanged.`,
+        response === 'acknowledged' ? 'circle-check' : 'triangle-alert',
+      )
+    })
+  }
 
   const decide = (to: 'confirmed' | 'declined') => {
     void run(async () => {
@@ -91,6 +115,16 @@ export function SpeakingCard({
         </p>
 
         <ActionError error={error} />
+
+        {item.releasedSlot !== undefined ? (
+          <ScheduleSection
+            item={item}
+            timezone={timezone}
+            readOnly={readOnly}
+            pending={pending}
+            onAck={ackSlot}
+          />
+        ) : null}
 
         {item.state === 'awaiting' ? (
           <Callout tone="info" title="The organizers are waiting for your answer">
@@ -231,6 +265,142 @@ function MaybeLocked({
 }) {
   if (!locked) return <>{children}</>
   return <PreviewLock>{children}</PreviewLock>
+}
+
+/**
+ * The released slot as the speaker sees it (M6). Event time is authoritative
+ * and labelled; the viewer's local time is a muted secondary line only when it
+ * differs. A slot is acknowledged or flagged here — flagging never declines.
+ */
+function ScheduleSection({
+  item,
+  timezone,
+  readOnly,
+  pending,
+  onAck,
+}: {
+  item: SpeakingItem
+  timezone: string
+  readOnly: boolean
+  pending: boolean
+  onAck: (response: 'acknowledged' | 'conflict') => void
+}) {
+  const slot = item.releasedSlot
+  if (slot === undefined) return null
+  const localZone = browserTimezone()
+  const showLocal = localZone !== timezone
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-3)',
+        padding: 'var(--space-4)',
+        borderRadius: 'var(--radius-md)',
+        border: 'var(--space-px) solid var(--border-default)',
+        background: 'var(--surface-canvas)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 'var(--space-2)',
+          flexWrap: 'wrap',
+        }}
+      >
+        <span style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}>
+          Your slot
+        </span>
+        {item.ack === undefined ? null : (
+          <StatusPill status={ACK_LABEL[item.ack]} />
+        )}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-half)' }}>
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--text-sm)',
+            fontVariantNumeric: 'tabular-nums',
+            color: 'var(--text-primary)',
+          }}
+        >
+          {formatDateRange(slot.startsAt, slot.endsAt, timezone)} ({timezone})
+        </span>
+        {showLocal ? (
+          <span
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 'var(--text-xs)',
+              fontVariantNumeric: 'tabular-nums',
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            {formatDateRange(slot.startsAt, slot.endsAt, localZone)} (your time,{' '}
+            {localZone})
+          </span>
+        ) : null}
+        {slot.roomName === undefined ? null : (
+          <span style={{ font: 'var(--type-caption)', color: 'var(--text-secondary)' }}>
+            {slot.roomName}
+          </span>
+        )}
+      </div>
+
+      {item.backstageUrl === undefined ? null : (
+        <a
+          href={item.backstageUrl}
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            font: 'var(--type-body)',
+            color: 'var(--text-link)',
+            wordBreak: 'break-all',
+          }}
+        >
+          Backstage link
+        </a>
+      )}
+
+      {item.ack === 'awaitingAck' ? (
+        <ButtonRow>
+          <MaybeLocked locked={readOnly}>
+            <Button
+              variant="primary"
+              iconLeft="circle-check"
+              disabled={readOnly || pending}
+              onClick={() => {
+                onAck('acknowledged')
+              }}
+            >
+              Acknowledge schedule
+            </Button>
+          </MaybeLocked>
+          <MaybeLocked locked={readOnly}>
+            <Button
+              iconLeft="triangle-alert"
+              disabled={readOnly || pending}
+              onClick={() => {
+                onAck('conflict')
+              }}
+            >
+              Flag a conflict
+            </Button>
+          </MaybeLocked>
+        </ButtonRow>
+      ) : null}
+
+      {item.ack === 'conflict' ? (
+        <Callout tone="attention" title="You flagged a conflict">
+          The organizers were told this slot clashes for you. Your participation
+          is unchanged — they will reschedule or reach out.
+        </Callout>
+      ) : null}
+    </div>
+  )
 }
 
 /**

@@ -106,6 +106,7 @@ export function PortalView({
               eventSlug={eventSlug}
               item={item}
               readOnly={readOnly}
+              timezone={event.timezone}
             />
           ))}
         </PortalSection>
