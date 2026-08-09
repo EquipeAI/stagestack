@@ -2,9 +2,28 @@
 
 Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) · [docs/CHALLENGE.md](docs/CHALLENGE.md) · milestones: [docs/MILESTONES.md](docs/MILESTONES.md)
 
-## Now: M5 comms UI + M6 agenda (backend + UI)
+## Now: M7 — Public content out (page, API, embeds) + M3-M6 codex fixes
 
-M5 backend done (181 tests: templates/audiences/one-off/reminders/.ics). M5 comms UI agent running. M6 backend agent running (scheduling, release → .ics, acknowledgements, conflicts). Remaining: M5 comms UI verify, M6 board UI, browser + prod verification, combined simplify + codex pass across M3-M6.
+M0-M6 all built, browser + prod verified, deployed. codex M3-M6 review triaged (fixes agent running): fixing .ics RFC correctness (quoted CN + terminal CRLF), first-reminder cadence baseline, one-email-per-recipient sweep consolidation, task routing stays on manager after portal claim, session-task accountable assignee, audience-truncation visibility, ack idempotency, agenda-item room clear, profile-link validation, executeRecords/listAudiences organizer re-check. Deferred (logged): the M6 publication boundary IS M7 (building now); released-change detection for track/title/description is a v1 limitation (only start/end/room propagate).
+
+Remaining: M7 backend (publishedPrograms projection, publish/unpublish lineup+agenda independently, public read query + HTTP API + embed), public event page, browser + prod verify, then final acceptance sweep.
+
+## Done: M6 — Agenda builder — Aug 9
+
+- [x] Drag-and-drop board (5 views: list/day/week/track/room; Room grid = pixel time-grid DnD w/ 15-min snap, overlap lanes, unscheduled tray, manual Place dialog fallback)
+- [x] Conflict detection derived from one shared pure function (board = release gate = readiness): room clash + speaker double-book = non-overridable blockers, same-track = warning
+- [x] Explicit slot release → per-participant schedule email + .ics REQUEST; date/start change bumps sequence + resets ack; room/end updates without reset; per-id results skip blocked; cancel-release sends .ics CANCEL; participant-specific CANCEL on withdrawal
+- [x] Acknowledgement (acknowledged/conflict) by speaker/manager/organizer; conflict → session blocked in readiness; agenda items (breaks/meals); virtual links with audience scoping
+- [x] Speaker portal slot display + acknowledge/flag-conflict
+- [x] Browser-verified: room-clash blocker in lanes → release refused → resolve → release 2 → Released v0 + 2 schedule.released emails with .ics; 203 tests
+
+## Done: M5 — Communications — Aug 9
+
+- [x] 13 organizer-editable templates over defaults ({{var}}, HTML-escaped, header-injection-safe subjects); all lifecycle sends render through them; event reply-to wired
+- [x] Templates editor (server preview + dirty-draft local preview, variable hints, reset); state-derived audiences w/ representation routing; one-off sends (personalized, confirm-with-count, per-send results); per-contact comms log
+- [x] Hourly reminder sweep (consolidated, cadence + per-requirement override/disable, unconfirmed→participation not task chasing)
+- [x] .ics machinery (RFC escaping + CRLF-injection fix + folding + UTF-8 base64); internal sendCalendarInvite → comms log
+- [x] Browser-verified: personalized one-off delivered to a real inbox + recorded in comms log w/ webhook Delivered status; prod live
 
 ## Done: M4 — Speaker ops: tasks & readiness — Aug 9
 
