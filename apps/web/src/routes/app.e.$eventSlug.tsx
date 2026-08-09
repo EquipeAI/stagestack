@@ -20,18 +20,22 @@ export const Route = createFileRoute('/app/e/$eventSlug')({
 // ways — pathname → active tab, and selected tab → navigation target.
 const TAB_PATHS = {
   overview: '/app/e/$eventSlug',
+  cfp: '/app/e/$eventSlug/cfp',
+  proposals: '/app/e/$eventSlug/proposals',
   settings: '/app/e/$eventSlug/settings',
   team: '/app/e/$eventSlug/team',
 } as const
 
 type TabId = keyof typeof TAB_PATHS
 
-// Later milestones append to this list — CFP, Proposals, Reviews, Agenda,
-// Speakers — without touching the shell.
+// Later milestones append to this list — Reviews, Agenda, Speakers — without
+// touching the shell.
 const NAV_GROUPS = [
   {
     items: [
       { id: 'overview', label: 'Overview', icon: 'layout-grid' },
+      { id: 'cfp', label: 'Call for speakers', icon: 'mic-vocal' },
+      { id: 'proposals', label: 'Proposals', icon: 'inbox' },
       { id: 'settings', label: 'Settings', icon: 'settings' },
       { id: 'team', label: 'Team', icon: 'users' },
     ],

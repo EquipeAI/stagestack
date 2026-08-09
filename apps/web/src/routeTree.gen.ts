@@ -12,12 +12,18 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as AppIndexRouteImport } from './routes/app.index'
+import { Route as CfpEventSlugRouteImport } from './routes/cfp.$eventSlug'
 import { Route as InviteTokenRouteImport } from './routes/invite.$token'
 import { Route as AppEEventSlugRouteImport } from './routes/app.e.$eventSlug'
 import { Route as AppOrgOrgSlugRouteImport } from './routes/app.org.$orgSlug'
+import { Route as CfpEventSlugIndexRouteImport } from './routes/cfp.$eventSlug.index'
+import { Route as CfpEventSlugSubmitRouteImport } from './routes/cfp.$eventSlug.submit'
 import { Route as AppEEventSlugIndexRouteImport } from './routes/app.e.$eventSlug.index'
+import { Route as AppEEventSlugCfpRouteImport } from './routes/app.e.$eventSlug.cfp'
+import { Route as AppEEventSlugProposalsRouteImport } from './routes/app.e.$eventSlug.proposals'
 import { Route as AppEEventSlugSettingsRouteImport } from './routes/app.e.$eventSlug.settings'
 import { Route as AppEEventSlugTeamRouteImport } from './routes/app.e.$eventSlug.team'
+import { Route as CfpEventSlugProposalProposalIdRouteImport } from './routes/cfp.$eventSlug.proposal.$proposalId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -34,6 +40,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
+const CfpEventSlugRoute = CfpEventSlugRouteImport.update({
+  id: '/cfp/$eventSlug',
+  path: '/cfp/$eventSlug',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const InviteTokenRoute = InviteTokenRouteImport.update({
   id: '/invite/$token',
   path: '/invite/$token',
@@ -49,9 +60,29 @@ const AppOrgOrgSlugRoute = AppOrgOrgSlugRouteImport.update({
   path: '/org/$orgSlug',
   getParentRoute: () => AppRoute,
 } as any)
+const CfpEventSlugIndexRoute = CfpEventSlugIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => CfpEventSlugRoute,
+} as any)
+const CfpEventSlugSubmitRoute = CfpEventSlugSubmitRouteImport.update({
+  id: '/submit',
+  path: '/submit',
+  getParentRoute: () => CfpEventSlugRoute,
+} as any)
 const AppEEventSlugIndexRoute = AppEEventSlugIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
+const AppEEventSlugCfpRoute = AppEEventSlugCfpRouteImport.update({
+  id: '/cfp',
+  path: '/cfp',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
+const AppEEventSlugProposalsRoute = AppEEventSlugProposalsRouteImport.update({
+  id: '/proposals',
+  path: '/proposals',
   getParentRoute: () => AppEEventSlugRoute,
 } as any)
 const AppEEventSlugSettingsRoute = AppEEventSlugSettingsRouteImport.update({
@@ -64,16 +95,28 @@ const AppEEventSlugTeamRoute = AppEEventSlugTeamRouteImport.update({
   path: '/team',
   getParentRoute: () => AppEEventSlugRoute,
 } as any)
+const CfpEventSlugProposalProposalIdRoute =
+  CfpEventSlugProposalProposalIdRouteImport.update({
+    id: '/proposal/$proposalId',
+    path: '/proposal/$proposalId',
+    getParentRoute: () => CfpEventSlugRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/app': typeof AppRouteWithChildren
+  '/cfp/$eventSlug': typeof CfpEventSlugRouteWithChildren
   '/invite/$token': typeof InviteTokenRoute
   '/app/': typeof AppIndexRoute
   '/app/e/$eventSlug': typeof AppEEventSlugRouteWithChildren
   '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
+  '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
+  '/cfp/$eventSlug/': typeof CfpEventSlugIndexRoute
+  '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
+  '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
   '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
+  '/cfp/$eventSlug/proposal/$proposalId': typeof CfpEventSlugProposalProposalIdRoute
   '/app/e/$eventSlug/': typeof AppEEventSlugIndexRoute
 }
 export interface FileRoutesByTo {
@@ -81,20 +124,31 @@ export interface FileRoutesByTo {
   '/invite/$token': typeof InviteTokenRoute
   '/app': typeof AppIndexRoute
   '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
+  '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
+  '/cfp/$eventSlug': typeof CfpEventSlugIndexRoute
+  '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
+  '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
   '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
+  '/cfp/$eventSlug/proposal/$proposalId': typeof CfpEventSlugProposalProposalIdRoute
   '/app/e/$eventSlug': typeof AppEEventSlugIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/app': typeof AppRouteWithChildren
+  '/cfp/$eventSlug': typeof CfpEventSlugRouteWithChildren
   '/invite/$token': typeof InviteTokenRoute
   '/app/': typeof AppIndexRoute
   '/app/e/$eventSlug': typeof AppEEventSlugRouteWithChildren
   '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
+  '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
+  '/cfp/$eventSlug/': typeof CfpEventSlugIndexRoute
+  '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
+  '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
   '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
+  '/cfp/$eventSlug/proposal/$proposalId': typeof CfpEventSlugProposalProposalIdRoute
   '/app/e/$eventSlug/': typeof AppEEventSlugIndexRoute
 }
 export interface FileRouteTypes {
@@ -102,12 +156,18 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/app'
+    | '/cfp/$eventSlug'
     | '/invite/$token'
     | '/app/'
     | '/app/e/$eventSlug'
     | '/app/org/$orgSlug'
+    | '/cfp/$eventSlug/submit'
+    | '/cfp/$eventSlug/'
+    | '/app/e/$eventSlug/cfp'
+    | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/settings'
     | '/app/e/$eventSlug/team'
+    | '/cfp/$eventSlug/proposal/$proposalId'
     | '/app/e/$eventSlug/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -115,25 +175,37 @@ export interface FileRouteTypes {
     | '/invite/$token'
     | '/app'
     | '/app/org/$orgSlug'
+    | '/cfp/$eventSlug/submit'
+    | '/cfp/$eventSlug'
+    | '/app/e/$eventSlug/cfp'
+    | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/settings'
     | '/app/e/$eventSlug/team'
+    | '/cfp/$eventSlug/proposal/$proposalId'
     | '/app/e/$eventSlug'
   id:
     | '__root__'
     | '/'
     | '/app'
+    | '/cfp/$eventSlug'
     | '/invite/$token'
     | '/app/'
     | '/app/e/$eventSlug'
     | '/app/org/$orgSlug'
+    | '/cfp/$eventSlug/submit'
+    | '/cfp/$eventSlug/'
+    | '/app/e/$eventSlug/cfp'
+    | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/settings'
     | '/app/e/$eventSlug/team'
+    | '/cfp/$eventSlug/proposal/$proposalId'
     | '/app/e/$eventSlug/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AppRoute: typeof AppRouteWithChildren
+  CfpEventSlugRoute: typeof CfpEventSlugRouteWithChildren
   InviteTokenRoute: typeof InviteTokenRoute
 }
 
@@ -160,6 +232,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/cfp/$eventSlug': {
+      id: '/cfp/$eventSlug'
+      path: '/cfp/$eventSlug'
+      fullPath: '/cfp/$eventSlug'
+      preLoaderRoute: typeof CfpEventSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/invite/$token': {
       id: '/invite/$token'
       path: '/invite/$token'
@@ -181,11 +260,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppOrgOrgSlugRouteImport
       parentRoute: typeof AppRoute
     }
+    '/cfp/$eventSlug/': {
+      id: '/cfp/$eventSlug/'
+      path: '/'
+      fullPath: '/cfp/$eventSlug/'
+      preLoaderRoute: typeof CfpEventSlugIndexRouteImport
+      parentRoute: typeof CfpEventSlugRoute
+    }
+    '/cfp/$eventSlug/submit': {
+      id: '/cfp/$eventSlug/submit'
+      path: '/submit'
+      fullPath: '/cfp/$eventSlug/submit'
+      preLoaderRoute: typeof CfpEventSlugSubmitRouteImport
+      parentRoute: typeof CfpEventSlugRoute
+    }
     '/app/e/$eventSlug/': {
       id: '/app/e/$eventSlug/'
       path: '/'
       fullPath: '/app/e/$eventSlug/'
       preLoaderRoute: typeof AppEEventSlugIndexRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
+    '/app/e/$eventSlug/cfp': {
+      id: '/app/e/$eventSlug/cfp'
+      path: '/cfp'
+      fullPath: '/app/e/$eventSlug/cfp'
+      preLoaderRoute: typeof AppEEventSlugCfpRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
+    '/app/e/$eventSlug/proposals': {
+      id: '/app/e/$eventSlug/proposals'
+      path: '/proposals'
+      fullPath: '/app/e/$eventSlug/proposals'
+      preLoaderRoute: typeof AppEEventSlugProposalsRouteImport
       parentRoute: typeof AppEEventSlugRoute
     }
     '/app/e/$eventSlug/settings': {
@@ -202,16 +309,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEEventSlugTeamRouteImport
       parentRoute: typeof AppEEventSlugRoute
     }
+    '/cfp/$eventSlug/proposal/$proposalId': {
+      id: '/cfp/$eventSlug/proposal/$proposalId'
+      path: '/proposal/$proposalId'
+      fullPath: '/cfp/$eventSlug/proposal/$proposalId'
+      preLoaderRoute: typeof CfpEventSlugProposalProposalIdRouteImport
+      parentRoute: typeof CfpEventSlugRoute
+    }
   }
 }
 
 interface AppEEventSlugRouteChildren {
+  AppEEventSlugCfpRoute: typeof AppEEventSlugCfpRoute
+  AppEEventSlugProposalsRoute: typeof AppEEventSlugProposalsRoute
   AppEEventSlugSettingsRoute: typeof AppEEventSlugSettingsRoute
   AppEEventSlugTeamRoute: typeof AppEEventSlugTeamRoute
   AppEEventSlugIndexRoute: typeof AppEEventSlugIndexRoute
 }
 
 const AppEEventSlugRouteChildren: AppEEventSlugRouteChildren = {
+  AppEEventSlugCfpRoute: AppEEventSlugCfpRoute,
+  AppEEventSlugProposalsRoute: AppEEventSlugProposalsRoute,
   AppEEventSlugSettingsRoute: AppEEventSlugSettingsRoute,
   AppEEventSlugTeamRoute: AppEEventSlugTeamRoute,
   AppEEventSlugIndexRoute: AppEEventSlugIndexRoute,
@@ -235,9 +353,26 @@ const AppRouteChildren: AppRouteChildren = {
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
+interface CfpEventSlugRouteChildren {
+  CfpEventSlugSubmitRoute: typeof CfpEventSlugSubmitRoute
+  CfpEventSlugIndexRoute: typeof CfpEventSlugIndexRoute
+  CfpEventSlugProposalProposalIdRoute: typeof CfpEventSlugProposalProposalIdRoute
+}
+
+const CfpEventSlugRouteChildren: CfpEventSlugRouteChildren = {
+  CfpEventSlugSubmitRoute: CfpEventSlugSubmitRoute,
+  CfpEventSlugIndexRoute: CfpEventSlugIndexRoute,
+  CfpEventSlugProposalProposalIdRoute: CfpEventSlugProposalProposalIdRoute,
+}
+
+const CfpEventSlugRouteWithChildren = CfpEventSlugRoute._addFileChildren(
+  CfpEventSlugRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AppRoute: AppRouteWithChildren,
+  CfpEventSlugRoute: CfpEventSlugRouteWithChildren,
   InviteTokenRoute: InviteTokenRoute,
 }
 export const routeTree = rootRouteImport

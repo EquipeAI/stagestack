@@ -12,11 +12,14 @@ import {
   Field,
   Input,
   PageHeader,
+  StatusPill,
 } from '~/ds'
 import { PageBody } from '~/components/PageBody'
 import { EventCard, EventGrid } from '~/components/EventCard'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
+import { browserTimezone, formatDateTime } from '~/lib/datetime'
+import { PROPOSAL_STATUS_LABEL } from '~/components/cfp/model'
 
 export const Route = createFileRoute('/app/')({
   component: Home,
@@ -38,6 +41,7 @@ function Home() {
     return (
       <PageBody narrow>
         <Onboarding />
+        <MyProposals />
       </PageBody>
     )
   }
@@ -109,8 +113,85 @@ function Home() {
           )}
         </section>
       ))}
+      <MyProposals />
       {creating ? <NewOrgDialog onClose={() => setCreating(false)} /> : null}
     </PageBody>
+  )
+}
+
+/**
+ * Proposals this person submitted as a speaker — a different hat from the
+ * organizations above, so it gets its own section and only appears when there
+ * is something in it.
+ */
+function MyProposals() {
+  const proposals = useQuery(api.cfp.myProposals, {})
+  const zone = browserTimezone()
+
+  if (proposals === undefined || proposals.length === 0) return null
+
+  return (
+    <section
+      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+        <h2
+          style={{
+            font: 'var(--type-heading)',
+            color: 'var(--text-primary)',
+            margin: 'var(--space-0)',
+          }}
+        >
+          My proposals
+        </h2>
+        <span
+          style={{
+            marginLeft: 'auto',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--text-xs)',
+            color: 'var(--text-tertiary)',
+          }}
+        >
+          {proposals.length} proposal{proposals.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      <div
+        style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}
+      >
+        {proposals.map((row) => (
+          <Link
+            key={row.proposal._id}
+            to="/cfp/$eventSlug/proposal/$proposalId"
+            params={{
+              eventSlug: row.eventSlug,
+              proposalId: row.proposal._id,
+            }}
+            style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
+          >
+            <Card
+              variant="interactive"
+              title={row.proposal.title}
+              subtitle={row.eventName}
+              actions={
+                <StatusPill
+                  status={PROPOSAL_STATUS_LABEL[row.proposal.status]}
+                />
+              }
+            >
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 'var(--text-xs)',
+                  color: 'var(--text-tertiary)',
+                }}
+              >
+                Updated {formatDateTime(row.proposal.updatedAt, zone)}
+              </span>
+            </Card>
+          </Link>
+        ))}
+      </div>
+    </section>
   )
 }
 

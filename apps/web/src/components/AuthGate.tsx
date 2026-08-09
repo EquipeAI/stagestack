@@ -1,39 +1,15 @@
-import { useEffect, useState } from 'react'
 import { Show, SignInButton } from '@clerk/tanstack-react-start'
-import { useConvexAuth, useMutation } from 'convex/react'
-import { api } from '@convex/_generated/api'
 import type * as React from 'react'
 import { Button, Callout, Card } from '~/ds'
 import { PageBody } from '~/components/PageBody'
-import { errorMessage } from '~/lib/errors'
+import { useProvisioning } from '~/lib/useProvisioning'
 
 /**
  * Every authed query throws `user_not_provisioned` until `users.ensure` has
  * run, so the gate provisions first and mounts children only after it resolves.
  */
 export function AuthGate({ children }: { children: React.ReactNode }) {
-  const { isLoading, isAuthenticated } = useConvexAuth()
-  const ensure = useMutation(api.users.ensure)
-  const [provisioned, setProvisioned] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!isAuthenticated) {
-      setProvisioned(false)
-      return
-    }
-    let cancelled = false
-    ensure({})
-      .then(() => {
-        if (!cancelled) setProvisioned(true)
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(errorMessage(err))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [isAuthenticated, ensure])
+  const { isLoading, provisioned, error, retry } = useProvisioning()
 
   if (isLoading) return <GateStatus>Checking your session…</GateStatus>
 
@@ -45,7 +21,15 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       <Show when="signed-in">
         {error !== null ? (
           <PageBody narrow>
-            <Callout tone="blocked" title="Could not load your account">
+            <Callout
+              tone="blocked"
+              title="Could not load your account"
+              actions={
+                <Button variant="primary" onClick={retry}>
+                  Try again
+                </Button>
+              }
+            >
               {error}
             </Callout>
           </PageBody>
