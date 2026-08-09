@@ -375,6 +375,74 @@ export default defineSchema({
     .index("by_eventId_and_email", ["eventId", "email"])
     .index("by_sessionId", ["sessionId"]),
 
+  // ── Speaker ops: tasks & readiness (M4) ──────────────────────────────
+  // Requirement definitions are event-scoped snapshots (M4: independent of
+  // any future org template library).
+  requirements: defineTable({
+    eventId: v.id("events"),
+    title: v.string(),
+    description: v.optional(v.string()),
+    // participant → one obligation per applicable speaker; session → one
+    // shared obligation with one accountable assignee.
+    scope: v.union(v.literal("participant"), v.literal("session")),
+    // What "Provided" observes. `manual` = organizer/speaker ticks it.
+    evidence: v.union(
+      v.literal("file"),
+      v.literal("profileField"), // e.g. bio/headshot present on the snapshot
+      v.literal("manual"),
+    ),
+    // For profileField evidence: which snapshot field ("bio" | "headshot" | "tagline").
+    fieldKey: v.optional(v.string()),
+    // Optional organizer review gate (off by default in v1).
+    reviewRequired: v.boolean(),
+    dueAt: v.number(),
+    active: v.boolean(),
+  }).index("by_eventId", ["eventId"]),
+
+  taskInstances: defineTable({
+    requirementId: v.id("requirements"),
+    eventId: v.id("events"),
+    sessionId: v.id("sessions"),
+    // Set for participant-scope tasks; session tasks have one accountable
+    // assignee (defaults to the primary manager) identified by participantId
+    // too when the manager is a participant, else undefined.
+    participantId: v.optional(v.id("sessionParticipants")),
+    eventContactId: v.optional(v.id("eventContacts")),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("provided"),
+      v.literal("changesRequested"),
+      v.literal("approved"),
+      v.literal("complete"),
+      v.literal("notApplicable"),
+    ),
+    dueAt: v.number(),
+    naReason: v.optional(v.string()),
+    reviewNote: v.optional(v.string()),
+    completedBy: v.optional(v.id("users")),
+    completedAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  })
+    .index("by_eventId", ["eventId"])
+    .index("by_requirementId", ["requirementId"])
+    .index("by_sessionId", ["sessionId"])
+    .index("by_eventContactId", ["eventContactId"]),
+
+  // Versioned uploads as task evidence. Resubmission adds a version; prior
+  // files, feedback, actors and timestamps are never erased (M4).
+  uploads: defineTable({
+    eventId: v.id("events"),
+    taskInstanceId: v.id("taskInstances"),
+    storageId: v.id("_storage"),
+    filename: v.string(),
+    version: v.number(),
+    uploadedBy: v.id("users"),
+    // Version-specific approval (M4): replacing an approved file returns the
+    // task to provided/awaiting review.
+    approvedAt: v.optional(v.number()),
+    approvedBy: v.optional(v.id("users")),
+  }).index("by_taskInstanceId", ["taskInstanceId"]),
+
   // ── Comms log (starts M1; grows in M5) ───────────────────────────────
   // Every email StageStack sends is recorded here; the Resend webhook
   // updates deliveryStatus by resendEmailId.
