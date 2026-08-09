@@ -27,7 +27,10 @@ import { assertText, normalizeEmail } from "./validation";
 // public wrapper already did — the Import agent adapter calls these directly.
 // ─────────────────────────────────────────────────────────────────────────
 
-const MAX_BULK = 500;
+// Release fans out sessions, contacts, participants and emails per proposal —
+// 100 per transaction stays well inside Convex limits; the UI batches larger
+// selections across calls (codex review).
+const MAX_BULK = 100;
 const MAX_SPEAKERS_PER_PROPOSAL = 40;
 const MAX_PARTICIPANTS_PER_SESSION = 100;
 const SESSION_SCAN = 1000;

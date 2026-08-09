@@ -1,4 +1,6 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import { HOUR, RateLimiter } from "@convex-dev/rate-limiter";
+import { components } from "./_generated/api";
 import {
   authedMutation,
   authedQuery,
@@ -250,6 +252,12 @@ export const withdrawProposal = authedMutation({
   },
 });
 
+// Upload URLs cost storage the moment they're used; cap the mint rate so a
+// single account can't fill the bucket (codex review of M1).
+const uploadLimiter = new RateLimiter(components.rateLimiter, {
+  cfpUploadPerUser: { kind: "token bucket", rate: 30, period: HOUR },
+});
+
 /** Upload target for headshots and file answers. Owner-gated so an upload URL
  * is only ever minted for a proposal the caller manages. */
 export const generateUploadUrl = authedMutation({
@@ -257,6 +265,15 @@ export const generateUploadUrl = authedMutation({
   returns: v.string(),
   handler: async (ctx, args) => {
     await Cfp.requireOwnProposal(ctx, ctx.user, args.proposalId);
+    const limit = await uploadLimiter.limit(ctx, "cfpUploadPerUser", {
+      key: ctx.user._id,
+    });
+    if (!limit.ok) {
+      throw new ConvexError({
+        code: "rate_limited",
+        message: "Too many uploads — try again in a little while.",
+      });
+    }
     return await ctx.storage.generateUploadUrl();
   },
 });

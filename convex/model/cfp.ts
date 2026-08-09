@@ -12,8 +12,12 @@ import {
   siteUrl,
 } from "./comms";
 import { slugify } from "./slugs";
-import { assertText, isEmail, normalizeEmail } from "./validation";
-import { assertEventActive } from "./reviews";
+import {
+  assertEventActive,
+  assertText,
+  isEmail,
+  normalizeEmail,
+} from "./validation";
 import {
   allFields,
   visibleFields,
@@ -310,26 +314,52 @@ export function validateFormDef(def: FormDef): void {
     }
   }
 
-  // Conditions must point at a real field — and never at themselves.
+  // Conditions must point at a real field — and never at themselves. The
+  // operator must make sense for the source field's kind, and locked system
+  // fields (plus the sections carrying them) can never be conditional: a
+  // hidden required field would let submissions through without it.
+  const byId = new Map(fields.map((f) => [f.id, f]));
+  const assertConditionSane = (
+    cond: NonNullable<FieldDef["visibleIf"]>,
+    subject: string,
+  ) => {
+    const source = byId.get(cond.fieldId);
+    if (source === undefined) {
+      invalidForm(
+        `${subject} is shown conditionally on unknown field "${cond.fieldId}".`,
+      );
+    }
+    if (cond.op === "includes" && source.kind !== "multiselect") {
+      invalidForm(
+        `${subject}: "includes" only works when the controlling field is a multi-select.`,
+      );
+    }
+    if (cond.op !== "includes" && source.kind === "multiselect") {
+      invalidForm(
+        `${subject}: use "includes" when the controlling field is a multi-select.`,
+      );
+    }
+  };
   for (const section of sections) {
+    const hasSystemField = section.fields.some((f) => f.systemKey !== undefined);
     if (section.visibleIf !== undefined) {
-      if (!fieldIds.has(section.visibleIf.fieldId)) {
+      if (hasSystemField) {
         invalidForm(
-          `Section "${section.title}" is shown conditionally on unknown field "${section.visibleIf.fieldId}".`,
+          `Section "${section.title}" contains locked fields and can't be conditional.`,
         );
       }
+      assertConditionSane(section.visibleIf, `Section "${section.title}"`);
     }
     for (const field of section.fields) {
       const cond = field.visibleIf;
       if (cond === undefined) continue;
+      if (field.systemKey !== undefined) {
+        invalidForm(`The "${field.systemKey}" field can't be conditional.`);
+      }
       if (cond.fieldId === field.id) {
         invalidForm(`Field "${field.label}" can't depend on itself.`);
       }
-      if (!fieldIds.has(cond.fieldId)) {
-        invalidForm(
-          `Field "${field.label}" is shown conditionally on unknown field "${cond.fieldId}".`,
-        );
-      }
+      assertConditionSane(cond, `Field "${field.label}"`);
     }
   }
 }
@@ -876,17 +906,20 @@ export async function saveAnswers(
   const { def } = await requirePublishedForm(ctx, event);
 
   const byId = new Map(allFields(def).map((f) => [f.id, f]));
+  // Silently DROP answers whose field no longer exists: an organizer removing
+  // a field must not brick drafts that still carry its answer (they resend
+  // the full record on every autosave). Known fields still validate strictly.
+  const kept: Record<string, AnswerValue> = {};
   for (const [key, value] of Object.entries(answers)) {
     const field = byId.get(key);
-    if (field === undefined) {
-      invalidAnswer(`"${key}" isn't a field on this form.`);
-    }
+    if (field === undefined) continue;
     assertAnswerShape(field, value);
+    kept[key] = value;
   }
 
-  const title = titleFromAnswers(def, answers);
+  const title = titleFromAnswers(def, kept);
   await ctx.db.patch("proposals", proposal._id, {
-    answers,
+    answers: kept,
     title,
     updatedAt: Date.now(),
   });

@@ -5,6 +5,8 @@ import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
 import type { AnswerValue } from "../shared/formDef";
+import { allFields } from "../shared/formDef";
+import { findForm } from "./cfp";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Review & evaluation (M2). One `reviews` row per (proposal, reviewer) pair,
@@ -42,19 +44,8 @@ const REVIEWABLE: ReadonlySet<Doc<"proposals">["status"]> = new Set([
   "declineQueue",
 ]);
 
-/**
- * Archived events stop accepting work (MILESTONES M0: archiving "removes an
- * event from active work and stops automations"). Reads stay open so history
- * remains browsable; every M2 write calls this first.
- */
-export function assertEventActive(event: Doc<"events">): void {
-  if (event.archivedAt !== undefined) {
-    throw new ConvexError({
-      code: "event_archived",
-      message: "This event is archived.",
-    });
-  }
-}
+import { assertEventActive } from "./validation";
+export { assertEventActive };
 
 export type ReviewStatus = Doc<"reviews">["status"];
 export type Recommendation = NonNullable<Doc<"reviews">["recommendation"]>;
@@ -234,6 +225,12 @@ export type ReviewerSpeaker = {
   bio?: string;
 };
 
+export type ReviewerField = {
+  id: string;
+  label: string;
+  kind: string;
+};
+
 export type AssignmentRow = {
   reviewId: Id<"reviews">;
   status: ReviewStatus;
@@ -244,6 +241,11 @@ export type AssignmentRow = {
     _id: Id<"proposals">;
     title: string;
     answers: Record<string, AnswerValue>;
+    /** Published-form projection (evaluation fields only) so the UI can
+     * label and order answers. Contact-detail fields are absent. */
+    fields: ReviewerField[];
+    /** Signed URLs for file-kind answers, keyed by storage id. */
+    fileUrls: Record<string, string | null>;
     speakers: ReviewerSpeaker[];
   };
 };
@@ -275,15 +277,52 @@ export async function myAssignments(
     )
     .take(REVIEW_SCAN);
 
+  // Reviewers see evaluation content and professional identity only
+  // (MILESTONES M2): contact-detail fields never cross the wire — neither
+  // the system identity fields nor any email/phone-kind custom field.
+  const form = await findForm(ctx, caller.event._id);
+  const def = form?.published ?? form?.working;
+  const evaluationFields: ReviewerField[] =
+    def === undefined
+      ? []
+      : allFields(def)
+          .filter(
+            (f) =>
+              f.systemKey !== "firstName" &&
+              f.systemKey !== "lastName" &&
+              f.systemKey !== "email" &&
+              f.kind !== "email" &&
+              f.kind !== "phone",
+          )
+          .map((f) => ({ id: f.id, label: f.label, kind: f.kind }));
+  const allowedIds = new Set(evaluationFields.map((f) => f.id));
+  const fileFieldIds = new Set(
+    evaluationFields.filter((f) => f.kind === "file").map((f) => f.id),
+  );
+
   const rows: AssignmentRow[] = [];
   for (const review of reviews) {
     const proposal = await ctx.db.get("proposals", review.proposalId);
-    // A withdrawn-and-deleted draft can outlive its assignment.
-    if (proposal === null) continue;
+    // A withdrawn-and-deleted draft can outlive its assignment; an explicit
+    // withdrawal must leave every active review queue (MILESTONES M1).
+    if (proposal === null || proposal.status === "withdrawn") continue;
     const speakers = await ctx.db
       .query("proposalSpeakers")
       .withIndex("by_proposalId", (q) => q.eq("proposalId", proposal._id))
       .take(MAX_SPEAKERS_PER_PROPOSAL);
+    const answers: Record<string, AnswerValue> = {};
+    const fileUrls: Record<string, string | null> = {};
+    for (const [fieldId, value] of Object.entries(proposal.answers)) {
+      if (!allowedIds.has(fieldId)) continue;
+      answers[fieldId] = value;
+      if (
+        fileFieldIds.has(fieldId) &&
+        typeof value === "string" &&
+        value.length > 0
+      ) {
+        fileUrls[value] = await ctx.storage.getUrl(value as Id<"_storage">);
+      }
+    }
     rows.push({
       reviewId: review._id,
       status: review.status,
@@ -293,7 +332,9 @@ export async function myAssignments(
       proposal: {
         _id: proposal._id,
         title: proposal.title,
-        answers: proposal.answers,
+        answers,
+        fields: evaluationFields,
+        fileUrls,
         speakers: speakers
           .sort((a, b) => a.order - b.order)
           .map(reviewerSpeaker),
@@ -323,6 +364,18 @@ async function requireOwnReview(
   return review;
 }
 
+/** Withdrawal removes a proposal from active review (MILESTONES M1): its
+ * reviews stop accepting writes the moment the submitter withdraws. */
+async function assertProposalStillReviewable(
+  ctx: QueryCtx,
+  review: Doc<"reviews">,
+): Promise<void> {
+  const proposal = await ctx.db.get("proposals", review.proposalId);
+  if (proposal === null || proposal.status === "withdrawn") {
+    invalidStatus("This proposal was withdrawn — it no longer needs review.");
+  }
+}
+
 export type ReviewDraftPatch = {
   score?: number;
   recommendation?: Recommendation;
@@ -339,6 +392,7 @@ export async function saveReviewDraft(
 ): Promise<void> {
   assertEventActive(caller.event);
   const review = await requireOwnReview(ctx, caller, reviewId);
+  await assertProposalStillReviewable(ctx, review);
   if (review.status === "locked") {
     invalidStatus("This review is locked — ask an organizer to reopen it.");
   }
@@ -382,6 +436,7 @@ export async function submitReview(
 ): Promise<void> {
   assertEventActive(caller.event);
   const review = await requireOwnReview(ctx, caller, reviewId);
+  await assertProposalStillReviewable(ctx, review);
   if (review.status === "locked") {
     invalidStatus("This review is locked — ask an organizer to reopen it.");
   }

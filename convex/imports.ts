@@ -1,9 +1,8 @@
 import { ConvexError, v } from "convex/values";
 import { eventMutation, eventQuery } from "./lib/functions";
-import * as Imports from "./model/imports";
 import { enqueueJob } from "./model/jobs";
 import { logAudit } from "./model/audit";
-import { assertEventActive } from "./model/reviews";
+import { assertEventActive } from "./model/validation";
 import { IMPORT_LIMITS, vPlannedRecord } from "./shared/importPlan";
 
 // Import with AI (M2): upload → agent plans → organizer confirms → execute.

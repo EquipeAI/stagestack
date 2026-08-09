@@ -1,4 +1,5 @@
 import { ConvexError } from "convex/values";
+import type { Doc } from "../_generated/dataModel";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Shared input validation. Every email regex and every "name must be N-M
@@ -50,4 +51,18 @@ export function assertText(value: string, opts: AssertTextOptions): string {
     });
   }
   return trimmed;
+}
+
+/**
+ * Archived events stop accepting work (MILESTONES M0: archiving "removes an
+ * event from active work and stops automations"). Reads stay open so history
+ * remains browsable; every M2+ write calls this first.
+ */
+export function assertEventActive(event: Doc<"events">): void {
+  if (event.archivedAt !== undefined) {
+    throw new ConvexError({
+      code: "event_archived",
+      message: "This event is archived.",
+    });
+  }
 }

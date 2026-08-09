@@ -15,7 +15,7 @@ import { createContact } from "./contacts";
 import { addLibraryItem, listLibrary } from "./library";
 import { createManualProposal } from "./cfp";
 import { importSession } from "./sessions";
-import { assertEventActive } from "./reviews";
+import { assertEventActive } from "./validation";
 
 // ─────────────────────────────────────────────────────────────────────────
 // The Import agent's server side (M2). The worker never carries authority:

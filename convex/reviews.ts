@@ -63,6 +63,10 @@ export const myAssignments = eventQuery({
         _id: vv.id("proposals"),
         title: v.string(),
         answers: v.record(v.string(), vAnswerValue),
+        fields: v.array(
+          v.object({ id: v.string(), label: v.string(), kind: v.string() }),
+        ),
+        fileUrls: v.record(v.string(), v.union(v.string(), v.null())),
         speakers: v.array(vReviewerSpeaker),
       }),
     }),

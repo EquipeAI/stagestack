@@ -344,18 +344,21 @@ describe("cfp.startProposal", () => {
 });
 
 describe("cfp.saveAnswers", () => {
-  test("rejects an unknown field id and a wrong-typed value", async () => {
+  test("drops unknown field ids (removed-field drafts must not brick) and rejects wrong-typed values", async () => {
     const t = setupTest();
     const { bob, eventSlug } = await openEventWithSubmitter(t);
     const proposalId = await bob.mutation(api.cfp.startProposal, { eventSlug });
 
-    await expectRejectedWith(
-      bob.mutation(api.cfp.saveAnswers, {
-        proposalId,
-        answers: { nonsense: "hi" },
-      }),
-      "invalid_answer",
-    );
+    // An answer for a field the organizer has since removed is silently
+    // dropped rather than rejected — otherwise the autosaved draft could
+    // never save again (codex M1 finding).
+    await bob.mutation(api.cfp.saveAnswers, {
+      proposalId,
+      answers: { nonsense: "hi", talkTitle: "Kept" },
+    });
+    const afterDrop = await bob.query(api.cfp.getMyProposal, { proposalId });
+    expect(afterDrop.proposal.answers).not.toHaveProperty("nonsense");
+    expect(afterDrop.proposal.answers.talkTitle).toBe("Kept");
     // A number where the form wants text.
     await expectRejectedWith(
       bob.mutation(api.cfp.saveAnswers, {
