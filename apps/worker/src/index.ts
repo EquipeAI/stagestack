@@ -5,6 +5,7 @@
 import { ConvexClient } from "convex/browser";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
+import { runHelloAgent } from "./hello-agent";
 
 const CONVEX_URL = process.env.CONVEX_URL;
 const WORKER_SECRET = process.env.WORKER_SECRET;
@@ -24,6 +25,8 @@ async function runJob(job: PendingJob): Promise<unknown> {
   switch (job.type) {
     case "ping":
       return { pong: true, at: Date.now(), payload: job.payload };
+    case "hello-agent":
+      return await runHelloAgent(job._id);
     default:
       throw new Error(`Unknown job type: ${job.type}`);
   }
