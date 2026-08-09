@@ -113,6 +113,11 @@ export default defineSchema({
     cfpOpenAt: v.optional(v.number()),
     cfpCloseAt: v.optional(v.number()),
     cfpPublished: v.boolean(),
+    // Event-wide default cadence for task reminders, in days (M5). Absent →
+    // reminders off by default.
+    reminderCadenceDays: v.optional(v.number()),
+    // Reply-to address for outgoing event email (M5); inherits nothing yet.
+    replyTo: v.optional(v.string()),
     archivedAt: v.optional(v.number()),
   })
     .index("by_orgId", ["orgId"])
@@ -349,6 +354,9 @@ export default defineSchema({
     stateSetAt: v.optional(v.number()),
     // The proposal's primary manager, when this came via CFP.
     managerUserId: v.optional(v.id("users")),
+    // Participation-reminder bookkeeping (M5; unconfirmed speakers get
+    // participation reminders, never task chasing).
+    lastRemindedAt: v.optional(v.number()),
   })
     .index("by_sessionId", ["sessionId"])
     .index("by_eventId", ["eventId"])
@@ -397,6 +405,9 @@ export default defineSchema({
     reviewRequired: v.boolean(),
     dueAt: v.number(),
     active: v.boolean(),
+    // M5 reminder overrides: cadence in days, or disabled outright.
+    reminderCadenceDays: v.optional(v.number()),
+    remindersDisabled: v.optional(v.boolean()),
   }).index("by_eventId", ["eventId"]),
 
   taskInstances: defineTable({
@@ -421,6 +432,7 @@ export default defineSchema({
     reviewNote: v.optional(v.string()),
     completedBy: v.optional(v.id("users")),
     completedAt: v.optional(v.number()),
+    lastRemindedAt: v.optional(v.number()),
     updatedAt: v.number(),
   })
     .index("by_eventId", ["eventId"])
@@ -442,6 +454,23 @@ export default defineSchema({
     approvedAt: v.optional(v.number()),
     approvedBy: v.optional(v.id("users")),
   }).index("by_taskInstanceId", ["taskInstanceId"]),
+
+  // ── Email templates (M5) ─────────────────────────────────────────────
+  // Organizer-editable templates for lifecycle sends + custom one-offs.
+  // Variables use {{var}} syntax; renderers fall back to built-in defaults
+  // when no row exists for a key.
+  emailTemplates: defineTable({
+    eventId: v.id("events"),
+    // "cfp.confirmation" | "decision.accepted" | "decision.declined" |
+    // "invitation.direct" | "task.assigned" | "reminder.tasks" |
+    // "reminder.participation" | "custom:<slug>"
+    key: v.string(),
+    name: v.string(),
+    subject: v.string(),
+    html: v.string(),
+    updatedAt: v.number(),
+    updatedBy: v.id("users"),
+  }).index("by_eventId_and_key", ["eventId", "key"]),
 
   // ── Comms log (starts M1; grows in M5) ───────────────────────────────
   // Every email StageStack sends is recorded here; the Resend webhook
