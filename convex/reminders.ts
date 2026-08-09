@@ -11,7 +11,11 @@ import { routeParticipant, type AudienceRecipient } from "./model/audiences";
 //
 // The rules this file exists to enforce (MILESTONES M4/M5):
 //  • Unconfirmed speakers get PARTICIPATION reminders, never task chasing.
-//  • One consolidated message per recipient per event — never one per task.
+//  • ONE consolidated message per recipient per event per sweep — never one per
+//    task, and never a separate task email AND participation email to the same
+//    recipient in a single run (MILESTONES M5:86).
+//  • Routine task chasing routes to the primary manager whenever one exists;
+//    claiming a portal never reroutes it (M4:87).
 //  • Cadence = per-requirement override ?? event default; `remindersDisabled`
 //    on a requirement silences it entirely.
 //  • Overdue raises dashboard urgency, NOT email frequency: nothing here reads
@@ -19,8 +23,10 @@ import { routeParticipant, type AudienceRecipient } from "./model/audiences";
 //  • Reminders stop on completion, withdrawal and session cancellation, which
 //    falls out of the status/state filters below.
 //
-// Idempotence inside a cadence window comes from `lastRemindedAt`: a second
-// sweep an hour later finds nothing eligible and sends zero emails.
+// Idempotence inside a cadence window comes from `lastRemindedAt`, which is
+// stamped at CREATION (so the first reminder waits a full cadence) and again on
+// every included item after a send: a second sweep an hour later finds nothing
+// eligible and sends zero emails.
 // ─────────────────────────────────────────────────────────────────────────
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -46,11 +52,18 @@ function due(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
+/**
+ * One recipient's consolidated digest for this event: an optional task section
+ * and an optional participation section. Both are stamped after the single
+ * send, so a manager who owes a chased task AND is the fallback for an awaiting
+ * speaker gets exactly one email — never two.
+ */
 type Bucket = {
   recipient: AudienceRecipient;
-  instanceIds: Array<Id<"taskInstances">>;
+  taskInstanceIds: Array<Id<"taskInstances">>;
+  taskLines: string[];
   participantIds: Array<Id<"sessionParticipants">>;
-  lines: string[];
+  participationLines: string[];
 };
 
 function bucketFor(
@@ -62,9 +75,10 @@ function bucketFor(
   if (buckets.size >= MAX_RECIPIENTS_PER_EVENT) return null;
   const created: Bucket = {
     recipient,
-    instanceIds: [],
+    taskInstanceIds: [],
+    taskLines: [],
     participantIds: [],
-    lines: [],
+    participationLines: [],
   };
   buckets.set(recipient.email, created);
   return created;
@@ -136,16 +150,57 @@ function routeFor(
   });
 }
 
-// ── (a) Task reminders ───────────────────────────────────────────────────
+/** The represented speaker's name, for the digest LINE — a manager-routed
+ * digest must name each speaker so it is unambiguous (fix 4). */
+function speakerLabel(
+  graph: EventGraph,
+  participant: Doc<"sessionParticipants">,
+): string {
+  const contact = graph.contactById.get(participant.eventContactId);
+  if (contact === undefined) return "";
+  return `${contact.firstName} ${contact.lastName}`.trim();
+}
 
-async function sweepTasks(
+/**
+ * Resolve the participant that a task instance is chased through.
+ *
+ * Participant-scope work names its participant directly; a session-scope task
+ * carries an eventContactId assignee instead (M4: one accountable assignee).
+ * Either way the task is chaseable only once that participant has CONFIRMED —
+ * an unconfirmed speaker gets participation chasing, never task chasing.
+ */
+function taskParticipant(
+  graph: EventGraph,
+  instance: Doc<"taskInstances">,
+): Doc<"sessionParticipants"> | undefined {
+  let participant: Doc<"sessionParticipants"> | undefined;
+  if (instance.participantId !== undefined) {
+    participant = graph.participantById.get(instance.participantId);
+  } else if (instance.eventContactId !== undefined) {
+    participant = graph.participants.find(
+      (p) =>
+        p.sessionId === instance.sessionId &&
+        p.eventContactId === instance.eventContactId,
+    );
+  }
+  if (participant === undefined || participant.state !== "confirmed") {
+    return undefined;
+  }
+  return participant;
+}
+
+// ── The per-event sweep ────────────────────────────────────────────────────
+
+async function sweepEvent(
   ctx: MutationCtx,
   event: Doc<"events">,
   graph: EventGraph,
   now: number,
-): Promise<number> {
+): Promise<{ taskEmails: number; participationEmails: number }> {
   const eventCadence = event.reminderCadenceDays;
-  if (eventCadence === undefined) return 0;
+  if (eventCadence === undefined) {
+    return { taskEmails: 0, participationEmails: 0 };
+  }
 
   const [requirements, instances] = await Promise.all([
     ctx.db
@@ -160,11 +215,12 @@ async function sweepTasks(
   const requirementById = new Map(requirements.map((r) => [r._id, r]));
 
   const buckets = new Map<string, Bucket>();
+
+  // ── (a) Task sections ──
   for (const instance of instances) {
     if (!isActionable(instance.status)) continue;
     const requirement = requirementById.get(instance.requirementId);
-    if (requirement === undefined) continue;
-    if (!requirement.active) continue;
+    if (requirement === undefined || !requirement.active) continue;
     if (requirement.remindersDisabled === true) continue;
 
     const cadenceDays = requirement.reminderCadenceDays ?? eventCadence;
@@ -175,135 +231,122 @@ async function sweepTasks(
     const session = graph.sessionById.get(instance.sessionId);
     if (session === undefined || session.status !== "planned") continue;
 
-    // Participant-scope work: chase only a CONFIRMED speaker. An unconfirmed
-    // one is getting the participation reminder below instead — task chasing
-    // before confirmation is explicitly forbidden (MILESTONES M4).
-    let participant: Doc<"sessionParticipants"> | undefined;
-    if (instance.participantId !== undefined) {
-      participant = graph.participantById.get(instance.participantId);
-      if (participant === undefined || participant.state !== "confirmed") {
-        continue;
-      }
-    } else {
-      // Session-scope work has one accountable assignee (the primary manager)
-      // rather than a participant of its own. It becomes chaseable once the
-      // session actually has a confirmed speaker.
-      participant = graph.participants.find(
-        (p) => p.sessionId === instance.sessionId && p.state === "confirmed",
-      );
-      if (participant === undefined) continue;
-    }
+    const participant = taskParticipant(graph, instance);
+    if (participant === undefined) continue;
 
     const recipient = routeFor(graph, participant, "task");
     if (recipient === null) continue;
     const bucket = bucketFor(buckets, recipient);
     if (bucket === null) continue;
-    bucket.instanceIds.push(instance._id);
-    bucket.lines.push(
-      `<strong>${escapeHtml(requirement.title)}</strong> — ${escapeHtml(
-        session.title,
-      )} (due ${escapeHtml(due(instance.dueAt))})`,
+    bucket.taskInstanceIds.push(instance._id);
+    const who = speakerLabel(graph, participant);
+    bucket.taskLines.push(
+      `<strong>${escapeHtml(requirement.title)}</strong>${
+        who ? ` for ${escapeHtml(who)}` : ""
+      } — ${escapeHtml(session.title)} (due ${escapeHtml(due(instance.dueAt))})`,
     );
   }
 
-  let sent = 0;
+  // ── (b) Participation sections ──
+  if (eventCadence > 0) {
+    for (const participant of graph.participants) {
+      if (participant.state !== "awaiting") continue;
+      const session = graph.sessionById.get(participant.sessionId);
+      if (session === undefined || session.status !== "planned") continue;
+      const since = now - (participant.lastRemindedAt ?? 0);
+      if (since < eventCadence * DAY_MS) continue;
+
+      const recipient = routeFor(graph, participant, "personal");
+      if (recipient === null) continue;
+      const bucket = bucketFor(buckets, recipient);
+      if (bucket === null) continue;
+      bucket.participantIds.push(participant._id);
+      bucket.participationLines.push(
+        `<strong>${escapeHtml(session.title)}</strong>`,
+      );
+    }
+  }
+
+  // ── One combined email per recipient, then stamp everything it covered ──
+  let taskEmails = 0;
+  let participationEmails = 0;
   for (const bucket of buckets.values()) {
-    const { subject, html } = await renderTemplate(
-      ctx,
-      event,
-      "reminder.tasks",
-      {
+    const hasTasks = bucket.taskLines.length > 0;
+    const hasParticipation = bucket.participationLines.length > 0;
+    if (!hasTasks && !hasParticipation) continue;
+
+    const speaker = {
+      firstName: bucket.recipient.firstName,
+      lastName: bucket.recipient.lastName,
+    };
+    const link = `${siteUrl()}/portal/${event.slug}`;
+
+    let subject: string;
+    let html: string;
+    let kind: string;
+    if (hasTasks) {
+      // Tasks drive the primary template. When the SAME recipient (a manager
+      // acting as an awaiting speaker's fallback) also owes participation, that
+      // section is folded in so it stays ONE email (M5:86).
+      const tasksHtml = hasParticipation
+        ? [
+            list(bucket.taskLines),
+            "<p>Also awaiting confirmation:</p>",
+            list(bucket.participationLines),
+          ].join("\n")
+        : list(bucket.taskLines);
+      const rendered = await renderTemplate(ctx, event, "reminder.tasks", {
         event: { name: event.name },
-        speaker: {
-          firstName: bucket.recipient.firstName,
-          lastName: bucket.recipient.lastName,
+        speaker,
+        link,
+        tasks: tasksHtml,
+      });
+      subject = rendered.subject;
+      html = rendered.html;
+      kind = "reminder.tasks";
+    } else {
+      const rendered = await renderTemplate(
+        ctx,
+        event,
+        "reminder.participation",
+        {
+          event: { name: event.name },
+          speaker,
+          link,
+          body: list(bucket.participationLines),
         },
-        link: `${siteUrl()}/portal/${event.slug}`,
-        tasks: list(bucket.lines),
-      },
-    );
+      );
+      subject = rendered.subject;
+      html = rendered.html;
+      kind = "reminder.participation";
+    }
+
     await sendLoggedEmail(ctx, {
       orgId: event.orgId,
       eventId: event._id,
       toEmail: bucket.recipient.email,
-      kind: "reminder.tasks",
+      kind,
       subject,
       html,
       // No sentByUserId: this is a system send, not an organizer's action.
       replyTo: event.replyTo,
-      context: { instanceIds: bucket.instanceIds },
-    });
-    for (const instanceId of bucket.instanceIds) {
-      await ctx.db.patch("taskInstances", instanceId, {
-        lastRemindedAt: now,
-      });
-    }
-    sent += 1;
-  }
-  return sent;
-}
-
-// ── (b) Participation reminders ──────────────────────────────────────────
-
-async function sweepParticipation(
-  ctx: MutationCtx,
-  event: Doc<"events">,
-  graph: EventGraph,
-  now: number,
-): Promise<number> {
-  const cadenceDays = event.reminderCadenceDays;
-  if (cadenceDays === undefined || cadenceDays <= 0) return 0;
-
-  const buckets = new Map<string, Bucket>();
-  for (const participant of graph.participants) {
-    if (participant.state !== "awaiting") continue;
-    const session = graph.sessionById.get(participant.sessionId);
-    if (session === undefined || session.status !== "planned") continue;
-    const since = now - (participant.lastRemindedAt ?? 0);
-    if (since < cadenceDays * DAY_MS) continue;
-
-    const recipient = routeFor(graph, participant, "personal");
-    if (recipient === null) continue;
-    const bucket = bucketFor(buckets, recipient);
-    if (bucket === null) continue;
-    bucket.participantIds.push(participant._id);
-    bucket.lines.push(`<strong>${escapeHtml(session.title)}</strong>`);
-  }
-
-  let sent = 0;
-  for (const bucket of buckets.values()) {
-    const { subject, html } = await renderTemplate(
-      ctx,
-      event,
-      "reminder.participation",
-      {
-        event: { name: event.name },
-        speaker: {
-          firstName: bucket.recipient.firstName,
-          lastName: bucket.recipient.lastName,
-        },
-        link: `${siteUrl()}/portal/${event.slug}`,
-        body: list(bucket.lines),
+      context: {
+        instanceIds: bucket.taskInstanceIds,
+        participantIds: bucket.participantIds,
       },
-    );
-    await sendLoggedEmail(ctx, {
-      orgId: event.orgId,
-      eventId: event._id,
-      toEmail: bucket.recipient.email,
-      kind: "reminder.participation",
-      subject,
-      html,
-      replyTo: event.replyTo,
-      context: { participantIds: bucket.participantIds },
     });
+    for (const instanceId of bucket.taskInstanceIds) {
+      await ctx.db.patch("taskInstances", instanceId, { lastRemindedAt: now });
+    }
     for (const participantId of bucket.participantIds) {
       await ctx.db.patch("sessionParticipants", participantId, {
         lastRemindedAt: now,
       });
     }
-    sent += 1;
+    if (hasTasks) taskEmails += 1;
+    if (hasParticipation) participationEmails += 1;
   }
-  return sent;
+  return { taskEmails, participationEmails };
 }
 
 // ── The sweep ────────────────────────────────────────────────────────────
@@ -332,8 +375,9 @@ export const sweep = internalMutation({
       if (event.reminderCadenceDays === undefined) continue;
       const graph = await loadGraph(ctx, event);
       swept += 1;
-      taskEmails += await sweepTasks(ctx, event, graph, now);
-      participationEmails += await sweepParticipation(ctx, event, graph, now);
+      const result = await sweepEvent(ctx, event, graph, now);
+      taskEmails += result.taskEmails;
+      participationEmails += result.participationEmails;
     }
     return { events: swept, taskEmails, participationEmails };
   },

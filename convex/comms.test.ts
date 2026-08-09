@@ -62,6 +62,28 @@ async function clearMessages(t: TestT): Promise<void> {
   });
 }
 
+/**
+ * A fixed instant well before every task/participant reminder cadence window.
+ * Fix 2 stamps every instance and participant with its CREATION time so the
+ * FIRST reminder waits a full cadence; backdating that stamp to LONG_AGO
+ * simulates a cadence having elapsed since assignment, so the sweep under test
+ * fires on its first run instead of waiting for wall-clock time to pass.
+ */
+const LONG_AGO = NOW - 400 * DAY;
+
+async function elapseReminders(t: TestT): Promise<void> {
+  await t.run(async (ctx) => {
+    for (const i of await ctx.db.query("taskInstances").collect()) {
+      await ctx.db.patch("taskInstances", i._id, { lastRemindedAt: LONG_AGO });
+    }
+    for (const p of await ctx.db.query("sessionParticipants").collect()) {
+      await ctx.db.patch("sessionParticipants", p._id, {
+        lastRemindedAt: LONG_AGO,
+      });
+    }
+  });
+}
+
 // ── Fixtures ─────────────────────────────────────────────────────────────
 
 async function organizerEvent(t: TestT) {
@@ -311,7 +333,7 @@ describe("comms.listAudiences", () => {
     );
   });
 
-  test("claiming portal access moves that speaker's chasing to them", async () => {
+  test("claiming portal access does NOT reroute task chasing off the manager", async () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
     const { sessionId } = await acceptedWithManager(t, eventSlug);
@@ -331,10 +353,12 @@ describe("comms.listAudiences", () => {
       html: "<p>Please finish this.</p>",
       now: NOW,
     });
-    // Carol hears about her own work; Dave is still represented by bob.
+    // Routine task chasing stays on the primary manager even after a speaker
+    // claims their portal (MILESTONES M4:87 — claiming never silently reroutes).
+    // Both Carol's and Dave's obligations collapse onto bob → one message.
     expect(
-      (await messagesOfKind(t, "manual.oneoff")).map((m) => m.toEmail).sort(),
-    ).toEqual(["bob@example.com", "carol@example.com"]);
+      (await messagesOfKind(t, "manual.oneoff")).map((m) => m.toEmail),
+    ).toEqual(["bob@example.com"]);
   });
 });
 
@@ -427,6 +451,64 @@ describe("comms.sendOneOff", () => {
         now: NOW,
       }),
       "invalid_email",
+    );
+  });
+
+  test("an oversized audience is refused, not silently truncated", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    // MAX_AUDIENCE is 200; 201 reachable speakers must trip the guard.
+    await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      const sessionId = await ctx.db.insert("sessions", {
+        eventId: event._id,
+        title: "Big panel",
+        source: "direct",
+        status: "planned",
+      });
+      for (let i = 0; i < 201; i++) {
+        const eventContactId = await ctx.db.insert("eventContacts", {
+          eventId: event._id,
+          orgId: event.orgId,
+          firstName: `Sp${i}`,
+          lastName: "Eaker",
+          email: `sp${i}@example.com`,
+        });
+        await ctx.db.insert("sessionParticipants", {
+          sessionId,
+          eventId: event._id,
+          eventContactId,
+          role: "speaker",
+          state: "confirmed",
+        });
+      }
+    });
+
+    // The count is honest about the cap rather than presenting 200 as exact.
+    const counts = await alice.query(api.comms.listAudiences, {
+      eventSlug,
+      now: NOW,
+    });
+    expect(counts.find((c) => c.kind === "allSpeakers")).toMatchObject({
+      count: 200,
+      totalKnown: 201,
+      truncated: true,
+    });
+
+    // And the send refuses with the real total rather than blasting 200.
+    await expectRejectedWith(
+      alice.mutation(api.comms.sendOneOff, {
+        eventSlug,
+        to: { kind: "audience", audience: "allSpeakers" },
+        subject: "x",
+        html: "<p>x</p>",
+        now: NOW,
+      }),
+      "audience_too_large",
     );
   });
 
@@ -529,6 +611,7 @@ describe("reminders.sweep", () => {
     await manualRequirement(alice, eventSlug, "Send your travel details");
     await setCadence(alice, eventSlug, 3);
     await clearMessages(t);
+    await elapseReminders(t);
 
     const result = await t.mutation(internal.reminders.sweep, { now: NOW });
     expect(result).toMatchObject({ taskEmails: 1, participationEmails: 0 });
@@ -560,6 +643,7 @@ describe("reminders.sweep", () => {
     await manualRequirement(alice, eventSlug, "Sign the speaker release");
     await setCadence(alice, eventSlug, 3);
     await clearMessages(t);
+    await elapseReminders(t);
 
     expect(
       await t.mutation(internal.reminders.sweep, { now: NOW }),
@@ -588,6 +672,7 @@ describe("reminders.sweep", () => {
     await manualRequirement(alice, eventSlug, "Sign the speaker release");
     await setCadence(alice, eventSlug, 3);
     await clearMessages(t);
+    await elapseReminders(t);
 
     const result = await t.mutation(internal.reminders.sweep, { now: NOW });
     expect(result).toMatchObject({ taskEmails: 1, participationEmails: 1 });
@@ -636,6 +721,7 @@ describe("reminders.sweep", () => {
     });
     await setCadence(alice, eventSlug, 1);
     await clearMessages(t);
+    await elapseReminders(t);
 
     await t.mutation(internal.reminders.sweep, { now: NOW });
     const [send] = await messagesOfKind(t, "reminder.tasks");
@@ -644,11 +730,12 @@ describe("reminders.sweep", () => {
       (send.context as { instanceIds: string[] }).instanceIds,
     ).toHaveLength(2);
 
-    // The silenced requirement's instances were never stamped.
+    // The silenced requirement's instances were never stamped BY THE SWEEP:
+    // they still carry the backdated stamp, not `now`.
     const untouched = (await instanceRows(t)).filter(
       (i) => i.requirementId === quiet.requirementId,
     );
-    expect(untouched.every((i) => i.lastRemindedAt === undefined)).toBe(true);
+    expect(untouched.every((i) => i.lastRemindedAt === LONG_AGO)).toBe(true);
 
     // Two days later the event default would fire, but the override says 7.
     await t.mutation(internal.reminders.sweep, { now: NOW + 2 * DAY });
@@ -681,6 +768,7 @@ describe("reminders.sweep", () => {
       instanceId: carolInstance,
     });
     await clearMessages(t);
+    await elapseReminders(t);
 
     await t.mutation(internal.reminders.sweep, { now: NOW });
     const [send] = await messagesOfKind(t, "reminder.tasks");
@@ -697,7 +785,7 @@ describe("reminders.sweep", () => {
     expect(await messageRows(t)).toHaveLength(0);
   });
 
-  test("a claimed speaker is chased directly instead of their manager", async () => {
+  test("a claimed speaker's task chasing still routes to their manager", async () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
     const { sessionId } = await acceptedWithManager(t, eventSlug);
@@ -708,11 +796,14 @@ describe("reminders.sweep", () => {
     const carol = await signIn(t, "carol", { email: "carol@example.com" });
     await carol.mutation(api.portal.enter, { eventSlug });
     await clearMessages(t);
+    await elapseReminders(t);
 
     await t.mutation(internal.reminders.sweep, { now: NOW });
+    // Carol claimed her portal, but routine task chasing never silently
+    // reroutes off the primary manager (MILESTONES M4:87).
     expect(
       (await messagesOfKind(t, "reminder.tasks")).map((m) => m.toEmail),
-    ).toEqual(["carol@example.com"]);
+    ).toEqual(["bob@example.com"]);
   });
 
   test("an organizer's template override drives the reminder copy", async () => {
@@ -729,10 +820,133 @@ describe("reminders.sweep", () => {
       html: "<p>{{tasks}}</p>",
     });
     await clearMessages(t);
+    await elapseReminders(t);
 
     await t.mutation(internal.reminders.sweep, { now: NOW });
     expect((await messagesOfKind(t, "reminder.tasks"))[0].subject).toBe(
       "[Acme Summit] still outstanding",
     );
+  });
+
+  test("the first reminder waits a full cadence after assignment", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    // Confirm both speakers so the scenario is purely about task cadence.
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Dave"));
+    await manualRequirement(alice, eventSlug, "Speaker release");
+    await setCadence(alice, eventSlug, 3);
+    await clearMessages(t);
+
+    // Fix 2: fresh instances are stamped with their creation time, so measure
+    // the cadence relative to THAT — not the wall clock.
+    const created = await t.run(async (ctx) => {
+      const [instance] = await ctx.db.query("taskInstances").collect();
+      return instance.lastRemindedAt;
+    });
+    expect(created).toBeTypeOf("number");
+    const t0 = created as number;
+
+    // Well inside the 3-day cadence: nothing fires, even though a plain hourly
+    // sweep runs (the old bug fired immediately after assignment).
+    expect(
+      await t.mutation(internal.reminders.sweep, { now: t0 + 3600 * 1000 }),
+    ).toMatchObject({ taskEmails: 0, participationEmails: 0 });
+    expect(
+      await t.mutation(internal.reminders.sweep, {
+        now: t0 + 3 * DAY - 1000,
+      }),
+    ).toMatchObject({ taskEmails: 0 });
+    expect(await messagesOfKind(t, "reminder.tasks")).toHaveLength(0);
+
+    // A full cadence after assignment: it finally fires.
+    expect(
+      await t.mutation(internal.reminders.sweep, { now: t0 + 3 * DAY }),
+    ).toMatchObject({ taskEmails: 1 });
+  });
+
+  test("a manager owed a task AND covering an awaiting speaker gets ONE email", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    // Carol confirms → her task is chased to bob. Dave stays awaiting AND has
+    // no address of his own, so his participation reminder falls back to bob.
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    const daveParticipant = await participantFor(t, sessionId, "Dave");
+    await t.run(async (ctx) => {
+      const dave = await ctx.db.get("sessionParticipants", daveParticipant);
+      if (dave === null) throw new Error("no dave");
+      await ctx.db.patch("eventContacts", dave.eventContactId, {
+        email: undefined,
+      });
+    });
+    await manualRequirement(alice, eventSlug, "Speaker release");
+    await setCadence(alice, eventSlug, 2);
+    await clearMessages(t);
+    await elapseReminders(t);
+
+    const result = await t.mutation(internal.reminders.sweep, { now: NOW });
+    // Both a task section and a participation section, but ONE message (M5:86).
+    const sends = await messageRows(t);
+    expect(sends).toHaveLength(1);
+    expect(sends[0].toEmail).toBe("bob@example.com");
+    // The counters still register both sections rode in that single email.
+    expect(result).toMatchObject({ taskEmails: 1, participationEmails: 1 });
+
+    // Carol's task instance and Dave's participant were both stamped, so a
+    // second sweep inside the window is silent.
+    expect(
+      await t.mutation(internal.reminders.sweep, { now: NOW + 3600 * 1000 }),
+    ).toMatchObject({ taskEmails: 0, participationEmails: 0 });
+  });
+
+  test("a self-managed direct speaker owns their session task; overdue audience keeps it", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    // Direct invite: Sam manages himself — there is no primary manager.
+    const { sessionId } = await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Sam", lastName: "Solo", email: "sam@example.com" },
+      "Solo talk",
+    );
+    // A session-scope obligation for the whole session.
+    await alice.mutation(api.tasks.createRequirement, {
+      eventSlug,
+      title: "Final slide deck",
+      scope: "session",
+      evidence: "manual",
+      reviewRequired: false,
+      dueAt: PAST_DUE,
+    });
+
+    // Sam signs in, claims his snapshot, and confirms.
+    const sam = await signIn(t, "sam", { email: "sam@example.com" });
+    await sam.mutation(api.portal.enter, { eventSlug });
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Sam"));
+
+    // Fix 6: the session task is visible to the self-managed speaker...
+    const tasks = await sam.query(api.portal.myTasks, { eventSlug });
+    const sessionTask = tasks.find((task) => task.scope === "session");
+    expect(sessionTask).toBeDefined();
+
+    // ...the overdue audience includes it (routed to Sam, who has no manager)...
+    const counts = await alice.query(api.comms.listAudiences, {
+      eventSlug,
+      now: NOW,
+    });
+    expect(counts.find((c) => c.kind === "overdueTasks")?.count).toBe(1);
+
+    // ...and Sam can complete it himself.
+    await sam.mutation(api.portal.completeTask, {
+      eventSlug,
+      instanceId: sessionTask!.instanceId,
+    });
+    const after = await alice.query(api.comms.listAudiences, {
+      eventSlug,
+      now: NOW,
+    });
+    expect(after.find((c) => c.kind === "overdueTasks")?.count).toBe(0);
   });
 });

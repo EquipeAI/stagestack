@@ -1,5 +1,7 @@
 import type { QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
+import type { EventCaller } from "../lib/functions";
+import { requireOrganizer } from "../lib/functions";
 import { isOpen, isOverdue } from "./tasks";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -8,12 +10,11 @@ import { isOpen, isOverdue } from "./tasks";
 // be one (MILESTONES non-goals: imported mailing lists, newsletters).
 //
 // Routing follows the representation rule (M4/M5): routine task chasing goes to
-// the primary manager while the speaker has not claimed their own portal
-// access; personal-action messages (confirm your participation) go to the
-// speaker directly, falling back to the manager when we have no address for
-// them. Claiming portal access flips task routing to the speaker — that is the
-// deliberate "claiming never SILENTLY changes routing" boundary: it changes
-// because the speaker took the action themselves.
+// the primary manager WHENEVER one exists — claiming a portal never silently
+// reroutes it to the speaker (MILESTONES M4:87). Only when there is no manager
+// (a self-managing direct speaker) does task chasing reach the speaker.
+// Personal-action messages (confirm your participation) go to the speaker
+// directly, falling back to the manager when we have no address for them.
 // ─────────────────────────────────────────────────────────────────────────
 
 export const AUDIENCE_KINDS = [
@@ -35,9 +36,14 @@ export type AudienceRecipient = {
 };
 
 export type AudienceResult = {
+  /** Deduped recipients, CAPPED at MAX_AUDIENCE. */
   recipients: AudienceRecipient[];
   /** Speakers we could not reach at all (no own address, no manager address). */
   skipped: number;
+  /** Total distinct reachable recipients BEFORE the cap — the honest count. */
+  totalKnown: number;
+  /** True when totalKnown exceeded MAX_AUDIENCE and `recipients` was capped. */
+  truncated: boolean;
 };
 
 const PARTICIPANT_SCAN = 5000;
@@ -59,12 +65,22 @@ function cleanEmail(value: string | undefined): string | undefined {
 
 export type ManagerLookup = Map<Id<"users">, Doc<"users"> | null>;
 
+function splitName(name: string | undefined): {
+  firstName: string;
+  lastName: string;
+} {
+  const [first, ...rest] = (name ?? "").trim().split(/\s+/);
+  return { firstName: first ?? "", lastName: rest.join(" ") };
+}
+
 /**
  * Pick the address for one participant.
  *
- * `task` mode: the manager owns routine chasing UNLESS the speaker has claimed
- * their own portal access (`eventContact.userId` set), in which case the person
- * who owes the work hears about it directly.
+ * `task` mode: the primary manager owns routine chasing WHENEVER one exists —
+ * a speaker claiming their portal never reroutes it (MILESTONES M4:87). The
+ * recipient is greeted as the manager (or generically), never as an arbitrary
+ * represented speaker; the speaker's name belongs in the digest LINE. Only a
+ * self-managing speaker with no manager is chased directly.
  *
  * `personal` mode: always try the speaker first; the manager is the fallback so
  * a represented speaker with no address of their own still gets asked.
@@ -77,12 +93,18 @@ export function routeParticipant(args: {
   const { contact, managerUser, mode } = args;
   const speakerEmail = cleanEmail(contact?.email);
   const managerEmail = cleanEmail(managerUser?.email ?? undefined);
-  const claimed = contact?.userId !== undefined;
 
-  const preferManager = mode === "task" && !claimed && managerEmail !== undefined;
-  const email = preferManager ? managerEmail : (speakerEmail ?? managerEmail);
+  const toManager = mode === "task" && managerEmail !== undefined;
+  if (toManager) {
+    return {
+      email: managerEmail,
+      ...splitName(managerUser?.name ?? undefined),
+      userId: managerUser?._id,
+    };
+  }
+
+  const email = speakerEmail ?? managerEmail;
   if (email === undefined) return null;
-
   return {
     email,
     firstName: contact?.firstName ?? "",
@@ -92,14 +114,29 @@ export function routeParticipant(args: {
   };
 }
 
+/** Dedupe by email — NO cap (the cap is applied once, in `finalize`, so the
+ * honest total can still be reported). */
 function dedupe(recipients: AudienceRecipient[]): AudienceRecipient[] {
   const byEmail = new Map<string, AudienceRecipient>();
   for (const recipient of recipients) {
     if (byEmail.has(recipient.email)) continue;
     byEmail.set(recipient.email, recipient);
-    if (byEmail.size >= MAX_AUDIENCE) break;
   }
   return [...byEmail.values()];
+}
+
+/** Cap the deduped set at MAX_AUDIENCE while reporting the true total, so a
+ * truncated audience is VISIBLE rather than silently presented as exact. */
+function finalize(
+  deduped: AudienceRecipient[],
+  skipped: number,
+): AudienceResult {
+  return {
+    recipients: deduped.slice(0, MAX_AUDIENCE),
+    skipped,
+    totalKnown: deduped.length,
+    truncated: deduped.length > MAX_AUDIENCE,
+  };
 }
 
 type EventState = {
@@ -180,8 +217,7 @@ function collect(
     }
     recipients.push(routed);
   }
-  const deduped = dedupe(recipients);
-  return { recipients: deduped, skipped };
+  return finalize(dedupe(recipients), skipped);
 }
 
 async function overdueTaskAudience(
@@ -209,16 +245,29 @@ async function overdueTaskAudience(
     if (!isOpen(instance) || !isOverdue(instance, now)) continue;
     const requirement = requirementById.get(instance.requirementId);
     if (requirement === undefined || !requirement.active) continue;
-    if (instance.participantId === undefined) continue;
-    if (seen.has(instance.participantId)) continue;
-    const participant = participantById.get(instance.participantId);
+
+    // Resolve the accountable participant. Participant-scope tasks name it
+    // directly; a session-scope task carries an eventContactId assignee
+    // instead (M4: session tasks have one accountable assignee), so it is no
+    // longer dropped from the overdue audience.
+    let participant: Doc<"sessionParticipants"> | undefined;
+    if (instance.participantId !== undefined) {
+      participant = participantById.get(instance.participantId);
+    } else if (instance.eventContactId !== undefined) {
+      participant = state.participants.find(
+        (p) =>
+          p.sessionId === instance.sessionId &&
+          p.eventContactId === instance.eventContactId,
+      );
+    }
     if (participant === undefined) continue;
+    if (seen.has(participant._id)) continue;
     const session = state.sessionById.get(participant.sessionId);
     if (session === undefined || session.status !== "planned") continue;
     if (participant.state === "withdrawn" || participant.state === "declined") {
       continue;
     }
-    seen.add(instance.participantId);
+    seen.add(participant._id);
     owing.push(participant);
   }
   return collect(state, owing, "task");
@@ -254,7 +303,7 @@ async function reviewerAudience(
       userId: user._id,
     });
   }
-  return { recipients: dedupe(recipients), skipped };
+  return finalize(dedupe(recipients), skipped);
 }
 
 /**
@@ -300,24 +349,32 @@ export async function resolveAudience(
 
 export type AudienceCount = {
   kind: AudienceKind;
+  /** Reachable recipients in this send, capped at MAX_AUDIENCE. */
   count: number;
   skipped: number;
+  /** True total before the cap, and whether the cap bit. */
+  totalKnown: number;
+  truncated: boolean;
 };
 
 export async function audienceCounts(
   ctx: QueryCtx,
-  event: Doc<"events">,
+  caller: EventCaller,
   now: number,
 ): Promise<AudienceCount[]> {
+  // Organizer-only: audiences expose who is reachable on this event.
+  requireOrganizer(caller);
   const counts: AudienceCount[] = [];
   for (const kind of AUDIENCE_KINDS) {
-    const { recipients, skipped } = await resolveAudience(
-      ctx,
-      event,
+    const { recipients, skipped, totalKnown, truncated } =
+      await resolveAudience(ctx, caller.event, kind, now);
+    counts.push({
       kind,
-      now,
-    );
-    counts.push({ kind, count: recipients.length, skipped });
+      count: recipients.length,
+      skipped,
+      totalKnown,
+      truncated,
+    });
   }
   return counts;
 }

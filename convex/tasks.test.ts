@@ -253,8 +253,13 @@ describe("requirement creation", () => {
     const rows = await alice.query(api.tasks.listInstances, { eventSlug });
     const deck = rows.filter((r) => r.requirementTitle === "Final slide deck");
     expect(deck).toHaveLength(1);
+    // One shared obligation: no participantId (its identity is per session).
     expect(deck[0].participantId).toBeUndefined();
-    expect(deck[0].eventContactId).toBeUndefined();
+    // Fix 6: it still carries an accountable assignee (a represented speaker's
+    // snapshot, routing the shared obligation to the primary manager) so a
+    // self-managed speaker can see it and the overdue audience keeps it.
+    expect(deck[0].eventContactId).toBeDefined();
+    expect(["Carol Speaker", "Dave Cospeaker"]).toContain(deck[0].speakerName);
 
     const travel = rows.filter((r) => r.requirementTitle === "Travel details");
     expect(travel.map((r) => r.speakerName).sort()).toEqual([

@@ -209,6 +209,9 @@ async function ensureParticipant(
     // remains separately Awaiting Response until confirmed or declined" (M2).
     state: "awaiting",
     managerUserId: args.managerUserId,
+    // Fix 2: stamp creation time so the first PARTICIPATION reminder waits a
+    // full cadence after the invitation, rather than firing at the next sweep.
+    lastRemindedAt: Date.now(),
   });
 }
 

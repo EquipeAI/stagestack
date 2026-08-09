@@ -248,14 +248,16 @@ export async function sendOneOff(
       args.to.audience,
       args.now,
     );
+    // Refuse rather than silently truncate: a capped send would quietly reach
+    // only MAX_AUDIENCE of a larger audience (finding #5).
+    if (resolved.truncated) {
+      throw new ConvexError({
+        code: "audience_too_large",
+        message: `This audience has ${resolved.totalKnown} reachable recipients; a single send reaches at most ${MAX_AUDIENCE}. Narrow it down.`,
+      });
+    }
     recipients = resolved.recipients;
     skipped = resolved.skipped;
-  }
-  if (recipients.length > MAX_AUDIENCE) {
-    throw new ConvexError({
-      code: "too_many",
-      message: `A single send reaches at most ${MAX_AUDIENCE} recipients.`,
-    });
   }
   if (recipients.length === 0) {
     throw new ConvexError({

@@ -40,13 +40,17 @@ export const listAudiences = eventQuery({
   returns: v.array(
     v.object({
       kind: vAudience,
+      /** Recipients this send would reach, capped at MAX_AUDIENCE. */
       count: v.number(),
       /** People in this audience with no reachable address at all. */
       skipped: v.number(),
+      /** True total before the cap, so a truncated audience is visible. */
+      totalKnown: v.number(),
+      truncated: v.boolean(),
     }),
   ),
   handler: async (ctx, args) => {
-    return await Audiences.audienceCounts(ctx, ctx.caller.event, args.now);
+    return await Audiences.audienceCounts(ctx, ctx.caller, args.now);
   },
 });
 

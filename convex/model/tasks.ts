@@ -208,6 +208,7 @@ async function insertInstance(
     eventContactId?: Id<"eventContacts">;
   },
 ): Promise<void> {
+  const now = Date.now();
   await ctx.db.insert("taskInstances", {
     requirementId: requirement._id,
     eventId: requirement.eventId,
@@ -216,7 +217,11 @@ async function insertInstance(
     eventContactId: args.eventContactId,
     status: await initialStatus(ctx, cache, requirement, args.eventContactId),
     dueAt: requirement.dueAt,
-    updatedAt: Date.now(),
+    // Fix 2: stamp creation time so the FIRST reminder is due one full cadence
+    // AFTER assignment — not at the next hourly sweep (undefined would read as
+    // epoch 0 and fire immediately).
+    lastRemindedAt: now,
+    updatedAt: now,
   });
 }
 
@@ -262,6 +267,28 @@ async function instantiateRequirement(
   return created;
 }
 
+/**
+ * A session-scope task is one shared obligation with one accountable assignee
+ * (MILESTONES M4). Route it to the session's PRIMARY MANAGER when one exists
+ * (a participant carrying a managerUserId); otherwise a self-managing direct
+ * speaker owns it — default to the sole/first confirmed participant, else the
+ * first still-live one. Stored as `eventContactId` (participantId stays
+ * undefined, so instance identity — one per requirement+session — is
+ * unchanged). Without an assignee the task would be invisible to a self-managed
+ * speaker, unroutable, and dropped from the overdue audience.
+ */
+function sessionAssignee(
+  participants: Array<Doc<"sessionParticipants">>,
+): Id<"eventContacts"> | undefined {
+  const live = participants.filter(
+    (p) => p.state !== "withdrawn" && p.state !== "declined",
+  );
+  const managed = live.find((p) => p.managerUserId !== undefined);
+  if (managed !== undefined) return managed.eventContactId;
+  const confirmed = live.find((p) => p.state === "confirmed");
+  return (confirmed ?? live[0])?.eventContactId;
+}
+
 /** The per-(requirement, session) half of instantiation, shared by both entry
  * points and idempotent through `seen`. */
 async function instantiateOne(
@@ -277,7 +304,10 @@ async function instantiateOne(
     const key = instanceKey(requirement._id, sessionId, undefined);
     if (seen.has(key)) return 0;
     seen.add(key);
-    await insertInstance(ctx, cache, requirement, { sessionId });
+    await insertInstance(ctx, cache, requirement, {
+      sessionId,
+      eventContactId: sessionAssignee(args.participants),
+    });
     return 1;
   }
   for (const participant of args.participants) {

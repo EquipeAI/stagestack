@@ -2,7 +2,7 @@ import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
-import { forbidden, notFound } from "../lib/functions";
+import { forbidden, notFound, requireOrganizer } from "../lib/functions";
 import type {
   ImportPlan,
   ImportRecord,
@@ -194,6 +194,10 @@ export async function executeRecords(
   caller: EventCaller,
   records: PlannedRecord[],
 ): Promise<RecordResult[]> {
+  // Belt-and-suspenders: the caller is already organizer-resolved via
+  // resolveJobCaller, but every capability re-checks its own authorization
+  // (the capability-layer invariant, MILESTONES M0).
+  requireOrganizer(caller);
   assertEventActive(caller.event);
   if (records.length > IMPORT_LIMITS.executeBatch) {
     throw new ConvexError({

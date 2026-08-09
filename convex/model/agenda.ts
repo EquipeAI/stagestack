@@ -659,7 +659,10 @@ export async function updateAgendaItem(
   ctx: MutationCtx,
   caller: EventCaller,
   itemId: Id<"agendaItems">,
-  patch: Partial<AgendaItemInput>,
+  // `roomId: null` explicitly CLEARS the room; absent leaves it unchanged.
+  patch: Omit<Partial<AgendaItemInput>, "roomId"> & {
+    roomId?: Id<"rooms"> | null;
+  },
 ): Promise<void> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
@@ -685,19 +688,22 @@ export async function updateAgendaItem(
     );
   }
   // Times and room are validated together — a new start with the old end must
-  // still be a legal block.
+  // still be a legal block. `roomId: null` clears the room (stored as
+  // undefined); an absent roomId keeps the item's current room.
+  const roomChanging = patch.roomId !== undefined;
   if (
     patch.startsAt !== undefined ||
     patch.endsAt !== undefined ||
-    patch.roomId !== undefined
+    roomChanging
   ) {
     const slot = await validateSlot(ctx, caller.event, {
       startsAt: patch.startsAt ?? item.startsAt,
       endsAt: patch.endsAt ?? item.endsAt,
-      roomId: patch.roomId ?? item.roomId,
+      roomId: roomChanging ? (patch.roomId ?? undefined) : item.roomId,
     });
     update.startsAt = slot.startsAt;
     update.endsAt = slot.endsAt;
+    // Present-but-undefined removes the field on patch → an explicit clear.
     update.roomId = slot.roomId;
   }
   await ctx.db.patch("agendaItems", itemId, update);
@@ -1323,6 +1329,11 @@ export async function setAcknowledgement(
       message: "This session's slot hasn't been released yet.",
     });
   }
+
+  // Idempotent: re-asserting the SAME response is a no-op. Without this a
+  // repeated `conflict` ack would re-patch, re-audit, and re-email organizers
+  // on every call; organizers are notified only on a transition INTO conflict.
+  if (participant.ack === args.response) return;
 
   const now = Date.now();
   await ctx.db.patch("sessionParticipants", participant._id, {

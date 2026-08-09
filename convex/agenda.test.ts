@@ -382,6 +382,37 @@ describe("agenda.board conflicts", () => {
     expect(board.sessions[0].conflicts).toEqual([]);
   });
 
+  test("an agenda item's room can be cleared with roomId: null", async () => {
+    const { alice, eventSlug, mainStage } = await setup();
+    const lunch = await alice.mutation(api.agenda.createAgendaItem, {
+      eventSlug,
+      title: "Lunch",
+      startsAt: T11,
+      endsAt: T12,
+      roomId: mainStage,
+    });
+    let board = await alice.query(api.agenda.board, { eventSlug });
+    expect(board.agendaItems[0].roomId).toBe(mainStage);
+
+    // A time-only edit leaves the room untouched (absent roomId = unchanged).
+    await alice.mutation(api.agenda.updateAgendaItem, {
+      eventSlug,
+      itemId: lunch,
+      patch: { startsAt: T1030 },
+    });
+    board = await alice.query(api.agenda.board, { eventSlug });
+    expect(board.agendaItems[0].roomId).toBe(mainStage);
+
+    // roomId: null is an explicit clear.
+    await alice.mutation(api.agenda.updateAgendaItem, {
+      eventSlug,
+      itemId: lunch,
+      patch: { roomId: null },
+    });
+    board = await alice.query(api.agenda.board, { eventSlug });
+    expect(board.agendaItems[0].roomId).toBeUndefined();
+  });
+
   test("the board is an organizer surface — reviewers are refused", async () => {
     const { t, alice, eventSlug } = await setup();
     await signIn(t, "rita");
@@ -819,6 +850,46 @@ describe("acknowledgement", () => {
       "reported a schedule conflict",
     );
     expect(await messageKinds(t)).toContain("schedule.conflictReported");
+  });
+
+  test("re-reporting the same conflict is idempotent — no repeat email or audit", async () => {
+    const { t, alice, eventSlug, mainStage } = await setup();
+    const sessionId = await placedSession(
+      alice,
+      eventSlug,
+      "Reactive backends",
+      "bob@example.com",
+      { startsAt: T10, endsAt: T11, roomId: mainStage },
+    );
+    const bob = await signIn(t, "bob");
+    await bob.mutation(api.portal.enter, { eventSlug });
+    await alice.mutation(api.agenda.release, {
+      eventSlug,
+      sessionIds: [sessionId],
+    });
+    const [participant] = await participantRows(t, sessionId);
+    await bob.mutation(api.portal.confirmParticipation, {
+      eventSlug,
+      participantId: participant._id,
+      to: "confirmed",
+    });
+
+    // Report the conflict, then re-assert the SAME response twice more.
+    for (let i = 0; i < 3; i++) {
+      await bob.mutation(api.portal.acknowledgeSlot, {
+        eventSlug,
+        participantId: participant._id,
+        response: "conflict",
+      });
+    }
+
+    // Only the transition INTO conflict notified organizers and audited (7a).
+    const conflictEmails = (await messageKinds(t)).filter(
+      (k) => k === "schedule.conflictReported",
+    );
+    expect(conflictEmails).toHaveLength(1);
+    const acks = (await auditActions(t)).filter((a) => a === "agenda.ack");
+    expect(acks).toHaveLength(1);
   });
 
   test("awaiting acknowledgement warns without blocking", async () => {

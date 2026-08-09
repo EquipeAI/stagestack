@@ -176,7 +176,8 @@ export const updateAgendaItem = eventMutation({
       title: v.optional(v.string()),
       startsAt: v.optional(v.number()),
       endsAt: v.optional(v.number()),
-      roomId: v.optional(v.id("rooms")),
+      // null = explicitly clear the room; absent = leave unchanged.
+      roomId: v.optional(v.union(v.id("rooms"), v.null())),
       description: v.optional(v.string()),
     }),
   },

@@ -258,6 +258,41 @@ describe("portal.updateMyProfile", () => {
     expect(await auditActions(t)).toContain("portal.updateProfile");
   });
 
+  test("rejects a profile link that isn't an http(s) URL", async () => {
+    const t = setupTest();
+    const { eventSlug, eventContactId } = await directSetup(t);
+    const dana = await signIn(t, "dana");
+    await dana.mutation(api.portal.enter, { eventSlug });
+
+    // A javascript: scheme would become a clickable XSS vector on public pages
+    // (M7), so it is refused rather than stored.
+    await expectRejectedWith(
+      dana.mutation(api.portal.updateMyProfile, {
+        eventSlug,
+        eventContactId,
+        profile: {
+          firstName: "Dana",
+          lastName: "Keynote",
+          links: { website: "javascript:alert(1)" },
+        },
+      }),
+      "invalid_link",
+    );
+    // A bare host with no scheme is also refused.
+    await expectRejectedWith(
+      dana.mutation(api.portal.updateMyProfile, {
+        eventSlug,
+        eventContactId,
+        profile: {
+          firstName: "Dana",
+          lastName: "Keynote",
+          links: { twitter: "dana.example" },
+        },
+      }),
+      "invalid_link",
+    );
+  });
+
   test("NEGATIVE: another user cannot edit, confirm, or upload for a claimed profile", async () => {
     const t = setupTest();
     const { eventSlug, sessionId, eventContactId } = await directSetup(t);

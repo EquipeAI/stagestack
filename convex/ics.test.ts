@@ -127,8 +127,12 @@ describe("buildIcs", () => {
     const out = lines(ics);
 
     expect(out[0]).toBe("BEGIN:VCALENDAR");
-    expect(out.at(-1)).toBe("END:VCALENDAR");
-    expect(ics.endsWith("END:VCALENDAR")).toBe(true);
+    // The stream is CRLF-terminated per RFC 5545 §3.1, so unfolding+splitting
+    // on CRLF yields a trailing empty element after the final content line.
+    expect(out.at(-1)).toBe("");
+    expect(out.at(-2)).toBe("END:VCALENDAR");
+    // Every content line — including the last — ends with CRLF.
+    expect(ics.endsWith("END:VCALENDAR\r\n")).toBe(true);
     expect(ics.includes("\r\n")).toBe(true);
     // No bare LF anywhere: CRLF only.
     expect(/(?<!\r)\n/.test(ics)).toBe(false);
@@ -142,7 +146,7 @@ describe("buildIcs", () => {
     expect(out).toContain("SEQUENCE:0");
     expect(out).toContain("STATUS:CONFIRMED");
     expect(out).toContain(
-      "ORGANIZER;CN=StageStack:mailto:hello@stagestack.dev",
+      `ORGANIZER;CN="StageStack":mailto:hello@stagestack.dev`,
     );
     expect(
       out.find((l) => l.startsWith("ATTENDEE")),
@@ -163,6 +167,40 @@ describe("buildIcs", () => {
     expect(icsContentType("CANCEL")).toBe(
       "text/calendar; method=CANCEL; charset=UTF-8",
     );
+  });
+
+  test("a comma in a CN is quoted so it stays a single parameter value", () => {
+    const out = lines(
+      buildIcs({ ...baseInput(), attendeeName: "Doe, Jane" }),
+    );
+    const attendee = out.find((l) => l.startsWith("ATTENDEE"));
+    // RFC 5545 3.2: a param value containing a comma MUST be double-quoted,
+    // otherwise "Doe, Jane" reads as two values.
+    expect(attendee).toContain(`CN="Doe, Jane"`);
+  });
+
+  test("control chars are stripped from a CN parameter value", () => {
+    // Tab (0x09), vertical tab (0x0b), form feed (0x0c), NUL (0x00) embedded
+    // in the middle of the name -- none may reach the stream.
+    const dirty = "Stage" + String.fromCharCode(9, 11, 12, 0) + "Stack";
+    const out = lines(buildIcs({ ...baseInput(), organizerName: dirty }));
+    const organizer = out.find((l) => l.startsWith("ORGANIZER"));
+    expect(organizer).toContain(`CN="StageStack"`);
+    // No raw control character (0x00-0x1f or 0x7f) survives anywhere.
+    const raw = unfold(out.join("\n"));
+    for (let c = 0; c < raw.length; c++) {
+      const code = raw.charCodeAt(c);
+      const isControl = (code <= 0x1f && code !== 0x0a) || code === 0x7f;
+      expect(isControl).toBe(false);
+    }
+  });
+
+  test("a double-quote inside a CN is removed (quoted values can't nest quotes)", () => {
+    const out = lines(
+      buildIcs({ ...baseInput(), attendeeName: 'Jane "JJ" Doe' }),
+    );
+    const attendee = out.find((l) => l.startsWith("ATTENDEE"));
+    expect(attendee).toContain(`CN="Jane JJ Doe"`);
   });
 
   test("optional properties are omitted rather than emitted empty", () => {

@@ -58,10 +58,28 @@ export function escapeIcsText(value: string): string {
     .replace(/\r\n|\r|\n/g, "\\n");
 }
 
-/** Values in property PARAMETERS (CN=…) can't use TEXT escaping at all, so the
- * separators are removed outright along with any line break. */
+/**
+ * Values in property PARAMETERS (CN=…) can't use TEXT escaping at all. Strip
+ * ALL control chars (not just CR/LF) and the double-quote (RFC 5545 param-
+ * quoted values cannot contain a `"`), then collapse whitespace. The
+ * separators `,` `;` `:` are LEFT INTACT — the caller wraps the result in
+ * double quotes (see `quotedParam`) so those characters are safe in the value.
+ */
 function safeParam(value: string): string {
-  return oneLine(value).replace(/[";:]/g, " ").replace(/\s+/g, " ").trim();
+  return value
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f"]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * A CN parameter value, always double-quoted per RFC 5545 §3.2 so a comma
+ * (`CN=Doe, Jane`) reads as one value rather than a malformed multi-valued
+ * parameter. `safeParam` has already removed any `"`, so the quotes are safe.
+ */
+function quotedParam(value: string): string {
+  return `"${safeParam(value)}"`;
 }
 
 /** UIDs keep `:` and `@` — only whitespace and quoting characters go. */
@@ -170,13 +188,15 @@ export function buildIcs(input: IcsInput): string {
     lines.push(`URL:${escapeIcsText(input.url)}`);
   }
   lines.push(
-    `ORGANIZER;CN=${safeParam(input.organizerName)}:mailto:${safeAddress(input.organizerEmail)}`,
-    `ATTENDEE;CN=${safeParam(input.attendeeName)};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=${cancelled ? "FALSE" : "TRUE"}:mailto:${safeAddress(input.attendeeEmail)}`,
+    `ORGANIZER;CN=${quotedParam(input.organizerName)}:mailto:${safeAddress(input.organizerEmail)}`,
+    `ATTENDEE;CN=${quotedParam(input.attendeeName)};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=${cancelled ? "FALSE" : "TRUE"}:mailto:${safeAddress(input.attendeeEmail)}`,
     `STATUS:${cancelled ? "CANCELLED" : "CONFIRMED"}`,
     "END:VEVENT",
     "END:VCALENDAR",
   );
-  return lines.map(foldIcsLine).join("\r\n");
+  // Content lines are joined AND terminated with CRLF: RFC 5545 §3.1 requires
+  // every content line — including the last — to end with CRLF.
+  return lines.map(foldIcsLine).join("\r\n") + "\r\n";
 }
 
 /** The Resend attachment content-type for this method. */

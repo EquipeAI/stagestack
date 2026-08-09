@@ -116,6 +116,26 @@ function optionalText(
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * A profile link, bounded and lightly validated: these become clickable on
+ * public pages in M7, so a non-empty value must be a real http(s) URL —
+ * `javascript:`/`data:` and other schemes are refused rather than rendered.
+ */
+function optionalLink(
+  value: string | undefined,
+  label: string,
+): string | undefined {
+  const trimmed = optionalText(value, label, 300);
+  if (trimmed === undefined) return undefined;
+  if (!/^https?:\/\//i.test(trimmed)) {
+    throw new ConvexError({
+      code: "invalid_link",
+      message: `${label} must be a full URL starting with http:// or https://.`,
+    });
+  }
+  return trimmed;
+}
+
 function validateProfile(input: PortalProfileInput): PortalProfileInput {
   return {
     firstName: assertText(input.firstName, { label: "First name", max: 80 }),
@@ -131,10 +151,10 @@ function validateProfile(input: PortalProfileInput): PortalProfileInput {
       input.links === undefined
         ? undefined
         : {
-            website: optionalText(input.links.website, "Website", 300),
-            twitter: optionalText(input.links.twitter, "Twitter", 300),
-            linkedin: optionalText(input.links.linkedin, "LinkedIn", 300),
-            github: optionalText(input.links.github, "GitHub", 300),
+            website: optionalLink(input.links.website, "Website"),
+            twitter: optionalLink(input.links.twitter, "Twitter"),
+            linkedin: optionalLink(input.links.linkedin, "LinkedIn"),
+            github: optionalLink(input.links.github, "GitHub"),
           },
     headshotId: input.headshotId,
   };
