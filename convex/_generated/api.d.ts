@@ -9,7 +9,7 @@
  */
 
 import type * as auth from "../auth.js";
-import type * as myFunctions from "../myFunctions.js";
+import type * as worker from "../worker.js";
 
 import type {
   ApiFromModules,
@@ -19,7 +19,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
-  myFunctions: typeof myFunctions;
+  worker: typeof worker;
 }>;
 
 /**

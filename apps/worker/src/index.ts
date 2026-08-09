@@ -3,6 +3,8 @@
 // See docs/ARCHITECTURE.md ("Worker & agents").
 
 import { ConvexClient } from "convex/browser";
+import { api } from "../../../convex/_generated/api";
+import type { Id } from "../../../convex/_generated/dataModel";
 
 const CONVEX_URL = process.env.CONVEX_URL;
 const WORKER_SECRET = process.env.WORKER_SECRET;
@@ -11,22 +13,60 @@ if (!CONVEX_URL || !WORKER_SECRET) {
   console.error("Missing CONVEX_URL or WORKER_SECRET env vars");
   process.exit(1);
 }
+const secret = WORKER_SECRET;
 
 const client = new ConvexClient(CONVEX_URL);
+const inFlight = new Set<string>();
 
-async function main() {
-  console.log(`[worker] connecting to ${CONVEX_URL}`);
-  // Walking-skeleton placeholder: real subscription lands with the jobs table.
-  //   client.onUpdate(api.worker.pending, { secret: WORKER_SECRET }, async (jobs) => {
-  //     for (const job of jobs) await claimAndRun(job);
-  //   });
-  console.log("[worker] up — waiting for jobs table to exist");
+type PendingJob = { _id: Id<"jobs">; type: string; payload: unknown };
+
+async function runJob(job: PendingJob): Promise<unknown> {
+  switch (job.type) {
+    case "ping":
+      return { pong: true, at: Date.now(), payload: job.payload };
+    default:
+      throw new Error(`Unknown job type: ${job.type}`);
+  }
 }
 
-main().catch((err) => {
-  console.error("[worker] fatal", err);
-  process.exit(1);
+async function claimAndRun(job: PendingJob) {
+  if (inFlight.has(job._id)) return;
+  inFlight.add(job._id);
+  try {
+    const claimed = await client.mutation(api.worker.claim, {
+      secret,
+      jobId: job._id,
+    });
+    if (!claimed) return; // lost the race or already handled
+    console.log(`[worker] claimed ${job.type} ${job._id}`);
+    try {
+      const result = await runJob(job);
+      await client.mutation(api.worker.finish, {
+        secret,
+        jobId: job._id,
+        result,
+      });
+      console.log(`[worker] done ${job._id}`);
+    } catch (err) {
+      await client.mutation(api.worker.finish, {
+        secret,
+        jobId: job._id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      console.error(`[worker] failed ${job._id}`, err);
+    }
+  } finally {
+    inFlight.delete(job._id);
+  }
+}
+
+console.log(`[worker] connecting to ${CONVEX_URL}`);
+client.onUpdate(api.worker.pending, { secret }, (jobs) => {
+  for (const job of jobs) {
+    void claimAndRun(job);
+  }
 });
+console.log("[worker] subscribed to jobs queue");
 
 // Graceful shutdown under systemd restarts.
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
