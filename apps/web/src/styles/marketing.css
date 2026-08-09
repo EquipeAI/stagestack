@@ -1,0 +1,286 @@
+/* ── Marketing / landing page ────────────────────────────────────────────
+   Class-based because inline styles can't express media queries, the
+   sticky-nav blur or the hero glow. Follows the marketing-site UI kit in
+   the StageStack Design System project; tokens throughout. */
+
+.mkt {
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font: var(--type-body);
+  font-size: var(--text-lg);
+}
+.mkt a {
+  text-decoration: none;
+}
+
+/* nav ─ sticky, translucent, blurred (one of the two sanctioned blur uses) */
+.mkt-nav {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  background: color-mix(in srgb, var(--surface-canvas) 82%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: var(--space-px) solid var(--border-default);
+}
+.mkt-nav__inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 0 var(--page-gutter);
+  height: 62px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+.mkt-nav__links {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex: 1;
+  justify-content: flex-end;
+}
+.mkt-nav__link {
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+  font-size: var(--text-md);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.mkt-nav__link:hover {
+  color: var(--text-primary);
+}
+.mkt-nav__auth {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.mkt-nav__links + .mkt-nav__auth {
+  margin-left: 0;
+}
+@media (max-width: 900px) {
+  .mkt-nav__links {
+    display: none;
+  }
+}
+
+/* hero ─ radial amber "stage glow" (one of the two sanctioned gradients) */
+.mkt-hero {
+  position: relative;
+  overflow: hidden;
+  padding: var(--space-20) var(--page-gutter) var(--space-16);
+}
+.mkt-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    720px 320px at 50% -12%,
+    color-mix(in srgb, var(--amber-400) 17%, transparent),
+    transparent 72%
+  );
+}
+.mkt-hero__inner {
+  position: relative;
+  max-width: 900px;
+  margin: 0 auto;
+  text-align: center;
+}
+.mkt-hero__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  border: var(--space-px) solid var(--border-default);
+  background: var(--surface-card);
+  font: var(--type-caption);
+  color: var(--text-secondary);
+}
+.mkt-hero__badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--jade-500);
+}
+.mkt-hero h1 {
+  font: var(--type-display);
+  font-size: clamp(var(--text-5xl), 5.6vw, var(--text-7xl));
+  letter-spacing: -0.035em;
+  margin: var(--space-5) 0 0;
+  text-wrap: balance;
+}
+.mkt-hl {
+  font-style: normal;
+  background: linear-gradient(transparent 64%, var(--amber-200) 64%);
+  padding-inline: var(--space-half);
+}
+.mkt-hero__sub {
+  font: var(--type-body-lg);
+  font-size: var(--text-xl);
+  color: var(--text-secondary);
+  margin: var(--space-5) auto 0;
+  max-width: 62ch;
+}
+.mkt-hero__ctas {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: center;
+  margin-top: var(--space-8);
+  flex-wrap: wrap;
+}
+.mkt-hero__note {
+  margin-top: var(--space-4);
+  font: var(--type-caption);
+  color: var(--text-tertiary);
+}
+
+/* product shot ─ composed from real DS pieces, not a stock image */
+.mkt-shot {
+  max-width: 1040px;
+  margin: var(--space-12) auto 0;
+  position: relative;
+  text-align: left;
+  font-size: var(--text-md);
+}
+.mkt-shot__bar {
+  height: 34px;
+  border-bottom: var(--space-px) solid var(--border-subtle);
+  background: var(--surface-canvas);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+}
+.mkt-shot__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-full);
+  flex: none;
+}
+.mkt-shot__url {
+  margin-left: var(--space-2);
+  font: var(--type-caption);
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mkt-shot__grid {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+}
+.mkt-shot__grid > * {
+  /* grid items default to min-width auto; without this the nowrap row
+     titles force the mock wider than small viewports */
+  min-width: 0;
+}
+.mkt-shot__side {
+  background: var(--surface-canvas);
+  border-right: var(--space-px) solid var(--border-default);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+@media (max-width: 720px) {
+  .mkt-shot__grid {
+    grid-template-columns: 1fr;
+  }
+  .mkt-shot__side {
+    display: none;
+  }
+  .mkt-shot__actions {
+    display: none !important;
+  }
+}
+
+/* sections */
+.mkt-section {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--space-16) var(--page-gutter);
+}
+.mkt-features {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-8);
+}
+@media (max-width: 860px) {
+  .mkt-features {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mkt-band {
+  background: var(--surface-card);
+  border-top: var(--space-px) solid var(--border-default);
+  border-bottom: var(--space-px) solid var(--border-default);
+}
+.mkt-workflow {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: var(--space-8);
+  align-items: start;
+  margin-top: var(--space-6);
+}
+@media (max-width: 860px) {
+  .mkt-workflow {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mkt-selfhost {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: var(--space-10);
+  align-items: center;
+}
+@media (max-width: 860px) {
+  .mkt-selfhost {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* terminal + footer render inside .ss-theme-dark so ink stays ink even if
+   the host page ever runs the dark theme. NOTE: inside a scoped theme class
+   only palette tokens (--gray-*, --amber-*, …) and the surface/border
+   aliases redeclared in the block flip; --text-* aliases inherit their
+   :root (light) values pre-substituted — so color here uses --gray-*. */
+.mkt-terminal {
+  background: var(--surface-card);
+  border: var(--space-px) solid var(--border-default);
+  border-radius: var(--radius-card);
+  padding: var(--space-5);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--gray-600);
+  line-height: 1.9;
+  overflow-x: auto;
+}
+.mkt-footer {
+  background: var(--surface-canvas);
+  color: var(--gray-600);
+  padding: var(--space-10) var(--page-gutter);
+}
+.mkt-footer__inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  display: flex;
+  gap: var(--space-6);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.mkt-footer__link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--gray-600);
+  font: var(--type-caption);
+}
+.mkt-footer__link:hover {
+  color: var(--gray-900);
+}
