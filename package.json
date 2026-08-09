@@ -15,6 +15,7 @@
     "codegen": "convex codegen"
   },
   "dependencies": {
+    "@convex-dev/resend": "0.2.6",
     "convex": "1.43.0"
   }
 }
