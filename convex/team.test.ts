@@ -315,7 +315,7 @@ describe("team.removeEventMember", () => {
     const eventB = await createEvent(alice, orgSlug, "Event B");
     await grantEventRole(t, eventA, "rita", "reviewer");
 
-    const memberDocId = await t.run(async (ctx) => {
+    const eventMemberId = await t.run(async (ctx) => {
       const row = await ctx.db.query("eventMembers").first();
       if (row === null) throw new Error("no eventMembers row");
       return row._id;
@@ -324,14 +324,14 @@ describe("team.removeEventMember", () => {
     await expectRejectedWith(
       alice.mutation(api.team.removeEventMember, {
         eventSlug: eventB,
-        memberDocId,
+        eventMemberId,
       }),
       "not_found",
     );
 
     await alice.mutation(api.team.removeEventMember, {
       eventSlug: eventA,
-      memberDocId,
+      eventMemberId,
     });
     expect(
       await t.run(async (ctx) => ctx.db.query("eventMembers").collect()),

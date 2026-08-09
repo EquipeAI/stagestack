@@ -4,7 +4,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller, EventRole, OrgCaller, OrgRole } from "../lib/functions";
 import { forbidden, requireOrgAdmin } from "../lib/functions";
 import { logAudit } from "./audit";
-import { resend } from "../emails";
+import { emailShell, escapeHtml, sendLoggedEmail, siteUrl } from "./comms";
 
 const INVITE_TTL_MS = 14 * 24 * 3600 * 1000;
 
@@ -12,10 +12,6 @@ function inviteToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function siteUrl(): string {
-  return process.env.SITE_URL ?? "https://stagestack.dev";
 }
 
 function normalizeEmail(email: string): string {
@@ -37,18 +33,26 @@ async function sendInviteEmail(
     scopeLabel: string;
     roleLabel: string;
     token: string;
+    orgId: Id<"organizations">;
+    eventId?: Id<"events">;
+    sentByUserId: Id<"users">;
   },
 ): Promise<void> {
   const link = `${siteUrl()}/invite/${args.token}`;
-  await resend.sendEmail(ctx, {
-    from: "StageStack <hello@stagestack.dev>",
-    to: args.email,
+  await sendLoggedEmail(ctx, {
+    orgId: args.orgId,
+    eventId: args.eventId,
+    toEmail: args.email,
+    kind: "team.invite",
     subject: `${args.inviterName} invited you to ${args.scopeLabel} on StageStack`,
-    html: [
-      `<p>${args.inviterName} invited you to join <strong>${args.scopeLabel}</strong> as <strong>${args.roleLabel}</strong> on StageStack.</p>`,
-      `<p><a href="${link}">Accept the invitation</a> (link expires in 14 days).</p>`,
-      `<p>If you weren't expecting this, you can ignore this email.</p>`,
-    ].join("\n"),
+    sentByUserId: args.sentByUserId,
+    html: emailShell(
+      [
+        `<p>${escapeHtml(args.inviterName)} invited you to join <strong>${escapeHtml(args.scopeLabel)}</strong> as <strong>${escapeHtml(args.roleLabel)}</strong> on StageStack.</p>`,
+        `<p><a href="${link}">Accept the invitation</a> (link expires in 14 days).</p>`,
+        `<p>If you weren't expecting this, you can ignore this email.</p>`,
+      ].join("\n"),
+    ),
   });
 }
 
@@ -113,6 +117,9 @@ export async function inviteToEvent(
     scopeLabel: caller.event.name,
     roleLabel: role,
     token,
+    orgId: caller.org._id,
+    eventId: caller.event._id,
+    sentByUserId: caller.user._id,
   });
   await logAudit(ctx, {
     orgId: caller.org._id,
@@ -154,6 +161,8 @@ export async function inviteOrgAdmin(
     scopeLabel: caller.org.name,
     roleLabel: role,
     token,
+    orgId: caller.org._id,
+    sentByUserId: caller.user._id,
   });
   await logAudit(ctx, {
     orgId: caller.org._id,
@@ -313,10 +322,14 @@ export type TeamMember = {
   imageUrl: string | null;
   role: OrgRole | EventRole;
   scope: "organization" | "event";
-  memberDocId: string;
+  /** Set only for event-scoped rows — the handle removeEventMember takes. */
+  eventMemberId: Id<"eventMembers"> | null;
 };
 
-/** Everyone with access to an event: org owner/admins + event members. */
+/** Everyone with access to an event: org owner/admins + event members.
+ * Pending invitations (which carry bearer tokens) are organizer-only: a
+ * reviewer who could read an organizer-invite token could accept it and
+ * escalate their own role. */
 export async function listEventTeam(
   ctx: QueryCtx,
   caller: EventCaller,
@@ -339,7 +352,7 @@ export async function listEventTeam(
       imageUrl: u.imageUrl ?? null,
       role: m.role,
       scope: "organization",
-      memberDocId: m._id,
+      eventMemberId: null,
     });
   }
   const eventMembers = await ctx.db
@@ -356,16 +369,89 @@ export async function listEventTeam(
       imageUrl: u.imageUrl ?? null,
       role: m.role,
       scope: "event",
-      memberDocId: m._id,
+      eventMemberId: m._id,
+    });
+  }
+  const invitations =
+    caller.role === "organizer"
+      ? (
+          await ctx.db
+            .query("invitations")
+            .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+            .take(100)
+        ).filter((i) => i.status === "pending" && i.expiresAt > Date.now())
+      : [];
+  return { members, invitations };
+}
+
+/** Org-level team view: members plus pending org-wide invitations.
+ * Admin-only — org invitations carry bearer tokens. */
+export async function listOrgTeam(
+  ctx: QueryCtx,
+  caller: OrgCaller,
+): Promise<{
+  members: TeamMember[];
+  invitations: Array<Doc<"invitations">>;
+}> {
+  requireOrgAdmin(caller);
+  const members: TeamMember[] = [];
+  const orgMembers = await ctx.db
+    .query("members")
+    .withIndex("by_orgId_and_userId", (q) => q.eq("orgId", caller.org._id))
+    .take(100);
+  for (const m of orgMembers) {
+    const u = await ctx.db.get("users", m.userId);
+    if (u === null) continue;
+    members.push({
+      userId: u._id,
+      name: u.name ?? null,
+      email: u.email ?? null,
+      imageUrl: u.imageUrl ?? null,
+      role: m.role,
+      scope: "organization",
+      eventMemberId: null,
     });
   }
   const invitations = (
     await ctx.db
       .query("invitations")
-      .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
-      .take(100)
-  ).filter((i) => i.status === "pending" && i.expiresAt > Date.now());
+      .withIndex("by_orgId", (q) => q.eq("orgId", caller.org._id))
+      .take(200)
+  ).filter(
+    (i) =>
+      i.eventId === undefined &&
+      i.status === "pending" &&
+      i.expiresAt > Date.now(),
+  );
   return { members, invitations };
+}
+
+/** Revoke an org-wide invitation (eventId absent). Admin-only. */
+export async function revokeOrgInvitation(
+  ctx: MutationCtx,
+  caller: OrgCaller,
+  invitationId: Id<"invitations">,
+): Promise<void> {
+  requireOrgAdmin(caller);
+  const invite = await ctx.db.get("invitations", invitationId);
+  if (
+    invite === null ||
+    invite.orgId !== caller.org._id ||
+    invite.eventId !== undefined
+  ) {
+    throw new ConvexError({
+      code: "not_found",
+      message: "No such invitation.",
+    });
+  }
+  await ctx.db.patch("invitations", invitationId, { status: "revoked" });
+  await logAudit(ctx, {
+    orgId: caller.org._id,
+    actorUserId: caller.user._id,
+    action: "team.revokeOrgInvitation",
+    targetType: "invitation",
+    targetId: invitationId,
+  });
 }
 
 export async function removeEventMember(

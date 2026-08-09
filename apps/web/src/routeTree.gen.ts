@@ -10,33 +10,131 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AppRouteImport } from './routes/app'
+import { Route as AppIndexRouteImport } from './routes/app.index'
+import { Route as InviteTokenRouteImport } from './routes/invite.$token'
+import { Route as AppEEventSlugRouteImport } from './routes/app.e.$eventSlug'
+import { Route as AppOrgOrgSlugRouteImport } from './routes/app.org.$orgSlug'
+import { Route as AppEEventSlugIndexRouteImport } from './routes/app.e.$eventSlug.index'
+import { Route as AppEEventSlugSettingsRouteImport } from './routes/app.e.$eventSlug.settings'
+import { Route as AppEEventSlugTeamRouteImport } from './routes/app.e.$eventSlug.team'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppRoute = AppRouteImport.update({
+  id: '/app',
+  path: '/app',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AppIndexRoute = AppIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const InviteTokenRoute = InviteTokenRouteImport.update({
+  id: '/invite/$token',
+  path: '/invite/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AppEEventSlugRoute = AppEEventSlugRouteImport.update({
+  id: '/e/$eventSlug',
+  path: '/e/$eventSlug',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppOrgOrgSlugRoute = AppOrgOrgSlugRouteImport.update({
+  id: '/org/$orgSlug',
+  path: '/org/$orgSlug',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppEEventSlugIndexRoute = AppEEventSlugIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
+const AppEEventSlugSettingsRoute = AppEEventSlugSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
+const AppEEventSlugTeamRoute = AppEEventSlugTeamRouteImport.update({
+  id: '/team',
+  path: '/team',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/app': typeof AppRouteWithChildren
+  '/invite/$token': typeof InviteTokenRoute
+  '/app/': typeof AppIndexRoute
+  '/app/e/$eventSlug': typeof AppEEventSlugRouteWithChildren
+  '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
+  '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
+  '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
+  '/app/e/$eventSlug/': typeof AppEEventSlugIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/invite/$token': typeof InviteTokenRoute
+  '/app': typeof AppIndexRoute
+  '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
+  '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
+  '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
+  '/app/e/$eventSlug': typeof AppEEventSlugIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/app': typeof AppRouteWithChildren
+  '/invite/$token': typeof InviteTokenRoute
+  '/app/': typeof AppIndexRoute
+  '/app/e/$eventSlug': typeof AppEEventSlugRouteWithChildren
+  '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
+  '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
+  '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
+  '/app/e/$eventSlug/': typeof AppEEventSlugIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/app'
+    | '/invite/$token'
+    | '/app/'
+    | '/app/e/$eventSlug'
+    | '/app/org/$orgSlug'
+    | '/app/e/$eventSlug/settings'
+    | '/app/e/$eventSlug/team'
+    | '/app/e/$eventSlug/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/invite/$token'
+    | '/app'
+    | '/app/org/$orgSlug'
+    | '/app/e/$eventSlug/settings'
+    | '/app/e/$eventSlug/team'
+    | '/app/e/$eventSlug'
+  id:
+    | '__root__'
+    | '/'
+    | '/app'
+    | '/invite/$token'
+    | '/app/'
+    | '/app/e/$eventSlug'
+    | '/app/org/$orgSlug'
+    | '/app/e/$eventSlug/settings'
+    | '/app/e/$eventSlug/team'
+    | '/app/e/$eventSlug/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AppRoute: typeof AppRouteWithChildren
+  InviteTokenRoute: typeof InviteTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +146,99 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/app': {
+      id: '/app'
+      path: '/app'
+      fullPath: '/app'
+      preLoaderRoute: typeof AppRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/app/': {
+      id: '/app/'
+      path: '/'
+      fullPath: '/app/'
+      preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/invite/$token': {
+      id: '/invite/$token'
+      path: '/invite/$token'
+      fullPath: '/invite/$token'
+      preLoaderRoute: typeof InviteTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/app/e/$eventSlug': {
+      id: '/app/e/$eventSlug'
+      path: '/e/$eventSlug'
+      fullPath: '/app/e/$eventSlug'
+      preLoaderRoute: typeof AppEEventSlugRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/org/$orgSlug': {
+      id: '/app/org/$orgSlug'
+      path: '/org/$orgSlug'
+      fullPath: '/app/org/$orgSlug'
+      preLoaderRoute: typeof AppOrgOrgSlugRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/e/$eventSlug/': {
+      id: '/app/e/$eventSlug/'
+      path: '/'
+      fullPath: '/app/e/$eventSlug/'
+      preLoaderRoute: typeof AppEEventSlugIndexRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
+    '/app/e/$eventSlug/settings': {
+      id: '/app/e/$eventSlug/settings'
+      path: '/settings'
+      fullPath: '/app/e/$eventSlug/settings'
+      preLoaderRoute: typeof AppEEventSlugSettingsRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
+    '/app/e/$eventSlug/team': {
+      id: '/app/e/$eventSlug/team'
+      path: '/team'
+      fullPath: '/app/e/$eventSlug/team'
+      preLoaderRoute: typeof AppEEventSlugTeamRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
   }
 }
 
+interface AppEEventSlugRouteChildren {
+  AppEEventSlugSettingsRoute: typeof AppEEventSlugSettingsRoute
+  AppEEventSlugTeamRoute: typeof AppEEventSlugTeamRoute
+  AppEEventSlugIndexRoute: typeof AppEEventSlugIndexRoute
+}
+
+const AppEEventSlugRouteChildren: AppEEventSlugRouteChildren = {
+  AppEEventSlugSettingsRoute: AppEEventSlugSettingsRoute,
+  AppEEventSlugTeamRoute: AppEEventSlugTeamRoute,
+  AppEEventSlugIndexRoute: AppEEventSlugIndexRoute,
+}
+
+const AppEEventSlugRouteWithChildren = AppEEventSlugRoute._addFileChildren(
+  AppEEventSlugRouteChildren,
+)
+
+interface AppRouteChildren {
+  AppIndexRoute: typeof AppIndexRoute
+  AppEEventSlugRoute: typeof AppEEventSlugRouteWithChildren
+  AppOrgOrgSlugRoute: typeof AppOrgOrgSlugRoute
+}
+
+const AppRouteChildren: AppRouteChildren = {
+  AppIndexRoute: AppIndexRoute,
+  AppEEventSlugRoute: AppEEventSlugRouteWithChildren,
+  AppOrgOrgSlugRoute: AppOrgOrgSlugRoute,
+}
+
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AppRoute: AppRouteWithChildren,
+  InviteTokenRoute: InviteTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

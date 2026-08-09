@@ -5,33 +5,56 @@ import {
   eventMutation,
   eventQuery,
   orgMutation,
+  orgQuery,
 } from "./lib/functions";
 import { vv } from "./lib/validators";
 import * as Team from "./model/team";
 
+const vTeamMembers = v.array(
+  v.object({
+    userId: v.id("users"),
+    name: v.union(v.string(), v.null()),
+    email: v.union(v.string(), v.null()),
+    imageUrl: v.union(v.string(), v.null()),
+    role: v.union(
+      v.literal("owner"),
+      v.literal("admin"),
+      v.literal("organizer"),
+      v.literal("reviewer"),
+    ),
+    scope: v.union(v.literal("organization"), v.literal("event")),
+    eventMemberId: v.union(v.id("eventMembers"), v.null()),
+  }),
+);
+
 export const listForEvent = eventQuery({
   args: {},
   returns: v.object({
-    members: v.array(
-      v.object({
-        userId: v.id("users"),
-        name: v.union(v.string(), v.null()),
-        email: v.union(v.string(), v.null()),
-        imageUrl: v.union(v.string(), v.null()),
-        role: v.union(
-          v.literal("owner"),
-          v.literal("admin"),
-          v.literal("organizer"),
-          v.literal("reviewer"),
-        ),
-        scope: v.union(v.literal("organization"), v.literal("event")),
-        memberDocId: v.string(),
-      }),
-    ),
+    members: vTeamMembers,
     invitations: v.array(vv.doc("invitations")),
   }),
   handler: async (ctx) => {
     return await Team.listEventTeam(ctx, ctx.caller);
+  },
+});
+
+export const listForOrg = orgQuery({
+  args: {},
+  returns: v.object({
+    members: vTeamMembers,
+    invitations: v.array(vv.doc("invitations")),
+  }),
+  handler: async (ctx) => {
+    return await Team.listOrgTeam(ctx, ctx.caller);
+  },
+});
+
+export const revokeOrgInvitation = orgMutation({
+  args: { invitationId: v.id("invitations") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Team.revokeOrgInvitation(ctx, ctx.caller, args.invitationId);
+    return null;
   },
 });
 
@@ -101,10 +124,10 @@ export const revokeInvitation = eventMutation({
 });
 
 export const removeEventMember = eventMutation({
-  args: { memberDocId: v.id("eventMembers") },
+  args: { eventMemberId: v.id("eventMembers") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await Team.removeEventMember(ctx, ctx.caller, args.memberDocId);
+    await Team.removeEventMember(ctx, ctx.caller, args.eventMemberId);
     return null;
   },
 });

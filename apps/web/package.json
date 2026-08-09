@@ -20,6 +20,7 @@
     "@tanstack/react-router-ssr-query": "^1.167.1",
     "@tanstack/react-start": "^1.168.40",
     "convex": "1.43.0",
+    "luxon": "3.7.2",
     "nitro": "^3.0.260610-beta",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
@@ -28,6 +29,7 @@
     "@convex-dev/eslint-plugin": "^2.0.0",
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/eslint-config": "0.4.0",
+    "@types/luxon": "3.7.1",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

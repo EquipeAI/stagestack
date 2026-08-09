@@ -1,5 +1,10 @@
 import { v } from "convex/values";
-import { eventMutation, eventQuery, orgMutation } from "./lib/functions";
+import {
+  eventMutation,
+  eventQuery,
+  orgMutation,
+  orgQuery,
+} from "./lib/functions";
 import { vv } from "./lib/validators";
 import * as Events from "./model/events";
 
@@ -14,6 +19,31 @@ export const create = orgMutation({
   handler: async (ctx, args) => {
     const event = await Events.createEvent(ctx, ctx.caller, args);
     return { slug: event.slug };
+  },
+});
+
+// Events visible to the caller within one org: org owner/admin see all;
+// event-scoped members see only their events.
+export const listForOrg = orgQuery({
+  args: {},
+  returns: v.array(vv.doc("events")),
+  handler: async (ctx) => {
+    const { caller } = ctx;
+    const all = await ctx.db
+      .query("events")
+      .withIndex("by_orgId", (q) => q.eq("orgId", caller.org._id))
+      .take(200);
+    if (caller.orgRole !== null) return all;
+    const memberships = await ctx.db
+      .query("eventMembers")
+      .withIndex("by_userId", (q) => q.eq("userId", caller.user._id))
+      .take(200);
+    const mine = new Set(
+      memberships
+        .filter((m) => m.orgId === caller.org._id)
+        .map((m) => m.eventId),
+    );
+    return all.filter((e) => mine.has(e._id));
   },
 });
 
