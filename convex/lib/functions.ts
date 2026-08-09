@@ -174,6 +174,11 @@ export function requireOrgAdmin(caller: OrgCaller): void {
 
 // ── Wrappers ─────────────────────────────────────────────────────────────
 
+/** Unauthenticated public read. Named for intent — a `publicQuery` is a
+ * deliberate public surface (event page, read API), never an oversight. The
+ * handler must return only already-public data. */
+export const publicQuery = query;
+
 /** Signed-in user resolved; no org/event scoping. */
 export const authedQuery = customQuery(
   query,
