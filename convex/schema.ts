@@ -354,6 +354,27 @@ export default defineSchema({
     .index("by_eventId", ["eventId"])
     .index("by_eventContactId", ["eventContactId"]),
 
+  // ── Portal (M3) ──────────────────────────────────────────────────────
+  // Organizer-controlled primary-manager handoff: invited by email, completed
+  // when a signed-in user with that (Clerk-verified) email enters the portal.
+  // The current manager keeps access until completion (MILESTONES M3).
+  managerHandoffs: defineTable({
+    eventId: v.id("events"),
+    sessionId: v.id("sessions"),
+    email: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("completed"),
+      v.literal("revoked"),
+    ),
+    invitedBy: v.id("users"),
+    completedBy: v.optional(v.id("users")),
+    completedAt: v.optional(v.number()),
+    expiresAt: v.number(),
+  })
+    .index("by_eventId_and_email", ["eventId", "email"])
+    .index("by_sessionId", ["sessionId"]),
+
   // ── Comms log (starts M1; grows in M5) ───────────────────────────────
   // Every email StageStack sends is recorded here; the Resend webhook
   // updates deliveryStatus by resendEmailId.
