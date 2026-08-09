@@ -10,7 +10,6 @@
     "start": "node .output/server/index.mjs",
     "format": "prettier --write .",
     "lint": "npm run typecheck && eslint .  --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "dev:vite": "vite dev",
     "lint:ds": "eslint src --no-warn-ignored"
   },
   "dependencies": {

@@ -7,7 +7,7 @@
   ],
   "scripts": {
     "dev": "convex dev --start 'npm run dev -w apps/web'",
-    "dev:web": "npm run dev:vite -w apps/web",
+    "dev:web": "npm run dev -w apps/web",
     "dev:convex": "convex dev",
     "build:web": "npm run build -w apps/web",
     "build:worker": "npm run build -w apps/worker",

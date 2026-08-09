@@ -1,7 +1,5 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-
-declare const process: { env: Record<string, string | undefined> };
 
 // Worker-facing functions, guarded by a shared secret (WORKER_SECRET env var on
 // the deployment). V1 judgment call per docs/ARCHITECTURE.md; upgrade path is a
@@ -74,8 +72,10 @@ export const finish = mutation({
 });
 
 // Dev/test helper: enqueue a job from the CLI or dashboard.
-// `npx convex run worker:enqueueTest '{"type":"ping"}'`
-export const enqueueTest = mutation({
+// Internal: a public unauthenticated enqueue would let anyone burn worker
+// compute and LLM credits (hello-agent jobs hit OpenRouter).
+// `npx convex run worker:enqueueTest '{"type":"ping"}'` still works.
+export const enqueueTest = internalMutation({
   args: { type: v.optional(v.string()) },
   returns: v.id("jobs"),
   handler: async (ctx, args) => {

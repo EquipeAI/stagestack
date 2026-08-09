@@ -18,6 +18,34 @@ export const startDraft = mutation({
   },
   returns: v.id("cfpDrafts"),
   handler: async (ctx, args) => {
+    // Validate before touching the limiter so junk input gets a 400-style
+    // error, not a consumed token. (Throws roll back the whole mutation
+    // anyway — limiter debits included — so ordering is about clarity and
+    // hot-path cost, not correctness.)
+    const talkTitle = args.talkTitle.trim();
+    if (talkTitle.length === 0 || talkTitle.length > 200) {
+      throw new ConvexError({
+        code: "invalid_talk_title",
+        message: "Talk title must be 1-200 characters.",
+      });
+    }
+    // anonKey is the bearer credential for this draft until it's linked to an
+    // account (M1) — enforce unguessability at write time, not at link time.
+    if (!/^[A-Za-z0-9_-]{32,128}$/.test(args.anonKey)) {
+      throw new ConvexError({
+        code: "invalid_anon_key",
+        message: "anonKey must be 32-128 chars of [A-Za-z0-9_-].",
+      });
+    }
+    // Global backstop first: it's the real gate (per-client keys are
+    // client-supplied and spoofable) and cheaper on the hot-rejection path.
+    const global = await rateLimiter.limit(ctx, "cfpDraftGlobal");
+    if (!global.ok) {
+      throw new ConvexError({
+        code: "rate_limited",
+        retryAfter: global.retryAfter,
+      });
+    }
     const perClient = await rateLimiter.limit(ctx, "cfpDraftPerClient", {
       key: args.anonKey,
     });
@@ -27,15 +55,8 @@ export const startDraft = mutation({
         retryAfter: perClient.retryAfter,
       });
     }
-    const global = await rateLimiter.limit(ctx, "cfpDraftGlobal");
-    if (!global.ok) {
-      throw new ConvexError({
-        code: "rate_limited",
-        retryAfter: global.retryAfter,
-      });
-    }
     return await ctx.db.insert("cfpDrafts", {
-      talkTitle: args.talkTitle,
+      talkTitle,
       anonKey: args.anonKey,
       status: "draft",
     });

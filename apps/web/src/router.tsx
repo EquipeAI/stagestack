@@ -6,9 +6,11 @@ import { ConvexProvider } from 'convex/react'
 import { routeTree } from './routeTree.gen'
 
 export function getRouter() {
-  const CONVEX_URL = (import.meta as any).env.VITE_CONVEX_URL!
+  // Fail loud at boot — continuing with an undefined URL fails obscurely
+  // downstream on the first query.
+  const CONVEX_URL = import.meta.env.VITE_CONVEX_URL
   if (!CONVEX_URL) {
-    console.error('missing envar VITE_CONVEX_URL')
+    throw new Error('missing env var VITE_CONVEX_URL')
   }
   const convexQueryClient = new ConvexQueryClient(CONVEX_URL)
 
@@ -33,7 +35,9 @@ export function getRouter() {
     },
     scrollRestoration: true,
     defaultPreloadStaleTime: 0, // Let React Query handle all caching
-    defaultErrorComponent: (err) => <p>{err.error.stack}</p>,
+    // Stack traces are dev-only; never render them to end users in prod.
+    defaultErrorComponent: (err) =>
+      import.meta.env.DEV ? <p>{err.error.stack}</p> : <p>Something went wrong</p>,
     defaultNotFoundComponent: () => <p>not found</p>,
     Wrap: ({ children }) => (
       <ConvexProvider client={convexQueryClient.convexClient}>

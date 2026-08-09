@@ -3,9 +3,6 @@ import { components, internal } from "./_generated/api";
 import { internalAction, internalMutation } from "./_generated/server";
 import { Resend, vOnEmailEventArgs, type EmailId } from "@convex-dev/resend";
 
-// Convex isolate has no Node types (same pattern as auth.config.ts).
-declare const process: { env: Record<string, string | undefined> };
-
 // testMode flipped off deliberately (ARCHITECTURE.md): stagestack.dev is
 // verified in Resend and the walking skeleton requires a real delivery.
 export const resend: Resend = new Resend(components.resend, {

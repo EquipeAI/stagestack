@@ -1,5 +1,4 @@
-declare const process: { env: Record<string, string | undefined> };
-
+// process.env typing comes from convex/env.d.ts (no Node types in the isolate).
 export default {
   providers: [
     {
