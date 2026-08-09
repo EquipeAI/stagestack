@@ -11,9 +11,17 @@ Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md
 - [x] Watch walkthrough video — no new requirements beyond the docs
 - [x] Define technical architecture ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): Convex + Clerk + Vercel + exe.dev/Flue worker
 - [x] Scaffold workspaces (convex/ at root, apps/web TanStack Start, apps/worker) — typechecks + builds
-- [ ] Account wiring (Alvaro): Convex project (`npx convex dev` login), Clerk app + `convex` JWT template, Vercel project (root dir `apps/web`), Resend + DNS for stagestack.dev, exe.dev VM, OpenRouter key
-- [ ] Walking-skeleton validation (see ARCHITECTURE.md checklist): Clerk→Convex auth, Resend real send + webhook, .ics attachment path, worker job claim on exe.dev, Flue hello-agent, public unauthenticated mutation
-- [x] Domain: **stagestack.dev** (via Vercel) — add Resend DNS records next
+- [x] Account wiring: Convex project (dev: scintillating-heron-597), Clerk app + `convex` JWT template + issuer set on Convex, Vercel project (scope equipe-ai, root dir `apps/web`, git-connected, env vars set), domain stagestack.dev attached
+- [x] Walking skeleton part 1: Clerk wired (start.ts middleware, ConvexProviderWithClerk), `auth.viewer` round-trip works locally AND on https://stagestack.dev (anonymous leg verified; signed-in leg: Alvaro to click through)
+- [x] Vercel production deploy working (nitro plugin → .vercel/output; deployed via CLI)
+- [ ] Resend: DNS records added, **waiting on propagation** → then component install, real send + webhook, .ics attachment test
+- [ ] Walking skeleton part 2: worker job claim on exe.dev VM, Flue hello-agent (OpenRouter/GPT-5.6-Luna), public unauthenticated mutation + rate limiter
+- [ ] Signed-in auth test (Alvaro) → then M0: orgs, events, library (see MILESTONES.md)
+- [x] Domain: **stagestack.dev** (via Vercel)
+
+## Session log
+
+- Aug 8 (Sat night): docs frozen pending Sun video; stack researched & decided; scaffold + walking skeleton pt 1 + prod deploy done. Lessons captured in CLAUDE.md ("fresh-docs-first", landmines). Next session: design system integration + walking skeleton pt 2 + M0.
 
 ## Next
 
