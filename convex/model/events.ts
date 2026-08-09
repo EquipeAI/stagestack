@@ -6,7 +6,7 @@ import { requireOrgAdmin } from "../lib/functions";
 import { assertSlugFree, assertValidSlug, uniqueSlug } from "./slugs";
 import { logAudit } from "./audit";
 import { ensureForm } from "./cfp";
-import { assertText } from "./validation";
+import { assertText, normalizeEmail } from "./validation";
 
 const IANA_ZONE = /^[A-Za-z_]+\/[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)?$|^UTC$/;
 
@@ -111,7 +111,21 @@ export type EventSettingsPatch = {
   cfpOpenAt?: number | null;
   cfpCloseAt?: number | null;
   cfpPublished?: boolean;
+  /** M5 comms settings. Null clears (reminders off / no reply-to). */
+  reminderCadenceDays?: number | null;
+  replyTo?: string | null;
 };
+
+/** Reminder cadence is whole days, 1-90. Absent/null means "no reminders". */
+function assertCadence(days: number): number {
+  if (!Number.isInteger(days) || days < 1 || days > 90) {
+    throw new ConvexError({
+      code: "invalid_cadence",
+      message: "Reminder cadence must be a whole number of days between 1 and 90.",
+    });
+  }
+  return days;
+}
 
 /** Post-create Event Settings (M0). Null clears an optional field. */
 export async function updateEventSettings(
@@ -157,6 +171,19 @@ export async function updateEventSettings(
     }
   }
   if (patch.cfpPublished !== undefined) update.cfpPublished = patch.cfpPublished;
+
+  // M5: the event-wide reminder default and the reply-to address Cloudflare
+  // routes to the team's inbox.
+  if (patch.reminderCadenceDays !== undefined) {
+    update.reminderCadenceDays =
+      patch.reminderCadenceDays === null
+        ? undefined
+        : assertCadence(patch.reminderCadenceDays);
+  }
+  if (patch.replyTo !== undefined) {
+    update.replyTo =
+      patch.replyTo === null ? undefined : normalizeEmail(patch.replyTo);
+  }
 
   await ctx.db.patch("events", event._id, update);
   await logAudit(ctx, {

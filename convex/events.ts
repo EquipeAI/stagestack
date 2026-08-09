@@ -68,6 +68,9 @@ export const updateSettings = eventMutation({
       cfpOpenAt: v.optional(nullable(v.number())),
       cfpCloseAt: v.optional(nullable(v.number())),
       cfpPublished: v.optional(v.boolean()),
+      // M5 comms settings; null clears.
+      reminderCadenceDays: v.optional(nullable(v.number())),
+      replyTo: v.optional(nullable(v.string())),
     }),
   },
   returns: v.null(),

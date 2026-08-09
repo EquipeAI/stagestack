@@ -11,6 +11,7 @@ import {
   sendLoggedEmail,
   siteUrl,
 } from "./comms";
+import { renderTemplate } from "./templates";
 import { slugify } from "./slugs";
 import {
   assertEventActive,
@@ -1065,40 +1066,44 @@ export async function submitProposal(
   const title = proposal.title;
   const submitterEmail = user.email?.trim();
   if (submitterEmail !== undefined && submitterEmail.length > 0) {
+    const rendered = await renderTemplate(ctx, event, "cfp.confirmation", {
+      event: { name: event.name },
+      proposal: { title },
+      subjectLead: isResubmit
+        ? "Your updated proposal"
+        : "We received your proposal",
+      intro: isResubmit
+        ? "Your updated proposal has been received"
+        : "Thanks for submitting to",
+      link: proposalLink(event.slug, proposal._id),
+    });
     await sendLoggedEmail(ctx, {
       orgId: event.orgId,
       eventId: event._id,
       toEmail: submitterEmail,
       kind: "cfp.confirmation",
-      subject: isResubmit
-        ? `Your updated proposal: ${title}`
-        : `We received your proposal: ${title}`,
-      html: emailShell(
-        [
-          `<p>${isResubmit ? "Your updated proposal has been received" : "Thanks for submitting to"} <strong>${escapeHtml(event.name)}</strong>.</p>`,
-          `<p><strong>${escapeHtml(title)}</strong></p>`,
-          `<p><a href="${proposalLink(event.slug, proposal._id)}">View or edit your proposal</a></p>`,
-        ].join("\n"),
-      ),
+      subject: rendered.subject,
+      html: rendered.html,
       sentByUserId: user._id,
+      replyTo: event.replyTo,
       context: { proposalId: proposal._id, isResubmit },
     });
   }
 
+  const adminNotice = await renderTemplate(ctx, event, "cfp.adminNotification", {
+    event: { name: event.name },
+    proposal: {
+      title,
+      speakers: speakers.map((s) => `${s.firstName} ${s.lastName}`).join(", "),
+    },
+    subjectLead: isResubmit ? "Updated proposal" : "New proposal",
+    intro: isResubmit ? "A proposal was updated" : "A new proposal arrived",
+    link: eventConsoleLink(event.slug),
+  });
   await notifyOrganizers(ctx, event, {
     kind: "cfp.adminNotification",
-    subject: isResubmit
-      ? `Updated proposal for ${event.name}: ${title}`
-      : `New proposal for ${event.name}: ${title}`,
-    html: emailShell(
-      [
-        `<p>${isResubmit ? "A proposal was updated" : "A new proposal arrived"} for <strong>${escapeHtml(event.name)}</strong>.</p>`,
-        `<p><strong>${escapeHtml(title)}</strong><br />by ${escapeHtml(
-          speakers.map((s) => `${s.firstName} ${s.lastName}`).join(", "),
-        )}</p>`,
-        `<p><a href="${eventConsoleLink(event.slug)}">Open the event in StageStack</a></p>`,
-      ].join("\n"),
-    ),
+    subject: adminNotice.subject,
+    html: adminNotice.html,
     context: { proposalId: proposal._id, isResubmit },
   });
 
@@ -1159,16 +1164,15 @@ export async function withdrawProposal(
       withdrawnAt: Date.now(),
       updatedAt: Date.now(),
     });
+    const notice = await renderTemplate(ctx, event, "cfp.withdrawn", {
+      event: { name: event.name },
+      proposal: { title },
+      link: eventConsoleLink(event.slug),
+    });
     await notifyOrganizers(ctx, event, {
       kind: "cfp.withdrawn",
-      subject: `Proposal withdrawn for ${event.name}: ${title}`,
-      html: emailShell(
-        [
-          `<p>A proposal for <strong>${escapeHtml(event.name)}</strong> was withdrawn by its submitter.</p>`,
-          `<p><strong>${escapeHtml(title)}</strong></p>`,
-          `<p><a href="${eventConsoleLink(event.slug)}">Open the event in StageStack</a></p>`,
-        ].join("\n"),
-      ),
+      subject: notice.subject,
+      html: notice.html,
       context: { proposalId: proposal._id },
     });
   }

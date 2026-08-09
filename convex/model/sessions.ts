@@ -4,9 +4,11 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
-import { escapeHtml, emailShell, sendLoggedEmail, siteUrl } from "./comms";
+import { sendLoggedEmail, siteUrl } from "./comms";
+import { renderTemplate } from "./templates";
 import { proposalAbstract, proposalLink } from "./cfp";
 import { assertEventActive } from "./reviews";
+import { instantiateForSession } from "./tasks";
 import { assertText, normalizeEmail } from "./validation";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -257,6 +259,10 @@ async function materializeSession(
       managerUserId: proposal.submitterUserId,
     });
   }
+  // "Create and assign applicable requirements when an acceptance ... is
+  // formally released" (M4). Idempotent per (requirement, participant), so a
+  // decline→accept correction or a later co-speaker adds only what's missing.
+  await instantiateForSession(ctx, event, sessionId);
   return sessionId;
 }
 
@@ -310,37 +316,15 @@ export async function setProposalStatus(
 
 // ── Release ──────────────────────────────────────────────────────────────
 
-function acceptedEmail(
+/** The variables every decision template can reference. */
+function decisionVars(
   event: Doc<"events">,
   proposal: Doc<"proposals">,
-): { subject: string; html: string } {
+): Record<string, unknown> {
   return {
-    subject: `Your proposal was accepted: ${proposal.title}`,
-    html: emailShell(
-      [
-        `<p>Congratulations — your proposal was accepted for <strong>${escapeHtml(event.name)}</strong>.</p>`,
-        `<p><strong>${escapeHtml(proposal.title)}</strong></p>`,
-        `<p>Each speaker's participation still awaits confirmation, so we'll be in touch shortly about confirming who is presenting.</p>`,
-        `<p><a href="${proposalLink(event.slug, proposal._id)}">View your proposal</a></p>`,
-      ].join("\n"),
-    ),
-  };
-}
-
-function declinedEmail(
-  event: Doc<"events">,
-  proposal: Doc<"proposals">,
-): { subject: string; html: string } {
-  return {
-    subject: `About your proposal: ${proposal.title}`,
-    html: emailShell(
-      [
-        `<p>Thank you for submitting to <strong>${escapeHtml(event.name)}</strong>.</p>`,
-        `<p><strong>${escapeHtml(proposal.title)}</strong></p>`,
-        `<p>We received more strong proposals than we have room for, and we're not able to include this one in the programme. We genuinely appreciate the time you put into it and hope you'll submit again.</p>`,
-        `<p><a href="${proposalLink(event.slug, proposal._id)}">View your proposal</a></p>`,
-      ].join("\n"),
-    ),
+    event: { name: event.name },
+    proposal: { title: proposal.title },
+    link: proposalLink(event.slug, proposal._id),
   };
 }
 
@@ -361,6 +345,7 @@ async function mailSubmitter(
     kind: args.kind,
     subject: args.subject,
     html: args.html,
+    replyTo: event.replyTo,
     context: args.context ?? { proposalId: proposal._id },
   });
 }
@@ -404,22 +389,15 @@ export async function releaseDecisions(
       updatedAt: Date.now(),
     });
 
-    if (to === "accepted") {
-      await materializeSession(ctx, event, proposal);
-      const { subject, html } = acceptedEmail(event, proposal);
-      await mailSubmitter(ctx, event, proposal, {
-        kind: "decision.accepted",
-        subject,
-        html,
-      });
-    } else {
-      const { subject, html } = declinedEmail(event, proposal);
-      await mailSubmitter(ctx, event, proposal, {
-        kind: "decision.declined",
-        subject,
-        html,
-      });
-    }
+    const kind = to === "accepted" ? "decision.accepted" : "decision.declined";
+    if (to === "accepted") await materializeSession(ctx, event, proposal);
+    const { subject, html } = await renderTemplate(
+      ctx,
+      event,
+      kind,
+      decisionVars(event, proposal),
+    );
+    await mailSubmitter(ctx, event, proposal, { kind, subject, html });
 
     await logAudit(ctx, {
       orgId: caller.org._id,
@@ -518,18 +496,15 @@ export async function correctDecision(
     await materializeSession(ctx, event, proposal);
   }
 
+  const correction = await renderTemplate(ctx, event, "decision.corrected", {
+    ...decisionVars(event, proposal),
+    decision: to === "accepted" ? "accepted" : "not accepted",
+    note: reason,
+  });
   await mailSubmitter(ctx, event, proposal, {
     kind: "decision.corrected",
-    subject: `Correction about your proposal: ${proposal.title}`,
-    html: emailShell(
-      [
-        `<p>We need to correct the decision we sent you about <strong>${escapeHtml(event.name)}</strong>, and we're sorry for the confusion.</p>`,
-        `<p><strong>${escapeHtml(proposal.title)}</strong></p>`,
-        `<p>The correct decision is: <strong>${to === "accepted" ? "accepted" : "not accepted"}</strong>.</p>`,
-        `<p>${escapeHtml(reason)}</p>`,
-        `<p><a href="${proposalLink(event.slug, proposalId)}">View your proposal</a></p>`,
-      ].join("\n"),
-    ),
+    subject: correction.subject,
+    html: correction.html,
     context: { proposalId, from, to },
   });
 
@@ -619,26 +594,34 @@ export async function createDirectSession(
     // organizer says otherwise (M3 handles manager handoff).
     managerUserId: undefined,
   });
+  // A direct invitation is a formal release too (M4).
+  await instantiateForSession(ctx, event, sessionId);
 
+  const when = eventWhen(event);
+  const invitation = await renderTemplate(ctx, event, "invitation.direct", {
+    event: {
+      name: event.name,
+      when,
+      location: event.location ?? "",
+      // One escaped line so the default template needs no conditional markup;
+      // organizers editing the template still have {{event.when}} and
+      // {{event.location}} separately.
+      whenWhere:
+        event.location === undefined ? when : `${when} — ${event.location}`,
+    },
+    speaker: { firstName: profile.firstName, lastName: profile.lastName },
+    session: { title },
+    link: portalLink(event.slug),
+  });
   await sendLoggedEmail(ctx, {
     orgId: event.orgId,
     eventId: event._id,
     toEmail: speakerEmail,
     kind: "invitation.direct",
-    subject: `Invitation to speak at ${event.name}`,
-    html: emailShell(
-      [
-        `<p>Hi ${escapeHtml(profile.firstName)},</p>`,
-        `<p>You're invited to speak at <strong>${escapeHtml(event.name)}</strong>.</p>`,
-        `<p><strong>${escapeHtml(title)}</strong><br />${escapeHtml(eventWhen(event))}${
-          event.location === undefined
-            ? ""
-            : `<br />${escapeHtml(event.location)}`
-        }</p>`,
-        `<p><a href="${portalLink(event.slug)}">Confirm your participation</a></p>`,
-      ].join("\n"),
-    ),
+    subject: invitation.subject,
+    html: invitation.html,
     sentByUserId: caller.user._id,
+    replyTo: event.replyTo,
     context: { sessionId, eventContactId },
   });
 
@@ -699,6 +682,7 @@ export async function importSession(
     eventContactId,
     managerUserId: undefined,
   });
+  await instantiateForSession(ctx, caller.event, sessionId);
   await logAudit(ctx, {
     orgId: caller.org._id,
     eventId: caller.event._id,

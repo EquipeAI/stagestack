@@ -195,6 +195,101 @@ export const generateHeadshotUploadUrl = authedMutation({
   },
 });
 
+// ── Speaker ops: tasks (M4) ──────────────────────────────────────────────
+// The speaker/manager half of convex/tasks.ts. Authorization lives in the
+// model functions (organizer, claimed speaker, or primary manager), so these
+// stay wrappers.
+
+/** Everything the caller owes on this event — their own tasks plus the tasks
+ * on sessions they primary-manage. */
+export const myTasks = authedQuery({
+  args: { eventSlug: v.string() },
+  returns: v.array(
+    v.object({
+      instanceId: vv.id("taskInstances"),
+      requirementTitle: v.string(),
+      description: v.optional(v.string()),
+      evidence: v.union(
+        v.literal("file"),
+        v.literal("profileField"),
+        v.literal("manual"),
+      ),
+      scope: v.union(v.literal("participant"), v.literal("session")),
+      status: v.union(
+        v.literal("pending"),
+        v.literal("provided"),
+        v.literal("changesRequested"),
+        v.literal("approved"),
+        v.literal("complete"),
+        v.literal("notApplicable"),
+      ),
+      dueAt: v.number(),
+      sessionTitle: v.string(),
+      // Null when it's the caller's own task; a name when they're acting for
+      // a speaker they manage.
+      forSpeaker: v.union(
+        v.object({ firstName: v.string(), lastName: v.string() }),
+        v.null(),
+      ),
+      reviewNote: v.optional(v.string()),
+      uploads: v.array(
+        v.object({
+          filename: v.string(),
+          version: v.number(),
+          url: v.union(v.string(), v.null()),
+        }),
+      ),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Portal.myTasks(ctx, ctx.user, args.eventSlug);
+  },
+});
+
+/** Tick a manual task (M4: "support manual completion for work StageStack
+ * cannot observe"). */
+export const completeTask = authedMutation({
+  args: { eventSlug: v.string(), instanceId: v.id("taskInstances") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Portal.completeTask(ctx, ctx.user, args);
+    return null;
+  },
+});
+
+export const generateTaskUploadUrl = authedMutation({
+  args: { eventSlug: v.string(), instanceId: v.id("taskInstances") },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    await Portal.requireTaskUploadAccess(ctx, ctx.user, args);
+    const limit = await uploadLimiter.limit(ctx, "portalUploadPerUser", {
+      key: ctx.user._id,
+    });
+    if (!limit.ok) {
+      throw new ConvexError({
+        code: "rate_limited",
+        message: "Too many uploads — try again in a little while.",
+      });
+    }
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+/** Submit or resubmit a requested file. A new version never erases the old
+ * one, and replacing an approved file returns the task to review (M4). */
+export const uploadForTask = authedMutation({
+  args: {
+    eventSlug: v.string(),
+    instanceId: v.id("taskInstances"),
+    storageId: v.id("_storage"),
+    filename: v.string(),
+  },
+  returns: v.object({ uploadId: vv.id("uploads"), version: v.number() }),
+  handler: async (ctx, args) => {
+    return await Portal.uploadForTask(ctx, ctx.user, args);
+  },
+});
+
 export const confirmParticipation = authedMutation({
   args: {
     eventSlug: v.string(),

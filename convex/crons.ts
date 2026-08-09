@@ -12,6 +12,17 @@ crons.interval(
   {},
 );
 
+// Scheduled reminders (M5). Hourly is the sweep frequency, NOT the send
+// frequency: each event's configured cadence (and each requirement's override)
+// decides who is actually due, and `lastRemindedAt` keeps a re-run inside the
+// same window a no-op.
+crons.interval(
+  "reminder sweep",
+  { hours: 1 },
+  internal.reminders.sweep,
+  {},
+);
+
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const cleanupResend = internalMutation({

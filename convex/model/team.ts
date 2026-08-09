@@ -4,7 +4,8 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller, EventRole, OrgCaller, OrgRole } from "../lib/functions";
 import { forbidden, notFound, requireOrgAdmin } from "../lib/functions";
 import { logAudit } from "./audit";
-import { emailShell, escapeHtml, sendLoggedEmail, siteUrl } from "./comms";
+import { sendLoggedEmail, siteUrl } from "./comms";
+import { renderTemplate } from "./templates";
 import { normalizeEmail } from "./validation";
 
 const INVITE_TTL_MS = 14 * 24 * 3600 * 1000;
@@ -29,20 +30,27 @@ async function sendInviteEmail(
   },
 ): Promise<void> {
   const link = `${siteUrl()}/invite/${args.token}`;
+  // Org-wide admin invites have no event, so there is no per-event override to
+  // look up — renderTemplate falls back to the built-in copy.
+  const event =
+    args.eventId === undefined
+      ? null
+      : await ctx.db.get("events", args.eventId);
+  const rendered = await renderTemplate(ctx, event, "team.invite", {
+    inviter: { name: args.inviterName },
+    scope: { label: args.scopeLabel },
+    role: { label: args.roleLabel },
+    link,
+  });
   await sendLoggedEmail(ctx, {
     orgId: args.orgId,
     eventId: args.eventId,
     toEmail: args.email,
     kind: "team.invite",
-    subject: `${args.inviterName} invited you to ${args.scopeLabel} on StageStack`,
+    subject: rendered.subject,
     sentByUserId: args.sentByUserId,
-    html: emailShell(
-      [
-        `<p>${escapeHtml(args.inviterName)} invited you to join <strong>${escapeHtml(args.scopeLabel)}</strong> as <strong>${escapeHtml(args.roleLabel)}</strong> on StageStack.</p>`,
-        `<p><a href="${link}">Accept the invitation</a> (link expires in 14 days).</p>`,
-        `<p>If you weren't expecting this, you can ignore this email.</p>`,
-      ].join("\n"),
-    ),
+    replyTo: event?.replyTo,
+    html: rendered.html,
   });
 }
 

@@ -11,8 +11,10 @@ import {
   sendLoggedEmail,
   siteUrl,
 } from "./comms";
+import { renderTemplate } from "./templates";
 import { publicProposalStatus } from "./cfp";
 import * as Sessions from "./sessions";
+import * as Tasks from "./tasks";
 import { assertEventActive, assertText, normalizeEmail } from "./validation";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -646,6 +648,9 @@ export async function updateMyProfile(
   if (contact.contactId !== undefined) {
     await ctx.db.patch("contacts", contact.contactId, profile);
   }
+  // Profile-field requirements observe the snapshot, so filling in a bio here
+  // IS the submission — and clearing it takes the task back (M4).
+  await Tasks.recomputeProfileEvidence(ctx, contact._id);
   await logAudit(ctx, {
     orgId: event.orgId,
     eventId: event._id,
@@ -803,6 +808,198 @@ export async function updateSessionContent(
   });
 }
 
+// ── Speaker ops: my tasks (M4) ───────────────────────────────────────────
+
+/** Instances reachable from one contact or one session. An event's task list
+ * is bounded by requirements × participants; the portal shows one person's
+ * slice of it. */
+const TASK_SCAN = 500;
+
+export type PortalTaskUpload = {
+  filename: string;
+  version: number;
+  url: string | null;
+};
+
+export type PortalTask = {
+  instanceId: Id<"taskInstances">;
+  requirementTitle: string;
+  description?: string;
+  evidence: Doc<"requirements">["evidence"];
+  scope: Doc<"requirements">["scope"];
+  status: Doc<"taskInstances">["status"];
+  dueAt: number;
+  sessionTitle: string;
+  /** Set when this task is owed BY someone else that the caller manages —
+   * the portal says "Carol's headshot", not just "headshot". */
+  forSpeaker: { firstName: string; lastName: string } | null;
+  /** The organizer's explanatory note when changes were requested (M4). */
+  reviewNote?: string;
+  uploads: PortalTaskUpload[];
+};
+
+/**
+ * Everything the caller can act on for this event: tasks owed by the speaker
+ * profiles they have claimed, plus every task on the sessions they primary-
+ * manage. A manager sees their speakers' work because M4 lets them submit on
+ * that speaker's behalf — the task still belongs to the speaker.
+ */
+export async function myTasks(
+  ctx: QueryCtx,
+  user: Doc<"users">,
+  eventSlug: string,
+): Promise<PortalTask[]> {
+  const event = await eventBySlug(ctx, eventSlug);
+  const byId = new Map<Id<"taskInstances">, Doc<"taskInstances">>();
+
+  for (const contact of await claimedContacts(ctx, user, event)) {
+    const rows = await ctx.db
+      .query("taskInstances")
+      .withIndex("by_eventContactId", (q) =>
+        q.eq("eventContactId", contact._id),
+      )
+      .take(TASK_SCAN);
+    for (const row of rows) {
+      if (row.eventId === event._id) byId.set(row._id, row);
+    }
+  }
+
+  const participants = await ctx.db
+    .query("sessionParticipants")
+    .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
+    .take(PARTICIPANT_SCAN);
+  const managed = new Set(
+    participants
+      .filter((p) => p.managerUserId === user._id)
+      .map((p) => p.sessionId),
+  );
+  for (const sessionId of managed) {
+    const rows = await ctx.db
+      .query("taskInstances")
+      .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+      .take(TASK_SCAN);
+    for (const row of rows) byId.set(row._id, row);
+  }
+
+  const out: PortalTask[] = [];
+  const requirements = new Map<
+    Id<"requirements">,
+    Doc<"requirements"> | null
+  >();
+  const sessions = new Map<Id<"sessions">, Doc<"sessions"> | null>();
+  const contacts = new Map<Id<"eventContacts">, Doc<"eventContacts"> | null>();
+  for (const instance of byId.values()) {
+    if (!requirements.has(instance.requirementId)) {
+      requirements.set(
+        instance.requirementId,
+        await ctx.db.get("requirements", instance.requirementId),
+      );
+    }
+    const requirement = requirements.get(instance.requirementId) ?? null;
+    if (requirement === null) continue;
+    if (!sessions.has(instance.sessionId)) {
+      sessions.set(
+        instance.sessionId,
+        await ctx.db.get("sessions", instance.sessionId),
+      );
+    }
+    const session = sessions.get(instance.sessionId) ?? null;
+
+    let forSpeaker: { firstName: string; lastName: string } | null = null;
+    if (instance.eventContactId !== undefined) {
+      if (!contacts.has(instance.eventContactId)) {
+        contacts.set(
+          instance.eventContactId,
+          await ctx.db.get("eventContacts", instance.eventContactId),
+        );
+      }
+      const contact = contacts.get(instance.eventContactId) ?? null;
+      // Null means "this is your own task"; a name means you're acting for
+      // someone else.
+      if (contact !== null && contact.userId !== user._id) {
+        forSpeaker = {
+          firstName: contact.firstName,
+          lastName: contact.lastName,
+        };
+      }
+    }
+
+    const uploads: PortalTaskUpload[] = [];
+    if (requirement.evidence === "file") {
+      const rows = await ctx.db
+        .query("uploads")
+        .withIndex("by_taskInstanceId", (q) =>
+          q.eq("taskInstanceId", instance._id),
+        )
+        .take(TASK_SCAN);
+      for (const row of rows.sort((a, b) => b.version - a.version)) {
+        uploads.push({
+          filename: row.filename,
+          version: row.version,
+          url: await ctx.storage.getUrl(row.storageId),
+        });
+      }
+    }
+
+    out.push({
+      instanceId: instance._id,
+      requirementTitle: requirement.title,
+      description: requirement.description,
+      evidence: requirement.evidence,
+      scope: requirement.scope,
+      status: instance.status,
+      dueAt: instance.dueAt,
+      sessionTitle: session?.title ?? "",
+      forSpeaker,
+      reviewNote: instance.reviewNote,
+      uploads,
+    });
+  }
+  out.sort((a, b) => a.dueAt - b.dueAt);
+  return out;
+}
+
+/** Tick a manual task from the portal. `markProvided` re-checks the speaker/
+ * manager/organizer trio itself. */
+export async function completeTask(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  args: { eventSlug: string; instanceId: Id<"taskInstances"> },
+): Promise<void> {
+  const event = await eventBySlug(ctx, args.eventSlug);
+  await Tasks.markProvided(ctx, user, event, args.instanceId);
+}
+
+/** Attach a new version of a requested file from the portal. */
+export async function uploadForTask(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  args: {
+    eventSlug: string;
+    instanceId: Id<"taskInstances">;
+    storageId: Id<"_storage">;
+    filename: string;
+  },
+): Promise<{ uploadId: Id<"uploads">; version: number }> {
+  const event = await eventBySlug(ctx, args.eventSlug);
+  return await Tasks.attachUpload(ctx, user, event, {
+    instanceId: args.instanceId,
+    storageId: args.storageId,
+    filename: args.filename,
+  });
+}
+
+/** Authorization half of `portal.generateTaskUploadUrl` — the wrapper adds the
+ * rate limit, exactly like the headshot upload URL. */
+export async function requireTaskUploadAccess(
+  ctx: QueryCtx,
+  user: Doc<"users">,
+  args: { eventSlug: string; instanceId: Id<"taskInstances"> },
+): Promise<void> {
+  const event = await eventBySlug(ctx, args.eventSlug);
+  await Tasks.requireTaskAccess(ctx, user, event, args.instanceId);
+}
+
 // ── Organizer side ───────────────────────────────────────────────────────
 
 /**
@@ -832,22 +1029,21 @@ export async function invitePortal(
   }
   const toEmail = normalizeEmail(raw);
 
+  const rendered = await renderTemplate(ctx, event, "portal.invite", {
+    event: { name: event.name },
+    speaker: { firstName: contact.firstName, lastName: contact.lastName },
+    link: portalLink(event.slug),
+  });
   await sendLoggedEmail(ctx, {
     orgId: event.orgId,
     eventId: event._id,
     contactId: contact.contactId,
     toEmail,
     kind: "portal.invite",
-    subject: `Your speaker portal for ${event.name}`,
-    html: emailShell(
-      [
-        `<p>Hi ${escapeHtml(contact.firstName)},</p>`,
-        `<p>You can now manage your participation in <strong>${escapeHtml(event.name)}</strong> yourself — confirm or decline, keep your profile current, and see what's outstanding.</p>`,
-        `<p><a href="${portalLink(event.slug)}">Open your speaker portal</a></p>`,
-        `<p>Sign in with this email address and your access appears automatically.</p>`,
-      ].join("\n"),
-    ),
+    subject: rendered.subject,
+    html: rendered.html,
     sentByUserId: caller.user._id,
+    replyTo: event.replyTo,
     context: { eventContactId },
   });
 
@@ -901,21 +1097,20 @@ export async function startManagerHandoff(
     expiresAt: Date.now() + HANDOFF_TTL_MS,
   });
 
+  const rendered = await renderTemplate(ctx, event, "portal.handoffInvite", {
+    event: { name: event.name },
+    session: { title: session.title },
+    link: portalLink(event.slug),
+  });
   await sendLoggedEmail(ctx, {
     orgId: event.orgId,
     eventId: event._id,
     toEmail: email,
     kind: "portal.handoffInvite",
-    subject: `Manage "${session.title}" at ${event.name}`,
-    html: emailShell(
-      [
-        `<p>You've been asked to become the primary manager for <strong>${escapeHtml(session.title)}</strong> at <strong>${escapeHtml(event.name)}</strong>.</p>`,
-        `<p>Sign in with this email address to take over: you'll be able to edit the session's shared content and record each speaker's participation.</p>`,
-        `<p><a href="${portalLink(event.slug)}">Accept and open the portal</a></p>`,
-        `<p>The current manager keeps access until you do.</p>`,
-      ].join("\n"),
-    ),
+    subject: rendered.subject,
+    html: rendered.html,
     sentByUserId: caller.user._id,
+    replyTo: event.replyTo,
     context: { sessionId: session._id, handoffId },
   });
 
