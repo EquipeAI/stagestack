@@ -1,4 +1,6 @@
 import { Link } from '@tanstack/react-router'
+import { useQuery } from 'convex/react'
+import { api } from '@convex/_generated/api'
 import {
   PARTICIPANT_STATE_LABEL,
   distinctProfiles,
@@ -7,6 +9,7 @@ import {
 import { SpeakingCard } from './SpeakingCard'
 import { ProfileCard } from './ProfileCard'
 import { ManagedSessionCard } from './ManagedSessionCard'
+import { PortalTasks, openTaskCount } from './TasksCard'
 import type { PortalContext } from './model'
 import type * as React from 'react'
 import { Card, StatusPill } from '~/ds'
@@ -35,6 +38,11 @@ export function PortalView({
   const { event, speaking, managing, myProposalsSummary } = context
   const profiles = distinctProfiles(speaking)
   const awaiting = speaking.filter((item) => item.state === 'awaiting').length
+
+  // `myTasks` answers for whoever is signed in, so the organizer's read-only
+  // preview must not ask: it would show the organizer their own tasks.
+  const tasks = useQuery(api.portal.myTasks, readOnly ? 'skip' : { eventSlug })
+  const openTasks = tasks === undefined ? 0 : openTaskCount(tasks)
 
   return (
     <PageBody narrow>
@@ -77,6 +85,11 @@ export function PortalView({
               : `${awaiting} sessions are waiting for your answer.`}
           </span>
         ) : null}
+        {openTasks > 0 ? (
+          <span style={{ color: 'var(--text-secondary)' }}>
+            {openTasks === 1 ? '1 task is open.' : `${openTasks} tasks are open.`}
+          </span>
+        ) : null}
       </header>
 
       {context.hasAccess ? null : emptyState}
@@ -99,23 +112,40 @@ export function PortalView({
       ) : null}
 
       {profiles.length > 0 ? (
-        <PortalSection
-          title={profiles.length === 1 ? 'Your profile' : 'Your profiles'}
-          description="Keep this current — the organizers publish it as it stands here."
+        // Anchor target for profile-field tasks, which are completed by
+        // editing this section rather than by pressing anything.
+        <div
+          id="your-profile"
+          style={{ scrollMarginTop: 'var(--topbar-height)' }}
         >
-          {profiles.map((profile) => (
-            <ProfileCard
-              key={profile._id}
-              eventSlug={eventSlug}
-              profile={profile}
-              readOnly={readOnly}
-            >
-              <ProfileScope
-                sessions={sessionsForProfile(speaking, profile._id)}
-              />
-            </ProfileCard>
-          ))}
-        </PortalSection>
+          <PortalSection
+            title={profiles.length === 1 ? 'Your profile' : 'Your profiles'}
+            description="Keep this current — the organizers publish it as it stands here."
+          >
+            {profiles.map((profile) => (
+              <ProfileCard
+                key={profile._id}
+                eventSlug={eventSlug}
+                profile={profile}
+                readOnly={readOnly}
+              >
+                <ProfileScope
+                  sessions={sessionsForProfile(speaking, profile._id)}
+                />
+              </ProfileCard>
+            ))}
+          </PortalSection>
+        </div>
+      ) : null}
+
+      {context.hasAccess ? (
+        <PortalTasks
+          eventSlug={eventSlug}
+          timezone={event.timezone}
+          tasks={tasks ?? []}
+          loading={tasks === undefined}
+          readOnly={readOnly}
+        />
       ) : null}
 
       {managing.length > 0 ? (

@@ -19,12 +19,14 @@ export const Route = createFileRoute('/app/e/$eventSlug')({
 // The single source of truth for the sidebar: it maps a tab to its route both
 // ways — pathname → active tab, and selected tab → navigation target.
 const TAB_PATHS = {
+  dashboard: '/app/e/$eventSlug/dashboard',
   overview: '/app/e/$eventSlug',
   cfp: '/app/e/$eventSlug/cfp',
   proposals: '/app/e/$eventSlug/proposals',
   reviews: '/app/e/$eventSlug/reviews',
   sessions: '/app/e/$eventSlug/sessions',
   settings: '/app/e/$eventSlug/settings',
+  tasks: '/app/e/$eventSlug/tasks',
   team: '/app/e/$eventSlug/team',
 } as const
 
@@ -43,6 +45,13 @@ type NavItem = {
 const NAV_GROUPS: Array<{ items: Array<NavItem> }> = [
   {
     items: [
+      // Speaker ops is the daily screen for an organizer, so it leads.
+      {
+        id: 'dashboard',
+        label: 'Dashboard',
+        icon: 'table-2',
+        requires: 'organizer',
+      },
       { id: 'overview', label: 'Overview', icon: 'layout-grid' },
       { id: 'cfp', label: 'Call for speakers', icon: 'mic-vocal' },
       { id: 'proposals', label: 'Proposals', icon: 'inbox' },
@@ -52,6 +61,12 @@ const NAV_GROUPS: Array<{ items: Array<NavItem> }> = [
         id: 'sessions',
         label: 'Sessions',
         icon: 'presentation',
+        requires: 'organizer',
+      },
+      {
+        id: 'tasks',
+        label: 'Speaker tasks',
+        icon: 'list-checks',
         requires: 'organizer',
       },
       { id: 'settings', label: 'Settings', icon: 'settings' },

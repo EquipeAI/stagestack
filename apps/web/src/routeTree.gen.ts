@@ -21,11 +21,13 @@ import { Route as CfpEventSlugIndexRouteImport } from './routes/cfp.$eventSlug.i
 import { Route as CfpEventSlugSubmitRouteImport } from './routes/cfp.$eventSlug.submit'
 import { Route as AppEEventSlugIndexRouteImport } from './routes/app.e.$eventSlug.index'
 import { Route as AppEEventSlugCfpRouteImport } from './routes/app.e.$eventSlug.cfp'
+import { Route as AppEEventSlugDashboardRouteImport } from './routes/app.e.$eventSlug.dashboard'
 import { Route as AppEEventSlugImportRouteImport } from './routes/app.e.$eventSlug.import'
 import { Route as AppEEventSlugProposalsRouteImport } from './routes/app.e.$eventSlug.proposals'
 import { Route as AppEEventSlugReviewsRouteImport } from './routes/app.e.$eventSlug.reviews'
 import { Route as AppEEventSlugSessionsRouteImport } from './routes/app.e.$eventSlug.sessions'
 import { Route as AppEEventSlugSettingsRouteImport } from './routes/app.e.$eventSlug.settings'
+import { Route as AppEEventSlugTasksRouteImport } from './routes/app.e.$eventSlug.tasks'
 import { Route as AppEEventSlugTeamRouteImport } from './routes/app.e.$eventSlug.team'
 import { Route as CfpEventSlugProposalProposalIdRouteImport } from './routes/cfp.$eventSlug.proposal.$proposalId'
 
@@ -89,6 +91,11 @@ const AppEEventSlugCfpRoute = AppEEventSlugCfpRouteImport.update({
   path: '/cfp',
   getParentRoute: () => AppEEventSlugRoute,
 } as any)
+const AppEEventSlugDashboardRoute = AppEEventSlugDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
 const AppEEventSlugImportRoute = AppEEventSlugImportRouteImport.update({
   id: '/import',
   path: '/import',
@@ -112,6 +119,11 @@ const AppEEventSlugSessionsRoute = AppEEventSlugSessionsRouteImport.update({
 const AppEEventSlugSettingsRoute = AppEEventSlugSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
+const AppEEventSlugTasksRoute = AppEEventSlugTasksRouteImport.update({
+  id: '/tasks',
+  path: '/tasks',
   getParentRoute: () => AppEEventSlugRoute,
 } as any)
 const AppEEventSlugTeamRoute = AppEEventSlugTeamRouteImport.update({
@@ -138,11 +150,13 @@ export interface FileRoutesByFullPath {
   '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
   '/cfp/$eventSlug/': typeof CfpEventSlugIndexRoute
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
+  '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/reviews': typeof AppEEventSlugReviewsRoute
   '/app/e/$eventSlug/sessions': typeof AppEEventSlugSessionsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
+  '/app/e/$eventSlug/tasks': typeof AppEEventSlugTasksRoute
   '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
   '/cfp/$eventSlug/proposal/$proposalId': typeof CfpEventSlugProposalProposalIdRoute
   '/app/e/$eventSlug/': typeof AppEEventSlugIndexRoute
@@ -156,11 +170,13 @@ export interface FileRoutesByTo {
   '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
   '/cfp/$eventSlug': typeof CfpEventSlugIndexRoute
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
+  '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/reviews': typeof AppEEventSlugReviewsRoute
   '/app/e/$eventSlug/sessions': typeof AppEEventSlugSessionsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
+  '/app/e/$eventSlug/tasks': typeof AppEEventSlugTasksRoute
   '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
   '/cfp/$eventSlug/proposal/$proposalId': typeof CfpEventSlugProposalProposalIdRoute
   '/app/e/$eventSlug': typeof AppEEventSlugIndexRoute
@@ -178,11 +194,13 @@ export interface FileRoutesById {
   '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
   '/cfp/$eventSlug/': typeof CfpEventSlugIndexRoute
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
+  '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/reviews': typeof AppEEventSlugReviewsRoute
   '/app/e/$eventSlug/sessions': typeof AppEEventSlugSessionsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
+  '/app/e/$eventSlug/tasks': typeof AppEEventSlugTasksRoute
   '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
   '/cfp/$eventSlug/proposal/$proposalId': typeof CfpEventSlugProposalProposalIdRoute
   '/app/e/$eventSlug/': typeof AppEEventSlugIndexRoute
@@ -201,11 +219,13 @@ export interface FileRouteTypes {
     | '/cfp/$eventSlug/submit'
     | '/cfp/$eventSlug/'
     | '/app/e/$eventSlug/cfp'
+    | '/app/e/$eventSlug/dashboard'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/reviews'
     | '/app/e/$eventSlug/sessions'
     | '/app/e/$eventSlug/settings'
+    | '/app/e/$eventSlug/tasks'
     | '/app/e/$eventSlug/team'
     | '/cfp/$eventSlug/proposal/$proposalId'
     | '/app/e/$eventSlug/'
@@ -219,11 +239,13 @@ export interface FileRouteTypes {
     | '/cfp/$eventSlug/submit'
     | '/cfp/$eventSlug'
     | '/app/e/$eventSlug/cfp'
+    | '/app/e/$eventSlug/dashboard'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/reviews'
     | '/app/e/$eventSlug/sessions'
     | '/app/e/$eventSlug/settings'
+    | '/app/e/$eventSlug/tasks'
     | '/app/e/$eventSlug/team'
     | '/cfp/$eventSlug/proposal/$proposalId'
     | '/app/e/$eventSlug'
@@ -240,11 +262,13 @@ export interface FileRouteTypes {
     | '/cfp/$eventSlug/submit'
     | '/cfp/$eventSlug/'
     | '/app/e/$eventSlug/cfp'
+    | '/app/e/$eventSlug/dashboard'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/reviews'
     | '/app/e/$eventSlug/sessions'
     | '/app/e/$eventSlug/settings'
+    | '/app/e/$eventSlug/tasks'
     | '/app/e/$eventSlug/team'
     | '/cfp/$eventSlug/proposal/$proposalId'
     | '/app/e/$eventSlug/'
@@ -344,6 +368,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEEventSlugCfpRouteImport
       parentRoute: typeof AppEEventSlugRoute
     }
+    '/app/e/$eventSlug/dashboard': {
+      id: '/app/e/$eventSlug/dashboard'
+      path: '/dashboard'
+      fullPath: '/app/e/$eventSlug/dashboard'
+      preLoaderRoute: typeof AppEEventSlugDashboardRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
     '/app/e/$eventSlug/import': {
       id: '/app/e/$eventSlug/import'
       path: '/import'
@@ -379,6 +410,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEEventSlugSettingsRouteImport
       parentRoute: typeof AppEEventSlugRoute
     }
+    '/app/e/$eventSlug/tasks': {
+      id: '/app/e/$eventSlug/tasks'
+      path: '/tasks'
+      fullPath: '/app/e/$eventSlug/tasks'
+      preLoaderRoute: typeof AppEEventSlugTasksRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
     '/app/e/$eventSlug/team': {
       id: '/app/e/$eventSlug/team'
       path: '/team'
@@ -398,22 +436,26 @@ declare module '@tanstack/react-router' {
 
 interface AppEEventSlugRouteChildren {
   AppEEventSlugCfpRoute: typeof AppEEventSlugCfpRoute
+  AppEEventSlugDashboardRoute: typeof AppEEventSlugDashboardRoute
   AppEEventSlugImportRoute: typeof AppEEventSlugImportRoute
   AppEEventSlugProposalsRoute: typeof AppEEventSlugProposalsRoute
   AppEEventSlugReviewsRoute: typeof AppEEventSlugReviewsRoute
   AppEEventSlugSessionsRoute: typeof AppEEventSlugSessionsRoute
   AppEEventSlugSettingsRoute: typeof AppEEventSlugSettingsRoute
+  AppEEventSlugTasksRoute: typeof AppEEventSlugTasksRoute
   AppEEventSlugTeamRoute: typeof AppEEventSlugTeamRoute
   AppEEventSlugIndexRoute: typeof AppEEventSlugIndexRoute
 }
 
 const AppEEventSlugRouteChildren: AppEEventSlugRouteChildren = {
   AppEEventSlugCfpRoute: AppEEventSlugCfpRoute,
+  AppEEventSlugDashboardRoute: AppEEventSlugDashboardRoute,
   AppEEventSlugImportRoute: AppEEventSlugImportRoute,
   AppEEventSlugProposalsRoute: AppEEventSlugProposalsRoute,
   AppEEventSlugReviewsRoute: AppEEventSlugReviewsRoute,
   AppEEventSlugSessionsRoute: AppEEventSlugSessionsRoute,
   AppEEventSlugSettingsRoute: AppEEventSlugSettingsRoute,
+  AppEEventSlugTasksRoute: AppEEventSlugTasksRoute,
   AppEEventSlugTeamRoute: AppEEventSlugTeamRoute,
   AppEEventSlugIndexRoute: AppEEventSlugIndexRoute,
 }
