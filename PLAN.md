@@ -2,11 +2,19 @@
 
 Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) · [docs/CHALLENGE.md](docs/CHALLENGE.md) · milestones: [docs/MILESTONES.md](docs/MILESTONES.md)
 
-## Now: M2 — Review & decisions UI + Import agent
+## Now: M3 — Speaker portal
 
-M2 backend is done and tested (95 tests; reviews, decision queues/release/correction, sessions, direct invitations). Remaining: abstracts admin table (search/filter/sort/saved views/export), review screens (assignments queue + Submit & Next), decision release UI, sessions list, direct-invite dialog, Import-with-AI agent (worker/Flue), browser + prod verification, codex triage (running).
+Portal access (primary manager + claimable speaker access), profile snapshot editing, participation confirmation (speaker/manager/organizer, audited), pending-public-updates boundary, withdrawal, manager handoff, organizer preview mode, My StageStack speaking section. `/portal/$eventSlug` placeholder exists (direct-invite emails already link to it).
 
-Carry-overs into M2 UI: org-page capability gating (hide New event/Contacts for event-scoped members; Owner invite option only for owners) — small, from M0 codex review.
+## Done: M2 — Review, decisions, sessions, Import agent — Aug 9
+
+- [x] Abstracts admin table: search, sort, status chips, saved views (URL-state + named), column prefs, CSV/XLSX export, file-bundle download, manual add, detail dialog (answers + files + review summary + decision actions + reopen)
+- [x] Reviews: manual assignment (individual + bulk), single-screen Submit & Next with keyboard flow + autosave, strict reviewer scoping (assigned-only, professional identity only, no contact details — enforced server-side), draft content withheld from organizers
+- [x] Pipeline: pending → accept/decline queue (internal, masked from submitters as "Submitted"; editing while queued resets to pending + notifies) → explicit release (per-id results, batches >100 chunked) → session + event-contact snapshots + participants Awaiting Response + decision emails; corrected release both directions
+- [x] Direct invitation (session + invitation email → /portal link); sessions list
+- [x] **Import with AI verified end-to-end**: CSV upload → Flue planner on VM (gpt-5.6-luna, bounded chunks) → plan with reuse/duplicates/uncertainties/skips → organizer approval → deterministic execution through the same capabilities with the confirming organizer's authority (server-resolved; worker never names a user) → 5/5 records (proposals, track, session-no-comms, contact)
+- [x] codex round triaged: fixed reviewer privacy (answers projection), draft-bricking on removed fields, upload-URL rate limit, withdrawal-locks-reviews, condition-graph validation, autosave flush races, resubmit semantics, wizard resume, org gating; logged as v1 cuts: review version history/locking/reopen, rich-text editor (textarea + honest hint), builder concurrent-edit protection, correction edge cases (no-email speaker duplication)
+- [x] 95 tests green; browser-verified: import e2e, assign → 3 reviews → stage → release (2A/1D) → sessions + delivered emails; queue masking checked as submitter
 
 ## Done: M1 — CFP forms & public submission — Aug 9
 
@@ -68,6 +76,9 @@ Carry-overs into M2 UI: org-page capability gating (hide New event/Contacts for 
 
 - **Switch Vercel to the production Clerk instance** — prod currently runs dev-instance keys (orange "Development mode" watermark visible in the sign-in modal; dev instances also cap users).
 - Deploy worker after any worker-touching milestone (`scripts/deploy-worker.sh`).
+- `xlsx@0.18.5` carries a known npm advisory (used for client-side export + worker-side parsing of organizer-owned files; bounded exposure) — revisit if a patched build ships before submission.
+- Simplify pass for M2-M4 UI additions scheduled at M4 close (M2 closed on the codex triage instead; backend already simplified).
+- Dev-server tab on :3000 from another session may hold stale Vite deps; this session runs on :3106.
 
 ## Next
 
