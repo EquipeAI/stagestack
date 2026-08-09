@@ -24,6 +24,18 @@ Stack researched and pinned Aug 8, 2026 (all facts below verified against curren
 - **Convex** is the database, API layer, and job scheduler. Reactive queries give the speaker-ops dashboard, abstracts table, and agenda views real-time updates for free — requirement #6 falls out of the infrastructure.
 - **TanStack Start on Vercel** (chosen over Next.js and SvelteKit after research — see "Frontend framework" below): the Convex+Clerk+Start triangle is officially documented by Convex; typed URL search params + TanStack Table fit the table-heavy admin surface; `useSuspenseQuery(convexQuery(...))` gives SSR-then-live-WebSocket so public pages get real SSR/OG while the dashboard stays reactive.
 - **Clerk** for identity/sessions/org membership (per BUSINESS_CONTEXT boundary: StageStack owns all domain authorization). Convex Auth is still beta; Clerk is the officially recommended production path.
+
+  Dev and production are **separate Clerk instances with separate user pools** —
+  accounts do not migrate, so switch before real users sign up, not after. Two
+  things do *not* clone from dev when you create the production instance: SSO
+  connections/Integrations/Paths, and — the one that silently breaks sign-in —
+  **social credentials**. Clerk's shared Google OAuth credentials are
+  development-only; production needs your own Google Cloud OAuth client
+  (authorized origins `https://stagestack.dev` + `https://www.stagestack.dev`,
+  redirect URI `https://clerk.stagestack.dev/v1/oauth_callback`), and that
+  client must be published "In production" or it's capped at 100 listed test
+  users. Also set **Paths → Home URL**, or the OAuth callback lands on the
+  Account Portal and never returns to the app.
 - **exe.dev VM** runs the long-lived Node worker: `ssh exe.dev new`, systemd unit with `Restart=always`, outbound-only (no inbound needed). Persistent disk holds Flue's durable session DB.
 - **Flue 2.x** (`@flue/runtime`, Node ≥22.19) embedded in the worker via `start()` + `dispatch()` — no HTTP server. Powers the Import agent.
 
@@ -56,7 +68,7 @@ This is how the docs' invariant ("UI and agents call the same authorized capabil
 - **Public CFP submission** (contract settled in M1, matching MILESTONES step order): the wizard's Welcome/landing pages are public *reads*; every write happens after the Clerk account step, so drafts belong to their author from the first keystroke and no anonymous-draft claim flow exists. The **Rate Limiter component** guards abuse-prone authenticated endpoints (e.g. upload-URL minting).
 - **Files** (headshots/slides): `ctx.storage.generateUploadUrl()` → client POST → store `v.id("_storage")` on the doc; serve via `storage.getUrl` (fine for headshots) or HTTP-action proxy if access-controlled (≤20MB).
 - **Email**: `@convex-dev/resend` component. Durable queued sends, exactly-once idempotency, delivery events via webhook (`https://<deployment>.convex.site/resend-webhook`) feeding our per-contact comms log — delivery state was already in the product spec, and the component hands it to us. Env: `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `RESEND_TEST_MODE`, `MAIL_FROM`. Hourly cleanup cron.
-  - **Send mode and sender identity are env vars, not constants** (M14, `convex/emails.ts`). `resendTestMode()` keeps the component in test mode — where it accepts *only* Resend's own test addresses and throws inside the sending mutation for anyone else — unless `RESEND_TEST_MODE` is explicitly `false`/`0`/`no`/`off`; any other value, including a typo, leaves test mode ON, because the cost of guessing wrong is real mail to real people from a domain the deployment may not own. `mailFrom()` reads `MAIL_FROM` (default `StageStack <hello@stagestack.dev>`) and is the single source of truth for the From on both the batch path (`model/comms.ts`) and the raw-API calendar path. The hosted deployment therefore sets `RESEND_TEST_MODE=false` and `MAIL_FROM` explicitly — the walking skeleton's real delivery is opt-in, not the default a clone inherits. Both are read per send (a getter on `resend.config.testMode`), so flipping the var takes effect on the next send instead of the next isolate.
+  - **Send mode and sender identity are env vars, not constants** (M14, `convex/emails.ts`). `resendTestMode()` keeps the component in test mode — where it accepts *only* Resend's own test addresses and throws inside the sending mutation for anyone else — unless `RESEND_TEST_MODE` is explicitly `false`/`0`/`no`/`off`; any other value, including a typo, leaves test mode ON, because the cost of guessing wrong is real mail to real people from a domain the deployment may not own. **`RESEND_TEST_MODE` is currently unset on `prod:healthy-lynx-620`, so production sends no real email** — deliberate, so the Convex cutover couldn't start mailing speakers as a side effect. Set it to `false` when you actually want mail to leave. `mailFrom()` reads `MAIL_FROM` (default `StageStack <hello@stagestack.dev>`) and is the single source of truth for the From on both the batch path (`model/comms.ts`) and the raw-API calendar path. The hosted deployment therefore sets `RESEND_TEST_MODE=false` and `MAIL_FROM` explicitly — the walking skeleton's real delivery is opt-in, not the default a clone inherits. Both are read per send (a getter on `resend.config.testMode`), so flipping the var takes effect on the next send instead of the next isolate.
   - **Bulk mail & unsubscribe (M15)**. `sendLoggedEmail` attaches `List-Unsubscribe` to bulk/nudge kinds only — `manual.oneoff` (organizer broadcasts, up to `MAX_AUDIENCE` recipients) and `reminder.*` (the digests) — classified by `isBulkKind()` off the machine `kind`, so no call site can forget. Transactional lifecycle mail (invitations, decisions, calendar invites/updates) deliberately carries no opt-out: it is a one-to-one consequence of something the recipient's organizer did, and an unsubscribe link on it offers to break a flow the recipient still needs. The header is `mailto:` (the event's `replyTo`, else the `MAIL_FROM` address) and `List-Unsubscribe-Post` is omitted, because RFC 8058 one-click advertises an HTTPS POST endpoint that honours the request automatically — and a request-accepting endpoint with no suppression check behind it is worse than no header at all.
     - *What the automated per-event opt-out needs, when it is wanted*: (1) a `suppressions` table — `{ orgId, eventId?, email (normalized), kind?, createdAt, source: mailto|oneclick }` with a `by_eventId_and_email` index; (2) one check at the top of `sendLoggedEmail` — the single write path — skipping bulk kinds for a suppressed address while still letting transactional mail through, and recording the skip in the comms log so organizers see *why* nobody was reached; (3) only then an `http.ts` `POST /unsubscribe/:token` route with an HMAC token over `(eventId, email)` signed with a deployment secret (never a raw email in the URL), plus `List-Unsubscribe-Post: List-Unsubscribe=One-Click`. Steps 1–2 are the product decision; step 3 is only the transport.
   - *Named alternative behind the same boundary*: **Cloudflare Email Service** (public beta Apr 2026) — REST API callable from Convex, arbitrary recipients after domain onboarding, attachments, lifecycle events via Cloudflare Queues (HTTP pull). Not chosen for v1: unpublished "conservative" beta daily quotas land exactly on judging days, and delivery events would need a hand-built Queues consumer vs. the Resend component's built-in webhook→comms-log path. Swappable post-beta for an all-Cloudflare posture.
@@ -93,17 +105,68 @@ stagestack/
 ## Environments & config
 
 - Convex: `dev` + `prod` deployments (`npx convex dev` / `deploy`). Vercel preview/prod point at the matching deployment.
+
+  **Live topology** (verified Aug 2026 — deployment names are not secrets, the keys behind them are):
+
+  | Vercel env | Convex deployment | Clerk instance | Notes |
+  |---|---|---|---|
+  | Production (`stagestack.dev`) | `prod:healthy-lynx-620` | production (`pk_live`, issuer `https://clerk.stagestack.dev`) | The real thing. |
+  | Preview (PR builds) | `dev:scintillating-heron-597` | development (`pk_test`) | Deliberately *not* prod: a preview build must never write to production data. |
+  | Development (`vercel dev`) | `dev:scintillating-heron-597` | development (`pk_test`) | Matches local `.env.local`. |
+
+  Local `npm run dev` uses the dev deployment via root `.env.local`; nothing local touches prod.
 - Env vars — the authoritative, commented list is [`.env.example`](../.env.example) (every variable the code actually reads, grouped by where it has to be set). Summary:
 
   | Where | Variables | Notes |
   |---|---|---|
   | Convex deployment (`npx convex env set`) | `CLERK_JWT_ISSUER_DOMAIN`, `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `RESEND_TEST_MODE`, `MAIL_FROM`, `SITE_URL`, `WORKER_SECRET` | `RESEND_TEST_MODE`/`MAIL_FROM` per the Email section above. Without `SITE_URL` every emailed link points at `https://stagestack.dev`. |
+  | Vercel project | `VITE_CONVEX_URL`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` (all three scopes) + `CONVEX_DEPLOY_KEY` (Production only) | Set per-scope. `CLERK_SECRET_KEY` used to be one entry spanning Production+Preview — replacing it for one scope silently deletes the other, so always re-check all three after editing. |
   | Web (root `.env.local`, mirrored to `apps/web/.env.local`) | `VITE_CONVEX_URL`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, optionally `SITE_URL` | On Vercel these are project env vars. |
   | Worker VM (`EnvironmentFile=`) | `CONVEX_URL`, `WORKER_SECRET`, `OPENROUTER_API_KEY` | Import agent only. |
   | `scripts/deploy-worker.sh` | `WORKER_SSH_HOST` (required), `WORKER_SSH_IDENTITY`, `WORKER_APP_DIR`, `WORKER_SERVICE` | The script refuses to run rather than guess a host/key. |
 
   `SITE_URL` is read in **two** runtimes, which is easy to miss: the Convex deployment builds emailed links from it (`siteUrl()` in `convex/model/comms.ts`), and the web server uses it in `apps/web/src/lib/origin.ts` as the origin fallback when a request carries no usable `X-Forwarded-Host`/`Host` (prerender, scripts, tests). Same value, two places to set it — a self-host that sets it only on Convex still gets correct emails but can advertise the wrong `og:url` on a hostless render.
 - **Domain: `stagestack.dev`** (registered via Vercel, so app DNS is zero-config). Serves three roles: app URL (judges see `https://stagestack.dev`), Clerk production instance (Clerk doesn't work on `*.vercel.app`), and Resend sending domain (send from `@stagestack.dev` or `@mail.stagestack.dev`; add Resend's DKIM/SPF records in Vercel DNS immediately — propagation is the only slow step in the stack).
+
+  DNS lives in Vercel (`vercel dns ls stagestack.dev`). Clerk's production
+  instance needs **five** CNAMEs — `clerk`, `accounts`, `clkmail`,
+  `clk._domainkey`, `clk2._domainkey` — all present and verified; SSL is issued
+  automatically once they resolve.
+
+## Deploying
+
+`git push` to `main` is the whole deploy: Vercel builds the frontend **and**
+pushes the Convex backend in the same step, so code and schema can't drift
+apart. GitHub Actions (`.github/workflows/ci.yml`) runs typecheck + both test
+suites on every push; it gates nothing on Vercel's side, so a red CI run and a
+green deploy can coexist — read CI before assuming a push was safe.
+
+Vercel build command:
+
+```
+cd ../.. && npx convex deploy --typecheck=disable --cmd 'npm run build --workspace apps/web'
+```
+
+Three things in that line are load-bearing, and each one cost a broken deploy:
+
+- **`cd ../..` is not optional.** Vercel's Root Directory is `apps/web`, but
+  `convex/` lives at the repo root. Run `convex deploy` from `apps/web` and it
+  finds no functions, concludes you deleted them all, and **unmounts every
+  component and drops every index on production** — a successful-looking build
+  that empties the backend. This happened once; the recovery is
+  `npx convex deploy` from the repo root, which remounts everything (documents
+  are untouched — only functions and indexes are lost).
+- **`--typecheck=disable`** skips a *duplicate* check, not a real one. Vercel
+  installs from `apps/web`, so the convex test files' types are missing and
+  `tsc` fails there. CI already typechecks the whole repo on the same commit.
+- **`CONVEX_DEPLOY_KEY`** (Production env var) needs `deployment:deploy` **and**
+  `deployment:data:view` — deploy reads existing data to validate the schema, so
+  a deploy-only key fails with a permissions error.
+
+**No backups are configured.** Convex snapshots are opt-in (dashboard →
+Backup & Restore); with the deploy now automatic, a bad schema change reaches
+prod without a human, so this is worth turning on before real data lands.
+
 
 ## Walking-skeleton validation checklist (before real feature work)
 
