@@ -2,9 +2,18 @@
 
 Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) · [docs/CHALLENGE.md](docs/CHALLENGE.md) · milestones: [docs/MILESTONES.md](docs/MILESTONES.md)
 
-## Now: M3 — Speaker portal
+## Now: M4/M5 — Speaker ops UI + comms UI
 
-Portal access (primary manager + claimable speaker access), profile snapshot editing, participation confirmation (speaker/manager/organizer, audited), pending-public-updates boundary, withdrawal, manager handoff, organizer preview mode, My StageStack speaking section. `/portal/$eventSlug` placeholder exists (direct-invite emails already link to it).
+Backends for both are done and tested (M4: requirements/instances/uploads/readiness dashboard, 131 tests; M5 backend agent finishing: templates/audiences/one-off/reminder sweep/.ics machinery). Remaining: tasks admin UI + speaker-tracking dashboard + portal tasks section (M4), templates editor + audience one-off send + per-contact comms log UI (M5), browser + prod verification, combined simplify + codex pass.
+
+## Done: M3 — Speaker portal — Aug 9
+
+- [x] Access = verified-email auto-claim (Clerk-verified email links event snapshots on portal entry; no parallel passwords/tokens); manager handoff completes the same way, old manager revoked
+- [x] Speaker: status visibility, Confirm (dialog previews the exact publishable fields) / Decline / Withdraw (organizers alerted, session stays planned + flagged); profile editing refreshes event snapshot AND org directory current profile (other events untouched — verified at data level)
+- [x] Manager: session content editing, co-speaker states, on-behalf confirmation (actor+time recorded)
+- [x] Organizer: participation state override, invite-to-portal email, handoff start/revoke, read-only "Preview portal" with persistent banner (renders the real portal component)
+- [x] My StageStack Speaking section (cross-event)
+- [x] 131 tests green (14 portal + 22 M4-backend landed same window); browser-verified: invite → auto-claim → confirm → profile propagation → preview
 
 ## Done: M2 — Review, decisions, sessions, Import agent — Aug 9
 
