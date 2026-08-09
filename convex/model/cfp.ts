@@ -19,6 +19,7 @@ import {
   assertText,
   isEmail,
   normalizeEmail,
+  takeCapped,
 } from "./validation";
 import {
   allFields,
@@ -1227,49 +1228,78 @@ export type ProposalRow = {
   speakerCount: number;
 };
 
-/** M1 sanity list for organizers; M2 builds the real review table (and
- * decides what reviewers may see, which is why they're excluded here). */
+export type ProposalList = {
+  rows: ProposalRow[];
+  /** True when the event has more proposals than PROPOSAL_LIST_CAP, so the UI
+   * must say so instead of implying "700 of 700". */
+  capped: boolean;
+};
+
+/** Newest-first proposals per organizer list read. */
+const PROPOSAL_LIST_CAP = 500;
+/** 500 proposals × 10 speakers is the hard ceiling, so this covers the counts
+ * for a full page. */
+const PROPOSAL_SPEAKER_CAP = 5000;
+
+/**
+ * M1 sanity list for organizers; M2 builds the real review table (and decides
+ * what reviewers may see, which is why they're excluded here).
+ *
+ * REPORTS `capped` rather than refusing (H5): this is a listing, the rows are
+ * newest-first, and an organizer working the newest 500 of 700 proposals is
+ * doing useful work — as long as the surface admits the other 200 exist. The
+ * previous version dropped them silently and the route rendered
+ * "Showing 500 of 500", which is the actual bug: invisible data loss on the
+ * organizer's primary CFP surface.
+ */
 export async function listProposals(
   ctx: QueryCtx,
   caller: EventCaller,
   filters?: { status?: ProposalStatus },
-): Promise<ProposalRow[]> {
+): Promise<ProposalList> {
   requireOrganizer(caller);
   const eventId = caller.event._id;
   const status = filters?.status;
   const [proposals, speakerRows] = await Promise.all([
     // Unfiltered lists use the plain by-event index: the status-first index
     // ordered desc would keep a status-skewed slice once past the cap.
-    status === undefined
-      ? ctx.db
-          .query("proposals")
-          .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-          .order("desc")
-          .take(500)
-      : ctx.db
-          .query("proposals")
-          .withIndex("by_eventId_and_status", (q) =>
-            q.eq("eventId", eventId).eq("status", status),
-          )
-          .order("desc")
-          .take(500),
-    // One event-wide read instead of a speaker query per proposal. 500
-    // proposals × 10 speakers is the hard ceiling, so 5000 covers it.
-    ctx.db
-      .query("proposalSpeakers")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(5000),
+    takeCapped(
+      status === undefined
+        ? ctx.db
+            .query("proposals")
+            .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+            .order("desc")
+        : ctx.db
+            .query("proposals")
+            .withIndex("by_eventId_and_status", (q) =>
+              q.eq("eventId", eventId).eq("status", status),
+            )
+            .order("desc"),
+      PROPOSAL_LIST_CAP,
+    ),
+    // One event-wide read instead of a speaker query per proposal.
+    takeCapped(
+      ctx.db
+        .query("proposalSpeakers")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+      PROPOSAL_SPEAKER_CAP,
+    ),
   ]);
   const counts = new Map<Id<"proposals">, number>();
-  for (const row of speakerRows) {
+  for (const row of speakerRows.rows) {
     counts.set(row.proposalId, (counts.get(row.proposalId) ?? 0) + 1);
   }
   // Both index reads are newest-first already (creation time is the trailing
   // index column in each case).
-  return proposals.map((proposal) => ({
-    proposal,
-    speakerCount: counts.get(proposal._id) ?? 0,
-  }));
+  return {
+    rows: proposals.rows.map((proposal) => ({
+      proposal,
+      speakerCount: counts.get(proposal._id) ?? 0,
+    })),
+    // A truncated speaker read understates speakerCount on the oldest
+    // proposals, so it is the same "this page isn't the whole story" warning.
+    capped: proposals.capped || speakerRows.capped,
+  };
 }
 
 export type ProposalDetail = {

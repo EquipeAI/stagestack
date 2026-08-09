@@ -70,6 +70,26 @@ function columnValue(
   }
 }
 
+// Excel, Sheets and LibreOffice evaluate a cell whose text starts with `=`,
+// `+`, `-` or `@` (optionally behind a tab or CR, which those parsers skip), so
+// a CFP answer of `=HYPERLINK("http://evil","click")` would run on the
+// organizer's machine when they open the export. Every proposal answer in the
+// sheet is submitter-controlled, so the whole sheet is neutralized.
+const FORMULA_TRIGGER = /^[\t\r]*[=+\-@]/
+// Plain numbers are exempt: `-4`, `+1.5` and `1e3` are values, not formulas,
+// and quoting them would turn real numbers into text in the XLSX and break
+// sums an organizer builds on the export. Anything else that starts with a
+// trigger — including dates or phone numbers rendered as strings — is prefixed
+// with a single quote, the "this cell is text" marker every spreadsheet honours.
+const PLAIN_NUMBER = /^[+-]?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$/
+
+/** Make one already-stringified cell safe to open in a spreadsheet. */
+export function sheetSafe(value: string): string {
+  return FORMULA_TRIGGER.test(value) && !PLAIN_NUMBER.test(value)
+    ? `'${value}`
+    : value
+}
+
 /**
  * The sheet an organizer expects: the columns they can see, then EVERY answer
  * flattened under its form label — the export is the escape hatch out of the
@@ -99,7 +119,10 @@ export function buildSheet(input: ExportInput): Array<Array<string>> {
     ...input.state.cols.map((c) => columnValue(c, row, input)),
     ...answerKeys.map((a) => answerText(row.proposal.answers[a.key])),
   ])
-  return [header, ...body]
+  // Neutralized here, at the one place both writers read from, so the CSV and
+  // the XLSX file get the same protection — the XLSX path never passes through
+  // `csvCell`.
+  return [header, ...body].map((line) => line.map(sheetSafe))
 }
 
 function csvCell(value: string) {

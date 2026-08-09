@@ -165,6 +165,10 @@ function Wizard({ eventSlug, cfp }: { eventSlug: string; cfp: PublicCfp }) {
     validated.current = false
     setProposalId(null)
     clearStoredProposal(eventSlug)
+    // The proposal-backed steps render nothing without a proposal, so dropping
+    // one (a draft withdrawn elsewhere, or an id belonging to another event)
+    // would otherwise leave the wizard on a blank step with no way forward.
+    setStep((current) => (current === 'welcome' ? current : 'account'))
   }, [eventSlug])
 
   // A stored id can point at a draft that was withdrawn from another tab, or
@@ -174,10 +178,9 @@ function Wizard({ eventSlug, cfp }: { eventSlug: string; cfp: PublicCfp }) {
     validated.current = true
     const match = mine.find((row) => row.proposal._id === proposalId)
     if (match === undefined || match.eventSlug !== eventSlug) {
-      setProposalId(null)
-      clearStoredProposal(eventSlug)
+      forgetProposal()
     }
-  }, [mine, proposalId, eventSlug])
+  }, [mine, proposalId, eventSlug, forgetProposal])
 
   const startProposal = useMutation(api.cfp.startProposal)
   const start = usePending()

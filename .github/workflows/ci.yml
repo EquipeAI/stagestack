@@ -1,0 +1,33 @@
+name: CI
+
+# Every gate that exists today, in one job. NODE_ENV is deliberately left
+# unset: the suites must be NODE_ENV-agnostic (see apps/web/vitest.config.ts),
+# so setting it here would hide that class of breakage instead of catching it.
+on:
+  push:
+  pull_request:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck (all workspaces)
+        run: npm run typecheck
+
+      - name: Convex backend tests
+        run: npx vitest run
+
+      - name: Web tests
+        run: npm run test -w apps/web
+
+      - name: Web lint
+        run: npm run lint -w apps/web

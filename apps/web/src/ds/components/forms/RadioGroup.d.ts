@@ -1,5 +1,7 @@
 import * as React from "react";
-export interface RadioGroupProps {
+// onChange is the group's value callback, not a DOM FormEvent handler.
+export interface RadioGroupProps
+  extends Omit<React.HTMLAttributes<HTMLDivElement>, "onChange"> {
   name: string;
   options: Array<string | { value: string; label: string; description?: string }>;
   value?: string;

@@ -48,6 +48,23 @@ async function handoffRows(t: TestT) {
   return await t.run(async (ctx) => ctx.db.query("managerHandoffs").collect());
 }
 
+/** The publish/withdraw/decline paths now SCHEDULE the projection rebuild
+ * (a speaker's portal click must not pay for an O(event) recompute), so a test
+ * that reads the served blob has to let the queued job run. Same drain shape as
+ * comms.test.ts's `runSweep`: `runAfter(0)` needs real event-loop turns. */
+async function drainScheduled(t: TestT): Promise<void> {
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+}
+
+/** The served projection, read after the scheduled rebuild has landed. */
+async function servedProgram(t: TestT, slug: string) {
+  await drainScheduled(t);
+  return await t.query(api.publish.publicProgram, { slug });
+}
+
 async function participantsOf(t: TestT, sessionId: Id<"sessions">) {
   return await t.run(async (ctx) =>
     ctx.db
@@ -580,9 +597,7 @@ describe("published blob follows privacy transitions", () => {
       sessionId,
       published: true,
     });
-    const program = (await t.query(api.publish.publicProgram, {
-      slug: eventSlug,
-    }))!;
+    const program = (await servedProgram(t, eventSlug))!;
     expect(JSON.stringify(program)).toContain("Dana Keynote");
     return { alice, dana, eventSlug, sessionId, participantId };
   }
@@ -595,20 +610,25 @@ describe("published blob follows privacy transitions", () => {
     });
   }
 
-  test("a withdrawal rewrites the served blob immediately", async () => {
+  test("a withdrawal rewrites the served blob without an explicit republish", async () => {
     const t = setupTest();
     const { dana, eventSlug, participantId } = await publishDana(t);
     const before = await publishedVersion(t);
 
     // The withdrawal alert promises "their name and profile are suppressed
     // from public output" — no explicit republish may be required for that.
+    // The withdrawal mutation itself only QUEUES the rewrite (a speaker's click
+    // must not rebuild the whole program), but it queues it unconditionally, so
+    // draining the scheduler is all it takes.
     await dana.mutation(api.portal.withdrawParticipation, {
       eventSlug,
       participantId,
     });
-    const program = (await t.query(api.publish.publicProgram, {
-      slug: eventSlug,
-    }))!;
+    // Before the queued rebuild runs the blob is still the old one — the
+    // suppression is pending, not lost...
+    expect(await publishedVersion(t)).toBe(before);
+    // ...and once it runs, Dana is gone from the public program.
+    const program = (await servedProgram(t, eventSlug))!;
     expect(JSON.stringify(program)).not.toContain("Dana");
     expect(program.lineup).toHaveLength(1);
     expect(program.lineup[0].toBeAnnounced).toBe(true);
@@ -625,9 +645,23 @@ describe("published blob follows privacy transitions", () => {
       participantId,
       to: "declined",
     });
-    const program = (await t.query(api.publish.publicProgram, {
-      slug: eventSlug,
-    }))!;
+    const program = (await servedProgram(t, eventSlug))!;
+    expect(JSON.stringify(program)).not.toContain("Dana");
+    expect(program.lineup[0].toBeAnnounced).toBe(true);
+  });
+
+  test("a portal decline rewrites the served blob too", async () => {
+    const t = setupTest();
+    const { dana, eventSlug, participantId } = await publishDana(t);
+
+    // Same suppression, recorded by the speaker themself in the portal — the
+    // other scheduled privacy path in model/portal.ts.
+    await dana.mutation(api.portal.confirmParticipation, {
+      eventSlug,
+      participantId,
+      to: "declined",
+    });
+    const program = (await servedProgram(t, eventSlug))!;
     expect(JSON.stringify(program)).not.toContain("Dana");
     expect(program.lineup[0].toBeAnnounced).toBe(true);
   });
@@ -642,12 +676,16 @@ describe("published blob follows privacy transitions", () => {
       participantId: (await participantsOf(t, sessionId))[0]._id,
       to: "declined",
     });
+    // Even after the queued rebuild runs: a never-published event stays
+    // unpublished (only an explicit publish may create the row).
+    await drainScheduled(t);
     const rows = await t.run(async (ctx) =>
       ctx.db.query("publishedPrograms").collect(),
     );
     expect(rows).toEqual([]);
   });
 });
+
 
 describe("manager backstage audience", () => {
   test("the manager sees the backstage link only once a speaker confirmed", async () => {

@@ -13,6 +13,7 @@ import * as React from 'react'
 import type { ConvexQueryClient } from '@convex-dev/react-query'
 import type { ConvexReactClient } from 'convex/react'
 import type { QueryClient } from '@tanstack/react-query'
+import { RouteNotFound } from '~/components/RouteBoundary'
 import appCss from '~/styles/app.css?url'
 
 const fetchClerkAuth = createServerFn({ method: 'GET' }).handler(async () => {
@@ -20,6 +21,70 @@ const fetchClerkAuth = createServerFn({ method: 'GET' }).handler(async () => {
   const token = await getToken({ template: 'convex' })
   return { userId, token }
 })
+
+type ClerkAuth = { userId: string | null; token: string | null }
+
+// `beforeLoad` runs on every navigation and — because the router preloads on
+// intent — on every link hover, so calling fetchClerkAuth() straight through
+// means a server round-trip per hover. One recent (or still in-flight) result
+// is reused instead.
+//
+// Client-side only, on purpose: on the server this module is shared by every
+// concurrent request, so a module-level cache would be a way to hand one
+// visitor's token to another. `typeof window` is the SSR/browser split, and a
+// browser cache is per tab, i.e. per signed-in user.
+const AUTH_TTL_MS = 30_000
+/** Never serve a cached token this close to its own `exp`. */
+const EXPIRY_MARGIN_MS = 10_000
+
+let cachedAuth: { promise: Promise<ClerkAuth>; expiresAt: number } | null = null
+
+/** A JWT's `exp` in ms, or null when the token cannot be read. */
+function tokenExpiry(token: string | null): number | null {
+  const encoded = token?.split('.')[1]
+  if (encoded === undefined || encoded === '') return null
+  try {
+    const json: unknown = JSON.parse(
+      atob(encoded.replace(/-/g, '+').replace(/_/g, '/')),
+    )
+    const exp =
+      json !== null && typeof json === 'object'
+        ? (json as { exp?: unknown }).exp
+        : undefined
+    return typeof exp === 'number' ? exp * 1000 : null
+  } catch {
+    return null
+  }
+}
+
+function clerkAuth(): Promise<ClerkAuth> {
+  if (typeof window === 'undefined') return fetchClerkAuth()
+  const now = Date.now()
+  if (cachedAuth !== null && cachedAuth.expiresAt > now) return cachedAuth.promise
+  const entry = { promise: fetchClerkAuth(), expiresAt: now + AUTH_TTL_MS }
+  cachedAuth = entry
+  void entry.promise.then(
+    ({ token }) => {
+      // Clerk's Convex template lives ~60s. When the token says when it dies,
+      // that wins over the TTL — a cached token is never served past its own
+      // lifetime, even if the clocks disagree by a few seconds.
+      const exp = tokenExpiry(token)
+      if (exp !== null) {
+        entry.expiresAt = Math.min(entry.expiresAt, exp - EXPIRY_MARGIN_MS)
+      }
+    },
+    () => {
+      // A failed fetch must not be remembered: the next navigation retries.
+      if (cachedAuth === entry) cachedAuth = null
+    },
+  )
+  return entry.promise
+}
+
+/** Signing in or out must never be papered over by a cached token. */
+function forgetClerkAuth() {
+  cachedAuth = null
+}
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient
@@ -69,7 +134,7 @@ export const Route = createRootRouteWithContext<{
     ],
   }),
   beforeLoad: async (ctx) => {
-    const { userId, token } = await fetchClerkAuth()
+    const { userId, token } = await clerkAuth()
     // During SSR only (the only time serverHttpClient exists), set the auth
     // token for Convex HTTP queries so loaders render authenticated data.
     if (token) {
@@ -77,7 +142,7 @@ export const Route = createRootRouteWithContext<{
     }
     return { userId, token }
   },
-  notFoundComponent: () => <div>Route not found</div>,
+  notFoundComponent: RouteNotFound,
   component: RootComponent,
 })
 
@@ -94,6 +159,19 @@ function RootComponent() {
   )
 }
 
+/**
+ * The safety net for the token cache above: whenever Clerk changes who is
+ * signed in, the cached token is dropped at once rather than living out its
+ * TTL under the new identity.
+ */
+function ClerkAuthCacheReset() {
+  const { isSignedIn, userId } = useAuth()
+  React.useEffect(() => {
+    forgetClerkAuth()
+  }, [isSignedIn, userId])
+  return null
+}
+
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
     <html>
@@ -102,6 +180,8 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       </head>
       <body>
         {children}
+        {/* Inside <body> so it renders nothing outside the document tree. */}
+        <ClerkAuthCacheReset />
         <Scripts />
       </body>
     </html>

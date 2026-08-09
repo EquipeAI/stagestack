@@ -5,6 +5,9 @@ import { AuthGate } from '~/components/AuthGate'
 import { ToastViewport } from '~/components/toast'
 
 export const Route = createFileRoute('/app')({
+  // The whole /app/** subtree is behind AuthGate, so a crawler only ever gets
+  // the sign-in shell — noindex at the subtree root instead of on every child.
+  head: () => ({ meta: [{ name: 'robots', content: 'noindex' }] }),
   component: AppLayout,
 })
 

@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
   createEvent,
@@ -9,7 +9,38 @@ import {
   setupTest,
   signIn,
   grantEventRole,
+  type TestT,
 } from "./test.helpers";
+
+/**
+ * A publication flag flip SCHEDULES the projection rebuild instead of running an
+ * O(event) recompute inside the user-facing mutation, so a test that reads the
+ * served blob has to let the queued job run first. Same drain shape as
+ * comms.test.ts's `runSweep`: `runAfter(0)` needs real event-loop turns.
+ */
+async function drainScheduled(t: TestT): Promise<void> {
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+}
+
+/** The served projection, read after the scheduled rebuild has landed. */
+async function servedProgram(t: TestT, slug: string) {
+  await drainScheduled(t);
+  return await t.query(api.publish.publicProgram, { slug });
+}
+
+async function eventIdOf(t: TestT, slug: string): Promise<Id<"events">> {
+  return await t.run(async (ctx) => {
+    const event = await ctx.db
+      .query("events")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique();
+    if (event === null) throw new Error(`no event ${slug}`);
+    return event._id;
+  });
+}
 
 // Build an event with one accepted session that has a confirmed speaker and
 // one still-awaiting co-speaker, returning the ids the tests act on.
@@ -72,12 +103,12 @@ describe("publish — lineup", () => {
 
     // Before any publish, the public read serves nothing.
     expect(
-      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+      await servedProgram(t, eventSlug),
     ).toBeNull();
 
     // Enabling the lineup alone still shows no sessions (per-session flag off).
     await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
-    let program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    let program = (await servedProgram(t, eventSlug))!;
     expect(program).not.toBeNull();
     expect(program.lineup).toEqual([]);
 
@@ -87,7 +118,7 @@ describe("publish — lineup", () => {
       sessionId: sessionId as Id<"sessions">,
       published: true,
     });
-    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    program = (await servedProgram(t, eventSlug))!;
     expect(program.lineup).toHaveLength(1);
     expect(program.lineup[0].title).toBe("Agents in Production");
   });
@@ -101,7 +132,7 @@ describe("publish — lineup", () => {
       sessionId: sessionId as Id<"sessions">,
       published: true,
     });
-    const program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    const program = (await servedProgram(t, eventSlug))!;
     const session = program.lineup[0];
     // Grace confirmed → named; Alan awaiting → never in the blob.
     expect(session.speakers.map((s: { name: string }) => s.name)).toEqual([
@@ -126,7 +157,7 @@ describe("publish — lineup", () => {
       sessionId: sessionId as Id<"sessions">,
       published: false,
     });
-    const program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    const program = (await servedProgram(t, eventSlug))!;
     expect(program.lineup).toEqual([]);
   });
 
@@ -141,7 +172,7 @@ describe("publish — lineup", () => {
     });
     await alice.mutation(api.publish.setLineup, { eventSlug, enabled: false });
     expect(
-      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+      await servedProgram(t, eventSlug),
     ).toBeNull();
   });
 });
@@ -158,7 +189,7 @@ describe("publish — agenda independence", () => {
     });
     // Agenda on, but the session has no released slot yet → agenda empty.
     await alice.mutation(api.publish.setAgenda, { eventSlug, enabled: true });
-    let program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    let program = (await servedProgram(t, eventSlug))!;
     expect(program.agendaPublished).toBe(true);
     expect(program.agenda).toEqual([]);
     // Lineup still shows the (unscheduled) session.
@@ -179,7 +210,7 @@ describe("publish — agenda independence", () => {
     });
     // Republish so the stored blob reflects the new slot.
     await alice.mutation(api.publish.setAgenda, { eventSlug, enabled: true });
-    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    program = (await servedProgram(t, eventSlug))!;
     expect(program.agenda).toHaveLength(1);
     expect(program.agenda[0].kind).toBe("session");
   });
@@ -195,10 +226,15 @@ describe("publish — staleness (stored blob)", () => {
       sessionId: sessionId as Id<"sessions">,
       published: true,
     });
+    await drainScheduled(t);
     const versionBefore = await t.run(async (ctx) => {
       const rows = await ctx.db.query("publishedPrograms").collect();
       return rows[0].version;
     });
+    // A rebuild has landed and matches current state, so nothing is pending.
+    expect((await alice.query(api.publish.state, { eventSlug })).stale).toBe(
+      false,
+    );
 
     // A title edit and a new confirmation are EDITORIAL changes: they land in
     // the working state but must not reach the served blob on their own
@@ -220,9 +256,7 @@ describe("publish — staleness (stored blob)", () => {
       });
     });
 
-    let program = (await t.query(api.publish.publicProgram, {
-      slug: eventSlug,
-    }))!;
+    let program = (await servedProgram(t, eventSlug))!;
     expect(program.lineup[0].title).toBe("Agents in Production");
     expect(program.lineup[0].speakers.map((s: { name: string }) => s.name)).toEqual(
       ["Grace Hopper"],
@@ -234,6 +268,11 @@ describe("publish — staleness (stored blob)", () => {
         return rows[0].version;
       }),
     ).toBe(versionBefore);
+    // ...but the console can SEE that the served bytes are behind: this is the
+    // same signal a scheduled rebuild that failed to land shows up as.
+    expect((await alice.query(api.publish.state, { eventSlug })).stale).toBe(
+      true,
+    );
 
     // Only the organizer's explicit republish moves the served projection.
     await alice.mutation(api.publish.setSession, {
@@ -241,7 +280,7 @@ describe("publish — staleness (stored blob)", () => {
       sessionId: sessionId as Id<"sessions">,
       published: true,
     });
-    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    program = (await servedProgram(t, eventSlug))!;
     expect(program.lineup[0].title).toBe("Agents in Production, v2");
     expect(program.lineup[0].speakers.map((s: { name: string }) => s.name)).toEqual(
       ["Grace Hopper", "Alan Turing"],
@@ -274,9 +313,7 @@ describe("publish — agenda items", () => {
     await alice.mutation(api.publish.setAgenda, { eventSlug, enabled: true });
 
     // The per-item flag defaults to false: nothing leaks by accident.
-    let program = (await t.query(api.publish.publicProgram, {
-      slug: eventSlug,
-    }))!;
+    let program = (await servedProgram(t, eventSlug))!;
     expect(program.agenda).toEqual([]);
 
     await alice.mutation(api.publish.setAgendaItem, {
@@ -284,7 +321,7 @@ describe("publish — agenda items", () => {
       itemId,
       published: true,
     });
-    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    program = (await servedProgram(t, eventSlug))!;
     expect(program.agenda).toEqual([
       {
         kind: "item",
@@ -303,7 +340,7 @@ describe("publish — agenda items", () => {
       itemId,
       published: false,
     });
-    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    program = (await servedProgram(t, eventSlug))!;
     expect(program.agenda).toEqual([]);
 
     // ...and a published item stays out while the agenda itself is off.
@@ -313,7 +350,7 @@ describe("publish — agenda items", () => {
       published: true,
     });
     await alice.mutation(api.publish.setAgenda, { eventSlug, enabled: false });
-    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    program = (await servedProgram(t, eventSlug))!;
     expect(program.agendaPublished).toBe(false);
     expect(program.agenda).toEqual([]);
   });
@@ -360,7 +397,7 @@ describe("publish — agenda items", () => {
     );
     // The failed flips rolled back whole: nothing was published for the event.
     expect(
-      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+      await servedProgram(t, eventSlug),
     ).toBeNull();
   });
 });
@@ -375,6 +412,7 @@ describe("publish — HTTP read API", () => {
       sessionId: sessionId as Id<"sessions">,
       published: true,
     });
+    await drainScheduled(t);
 
     const res = await t.fetch(`/api/events/${eventSlug}/program`);
     expect(res.status).toBe(200);
@@ -434,7 +472,7 @@ describe("publish — archived events", () => {
 
     // The read path serves nothing for an archived event (query AND http)...
     expect(
-      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+      await servedProgram(t, eventSlug),
     ).toBeNull();
     expect((await t.fetch(`/api/events/${eventSlug}/program`)).status).toBe(404);
 
@@ -453,9 +491,7 @@ describe("publish — archived events", () => {
 
     // Un-archiving serves the stored blob again, untouched.
     await alice.mutation(api.events.setArchived, { eventSlug, archived: false });
-    const program = (await t.query(api.publish.publicProgram, {
-      slug: eventSlug,
-    }))!;
+    const program = (await servedProgram(t, eventSlug))!;
     expect(program.lineup).toHaveLength(1);
   });
 });
@@ -556,9 +592,7 @@ describe("publish — production-path projection", () => {
     });
     await alice.mutation(api.publish.setAgenda, { eventSlug, enabled: true });
 
-    const program = (await t.query(api.publish.publicProgram, {
-      slug: eventSlug,
-    }))!;
+    const program = (await servedProgram(t, eventSlug))!;
     expect(program.lineup).toHaveLength(1);
     expect(program.lineup[0]).toMatchObject({
       sessionId,
@@ -602,15 +636,13 @@ describe("publish — event identity", () => {
     });
 
     // The blob now carries the new identity at the new slug...
-    const program = (await t.query(api.publish.publicProgram, {
-      slug: "acme-redux",
-    }))!;
+    const program = (await servedProgram(t, "acme-redux"))!;
     expect(program.event.name).toBe("Acme Summit Redux");
     expect(program.event.slug).toBe("acme-redux");
     expect(program.lineup).toHaveLength(1);
     // ...and the old slug no longer resolves.
     expect(
-      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+      await servedProgram(t, eventSlug),
     ).toBeNull();
   });
 
@@ -622,7 +654,7 @@ describe("publish — event identity", () => {
       patch: { name: "Quiet Rename" },
     });
     expect(
-      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+      await servedProgram(t, eventSlug),
     ).toBeNull();
     const rows = await t.run(async (ctx) =>
       ctx.db.query("publishedPrograms").collect(),
@@ -679,7 +711,7 @@ describe("publish — size guard", () => {
     expect(data?.message).toContain("Big session 9");
     // The whole mutation rolled back: nothing got published.
     expect(
-      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+      await servedProgram(t, eventSlug),
     ).toBeNull();
 
     // Unpublishing big sessions removes their content from the recompute in
@@ -692,12 +724,245 @@ describe("publish — size guard", () => {
       });
     }
     await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
-    const program = (await t.query(api.publish.publicProgram, {
-      slug: eventSlug,
-    }))!;
+    const program = (await servedProgram(t, eventSlug))!;
     expect(program.lineup.map((s: { title: string }) => s.title)).toEqual([
       "Big session 0",
     ]);
+  });
+});
+
+describe("publish — projection is built from ONE read of the graph", () => {
+  test("a speaker in two sessions appears in both, with their headshot, exactly once each", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+
+    // Grace speaks in BOTH sessions and has a headshot: the shape that used to
+    // cost one participants query per session, one contact `get` per speaker
+    // slot and one `storage.getUrl` per slot. Hoisting those reads must not
+    // change a byte of the projection.
+    const { sessions } = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      const headshotId = await ctx.storage.store(
+        new Blob(["headshot"], { type: "image/png" }),
+      );
+      const grace = await ctx.db.insert("eventContacts", {
+        eventId: event._id,
+        orgId: event.orgId,
+        firstName: "Grace",
+        lastName: "Hopper",
+        tagline: "Rear Admiral",
+        headshotId,
+        links: { website: "https://grace.example" },
+      });
+      const alan = await ctx.db.insert("eventContacts", {
+        eventId: event._id,
+        orgId: event.orgId,
+        firstName: "Alan",
+        lastName: "Turing",
+      });
+      const ids: Array<Id<"sessions">> = [];
+      for (const [title, contacts] of [
+        ["A talk", [grace]],
+        ["B talk", [grace, alan]],
+      ] as const) {
+        const sessionId = await ctx.db.insert("sessions", {
+          eventId: event._id,
+          title,
+          source: "direct",
+          status: "planned",
+        });
+        for (const eventContactId of contacts) {
+          await ctx.db.insert("sessionParticipants", {
+            sessionId,
+            eventId: event._id,
+            eventContactId,
+            role: "speaker",
+            state: "confirmed",
+          });
+        }
+        ids.push(sessionId);
+      }
+      return { sessions: ids };
+    });
+
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    for (const sessionId of sessions) {
+      await alice.mutation(api.publish.setSession, {
+        eventSlug,
+        sessionId,
+        published: true,
+      });
+    }
+    const program = (await servedProgram(t, eventSlug))!;
+
+    const headshotUrl = program.lineup[0].speakers[0].headshotUrl;
+    expect(typeof headshotUrl).toBe("string");
+    // The whole projection, asserted exactly: same speakers, same order, same
+    // memoized URL in both sessions, no duplicate entry for the shared speaker.
+    expect(program.lineup).toEqual([
+      {
+        sessionId: sessions[0],
+        title: "A talk",
+        speakers: [
+          {
+            name: "Grace Hopper",
+            tagline: "Rear Admiral",
+            headshotUrl,
+            links: { website: "https://grace.example" },
+          },
+        ],
+        toBeAnnounced: false,
+      },
+      {
+        sessionId: sessions[1],
+        title: "B talk",
+        speakers: [
+          {
+            name: "Grace Hopper",
+            tagline: "Rear Admiral",
+            headshotUrl,
+            links: { website: "https://grace.example" },
+          },
+          { name: "Alan Turing" },
+        ],
+        toBeAnnounced: false,
+      },
+    ]);
+  });
+});
+
+describe("publish — refuses an event past its read caps", () => {
+  test("an at-cap read throws event_too_large instead of silently dropping rows", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await seedProgram(t);
+    // 501 rooms overflows the 500-row library read. A `.take(500)` would have
+    // published a program built from a truncated graph and said nothing.
+    await t.run(async (ctx) => {
+      const eventId = (await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique())!._id;
+      for (let i = 0; i < 501; i += 1) {
+        await ctx.db.insert("rooms", { eventId, name: `Room ${i}`, order: i });
+      }
+    });
+
+    let thrown: unknown;
+    try {
+      await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    } catch (error) {
+      thrown = error;
+    }
+    const data = (thrown as { data?: { code?: string; message?: string } }).data;
+    expect(data?.code).toBe("event_too_large");
+    // Actionable, in the same voice as the size guard.
+    expect(data?.message).toContain("more than 500 rooms");
+    // Refused whole: nothing was published from the truncated graph.
+    expect(await servedProgram(t, eventSlug)).toBeNull();
+  });
+});
+
+describe("publish — a rebuild that does not land is visible", () => {
+  /** Publish one small session and let the scheduled rebuild land. */
+  async function published(t: TestT) {
+    const seeded = await seedProgram(t);
+    await seeded.alice.mutation(api.publish.setLineup, {
+      eventSlug: seeded.eventSlug,
+      enabled: true,
+    });
+    await seeded.alice.mutation(api.publish.setSession, {
+      eventSlug: seeded.eventSlug,
+      sessionId: seeded.sessionId as Id<"sessions">,
+      published: true,
+    });
+    await drainScheduled(t);
+    return seeded;
+  }
+
+  async function publishedRow(t: TestT) {
+    return await t.run(async (ctx) => {
+      const rows = await ctx.db.query("publishedPrograms").collect();
+      expect(rows).toHaveLength(1);
+      return rows[0];
+    });
+  }
+
+  test("a failed rebuild keeps the last good blob and reads as stale", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await published(t);
+    const before = await publishedRow(t);
+
+    // Content the projection cannot hold, inserted directly so no organizer
+    // mutation gets the chance to refuse it: the scheduled rebuild is what hits
+    // the size guard now.
+    await t.run(async (ctx) => {
+      const eventId = (await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique())!._id;
+      for (let i = 0; i < 10; i += 1) {
+        const id = await ctx.db.insert("sessions", {
+          eventId,
+          title: `Big session ${i}`,
+          description: "x".repeat(95_000),
+          source: "direct",
+          status: "planned",
+        });
+        await ctx.db.insert("publicationFlags", {
+          eventId,
+          targetType: "session",
+          targetId: id,
+          published: true,
+          updatedAt: Date.now(),
+        });
+      }
+    });
+
+    await expectRejectedWith(
+      t.mutation(internal.publish.rebuild, {
+        eventId: await eventIdOf(t, eventSlug),
+        publishedBy: before.publishedBy,
+      }),
+      "program_too_large",
+    );
+
+    // The public keeps the last good projection — never a half-written or
+    // truncated one...
+    const program = (await servedProgram(t, eventSlug))!;
+    expect(program.lineup.map((s: { title: string }) => s.title)).toEqual([
+      "Agents in Production",
+    ]);
+    expect((await publishedRow(t)).version).toBe(before.version);
+    // ...and the organizer console can tell that the served bytes are behind.
+    expect((await alice.query(api.publish.state, { eventSlug })).stale).toBe(
+      true,
+    );
+  });
+
+  test("a rebuild with nothing to change writes nothing and does NOT read as stale", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await published(t);
+    const before = await publishedRow(t);
+
+    // The coalescing case: several flips queue several rebuilds, and every one
+    // after the first recomputes identical bytes. "Already correct" must not
+    // bump the version, and must not look like the failure above.
+    await t.mutation(internal.publish.rebuild, {
+      eventId: await eventIdOf(t, eventSlug),
+      publishedBy: before.publishedBy,
+    });
+    const after = await publishedRow(t);
+    expect(after.version).toBe(before.version);
+    expect(after.publishedAt).toBe(before.publishedAt);
+    expect((await alice.query(api.publish.state, { eventSlug })).stale).toBe(
+      false,
+    );
   });
 });
 
@@ -727,7 +992,7 @@ describe("publish — authorization", () => {
       published: true,
     });
     // No identity at all — still resolves.
-    const program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    const program = (await servedProgram(t, eventSlug))!;
     expect(program.lineup).toHaveLength(1);
   });
 });

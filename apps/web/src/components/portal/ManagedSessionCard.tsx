@@ -43,11 +43,32 @@ export function ManagedSessionCard({
   const [format, setFormat] = useState(item.format ?? '')
 
   const serverKey = JSON.stringify([item.title, item.description, item.format])
-  useEffect(() => {
+  // The key of the server values this form was last seeded from, so an
+  // organizer saving the same session while a manager types can be noticed
+  // without acting on it.
+  const [seededKey, setSeededKey] = useState(serverKey)
+
+  const reseed = () => {
     setTitle(item.title)
     setDescription(item.description ?? '')
     setFormat(item.format ?? '')
-  }, [serverKey])
+    setSeededKey(serverKey)
+  }
+
+  // `item` comes from a live subscription, so it changes under the form.
+  // Re-seeding while the manager is editing would silently throw away their
+  // unsaved typing, which is the one thing this card must not do — the local
+  // copy wins for as long as the form is open (the same rule the autosaved
+  // drafts follow). Closed, the card keeps tracking the server.
+  useEffect(() => {
+    if (editing) return
+    setTitle(item.title)
+    setDescription(item.description ?? '')
+    setFormat(item.format ?? '')
+    setSeededKey(serverKey)
+  }, [serverKey, editing])
+
+  const conflict = editing && serverKey !== seededKey
 
   const save = () => {
     if (title.trim().length === 0) {
@@ -106,6 +127,20 @@ export function ManagedSessionCard({
               gap: 'var(--space-4)',
             }}
           >
+            {conflict ? (
+              <Callout
+                tone="attention"
+                title="This session changed somewhere else"
+                actions={
+                  <Button size="sm" disabled={pending} onClick={reseed}>
+                    Discard my edits
+                  </Button>
+                }
+              >
+                An organizer saved different content while you were editing.
+                Saving replaces theirs with what is on this screen.
+              </Callout>
+            ) : null}
             <Field
               label="Session title"
               htmlFor={`session-${item.sessionId}-title`}
@@ -157,9 +192,7 @@ export function ManagedSessionCard({
                 onClick={() => {
                   setEditing(false)
                   setError(null)
-                  setTitle(item.title)
-                  setDescription(item.description ?? '')
-                  setFormat(item.format ?? '')
+                  reseed()
                 }}
               >
                 Cancel

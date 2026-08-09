@@ -10,11 +10,70 @@ import {
   type IcsMethod,
 } from "./model/ics";
 
-// testMode flipped off deliberately (ARCHITECTURE.md): stagestack.dev is
-// verified in Resend and the walking skeleton requires a real delivery.
+// ── Mail identity & send mode (M14) ──────────────────────────────────────
+//
+// Both facts a self-hoster must own — WHICH domain we send from and WHETHER we
+// are allowed to send to real people — come from deployment env vars, because
+// the alternative (constants) means a fresh clone tries to send as
+// hello@stagestack.dev, a domain it does not control, and Resend records every
+// lifecycle email as failed.
+//
+// `MAIL_FROM` is the single source of truth for the envelope From; it must be
+// an address on a domain verified in the deployment's own Resend account.
+const DEFAULT_MAIL_FROM = "StageStack <hello@stagestack.dev>";
+
+/** Envelope `From` for every StageStack email (batch sends and the raw-API
+ * calendar sends alike). Read per send, so setting the env var takes effect
+ * without touching code. */
+export function mailFrom(): string {
+  const configured = process.env.MAIL_FROM?.trim();
+  return configured === undefined || configured.length === 0
+    ? DEFAULT_MAIL_FROM
+    : configured;
+}
+
+/** The bare address inside a `Name <addr>` mailbox — what a header that must
+ * carry an address and nothing else (List-Unsubscribe) needs. */
+export function mailFromAddress(): string {
+  const match = /<([^>]+)>/.exec(mailFrom());
+  return (match?.[1] ?? mailFrom()).trim();
+}
+
+/**
+ * Whether the Resend component stays in test mode (it then REFUSES any
+ * recipient outside Resend's own test addresses, throwing inside the sending
+ * mutation).
+ *
+ * Default ON, so a clone that copies a RESEND_API_KEY in cannot email real
+ * speakers from a domain it has not verified. Turning it off is deliberate and
+ * explicit: set `RESEND_TEST_MODE` to `false` / `0` / `no` / `off` (any case)
+ * on the deployment. Anything else — including a typo like `flase` — leaves
+ * test mode ON, because the failure mode of guessing wrong here is real mail
+ * to real people.
+ */
+const TEST_MODE_OFF = new Set(["false", "0", "no", "off"]);
+export function resendTestMode(): boolean {
+  const raw = process.env.RESEND_TEST_MODE?.trim().toLowerCase();
+  return raw === undefined || raw.length === 0
+    ? true
+    : !TEST_MODE_OFF.has(raw);
+}
+
 export const resend: Resend = new Resend(components.resend, {
-  testMode: false,
+  testMode: resendTestMode(),
   onEmailEvent: internal.emails.handleEmailEvent,
+});
+
+// The constructor snapshots `testMode` into `resend.config`, which the client
+// then re-reads on EVERY send (`configToRuntimeConfig(this.config)`), so a
+// getter makes the flag late-bound instead of module-load-bound. Two things
+// depend on that: flipping `RESEND_TEST_MODE` on a deployment takes effect on
+// the next send rather than the next isolate, and the test harness can pin the
+// mode (convex/test.helpers.ts) without having to win an import race against
+// whichever module pulls in convex/emails.ts first.
+Object.defineProperty(resend.config, "testMode", {
+  get: resendTestMode,
+  enumerable: true,
 });
 
 // Resend event type → the comms log's deliveryStatus. Engagement events
@@ -62,7 +121,7 @@ export const sendTestEmail = internalMutation({
   returns: v.string(),
   handler: async (ctx, args) => {
     const emailId = await resend.sendEmail(ctx, {
-      from: "StageStack <hello@stagestack.dev>",
+      from: mailFrom(),
       to: args.to,
       subject: "StageStack walking skeleton: real-mode send",
       html: "<p>Hello from the StageStack Convex + Resend pipeline. If you can read this, real-mode email works.</p>",
@@ -82,8 +141,6 @@ export const sendTestEmail = internalMutation({
 // `recordCalendarMessage` right after the send.
 // ─────────────────────────────────────────────────────────────────────────
 
-const MAIL_FROM = "StageStack <hello@stagestack.dev>";
-
 /** Raw Resend send with one .ics attachment. Returns the component's emailId.
  * `onEmailId` runs BEFORE the network call, so a caller can persist the id
  * first — the delivery webhook may otherwise race the send's bookkeeping. */
@@ -102,7 +159,7 @@ async function sendWithIcs(
   return await resend.sendEmailManually(
     ctx,
     {
-      from: MAIL_FROM,
+      from: mailFrom(),
       to: args.to,
       subject: args.subject,
       ...(args.replyTo === undefined ? {} : { replyTo: [args.replyTo] }),
@@ -117,7 +174,7 @@ async function sendWithIcs(
           "Idempotency-Key": emailId,
         },
         body: JSON.stringify({
-          from: MAIL_FROM,
+          from: mailFrom(),
           to: [args.to],
           subject: args.subject,
           html: args.html,
@@ -314,7 +371,7 @@ export const sendIcsTest = internalAction({
         "If this shows up as a native calendar invite, check #3 passes.",
       location: "Main Stage",
       organizerName: "StageStack",
-      organizerEmail: "hello@stagestack.dev",
+      organizerEmail: mailFromAddress(),
       attendeeName: args.to,
       attendeeEmail: args.to,
     });

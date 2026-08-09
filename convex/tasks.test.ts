@@ -970,6 +970,123 @@ describe("speaker-tracking dashboard", () => {
     );
   });
 
+  test("per-session rows read only their own tasks — grouped once, not re-filtered (M6)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+    // Three sessions with one speaker each, plus a requirement, so every
+    // session owns exactly one task instance. The grouping this exercises
+    // replaced `instances.filter(i => i.sessionId === session._id)` per
+    // session; the OUTPUT must be identical, which is what is pinned here.
+    const first = await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+      "Opening keynote",
+    );
+    const second = await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Evan", lastName: "Newcomer", email: "evan@example.com" },
+      "Closing talk",
+    );
+    const third = await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Fran", lastName: "Panelist", email: "fran@example.com" },
+      "Panel",
+    );
+    await manualRequirement(alice, eventSlug);
+
+    // Settle the middle session completely: its speaker confirms and its one
+    // task completes, so it must come back Ready while the others do not.
+    const evanParticipant = (await participantsOf(t, second.sessionId))[0];
+    await alice.mutation(api.sessions.setParticipationState, {
+      eventSlug,
+      participantId: evanParticipant._id,
+      to: "confirmed",
+    });
+    const evanInstance = (await instanceRows(t)).find(
+      (i) => i.sessionId === second.sessionId,
+    )!;
+    await alice.mutation(api.tasks.markProvided, {
+      eventSlug,
+      instanceId: evanInstance._id,
+    });
+
+    const board = await alice.query(api.tasks.dashboard, {
+      eventSlug,
+      now: NOW,
+    });
+    const bySession = new Map(board.sessions.map((s) => [s.sessionId, s]));
+    expect(bySession.get(first.sessionId)).toEqual({
+      sessionId: first.sessionId,
+      title: "Opening keynote",
+      readiness: {
+        status: "needsAttention",
+        reasons: [
+          "1 speaker has not answered their invitation.",
+          "1 task is outstanding.",
+        ],
+      },
+    });
+    expect(bySession.get(second.sessionId)).toEqual({
+      sessionId: second.sessionId,
+      title: "Closing talk",
+      readiness: { status: "ready", reasons: [] },
+    });
+    expect(bySession.get(third.sessionId)?.readiness.reasons).toEqual([
+      "1 speaker has not answered their invitation.",
+      "1 task is outstanding.",
+    ]);
+    // Totals are the same pass: one completed task across three sessions.
+    expect(board.totals.acceptedSpeakers).toBe(3);
+    expect(board.totals.overdue).toBe(0);
+  });
+
+  test("a dashboard past a read cap refuses instead of reporting readiness it never verified (H5)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+    await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+      "Opening keynote",
+    );
+    // Readiness reads the whole event graph. Overflow the cheapest of those
+    // reads (agenda items, 1000) by exactly one row: at the cap the dashboard
+    // still answers, past it a partial read could only report false readiness.
+    const eventId = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      return event._id;
+    });
+    const addItems = async (count: number) => {
+      await t.run(async (ctx) => {
+        for (let i = 0; i < count; i += 1) {
+          await ctx.db.insert("agendaItems", {
+            eventId,
+            title: `Coffee ${i}`,
+            startsAt: NOW,
+            endsAt: NOW + 60_000,
+          });
+        }
+      });
+    };
+    await addItems(1000);
+    expect(
+      (await alice.query(api.tasks.dashboard, { eventSlug, now: NOW })).sessions,
+    ).toHaveLength(1);
+
+    await addItems(1);
+    await expectRejectedWith(
+      alice.query(api.tasks.dashboard, { eventSlug, now: NOW }),
+      "event_too_large",
+    );
+  });
+
   test("reviewers cannot read the dashboard", async () => {
     const t = setupTest();
     const { eventSlug } = await eventSetup(t);

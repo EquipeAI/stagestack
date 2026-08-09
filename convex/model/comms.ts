@@ -3,7 +3,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
-import { resend } from "../emails";
+import { mailFrom, mailFromAddress, resend } from "../emails";
 import { logAudit } from "./audit";
 import {
   MAX_AUDIENCE,
@@ -20,8 +20,6 @@ import { assertEventActive } from "./validation";
 // webhook (convex/emails.ts) patches deliveryStatus by resendEmailId.
 // ─────────────────────────────────────────────────────────────────────────
 
-export const MAIL_FROM = "StageStack <hello@stagestack.dev>";
-
 export function siteUrl(): string {
   return process.env.SITE_URL ?? "https://stagestack.dev";
 }
@@ -37,6 +35,14 @@ const HTML_ESCAPES: Record<string, string> = {
 /** Escape user-supplied text before interpolating it into email HTML. */
 export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c] ?? c);
+}
+
+/** The form an address takes in the comms log: trimmed + lowercased, so the
+ * (eventId, toEmail) index is a case-insensitive lookup without a second
+ * column. Deliberately NOT validated — the log records what we tried to send
+ * to, even if it was junk. */
+export function normalizeLogAddress(email: string): string {
+  return email.trim().toLowerCase();
 }
 
 /** Minimal branded wrapper — inline styles only (email clients drop <style>). */
@@ -75,19 +81,27 @@ export async function sendLoggedEmail(
 ): Promise<Id<"messages">> {
   const replyTo = args.replyTo?.trim();
   const emailId = await resend.sendEmail(ctx, {
-    from: MAIL_FROM,
+    from: mailFrom(),
+    // Sent to the address as the caller gave it: only the LOG is normalized.
     to: args.toEmail,
     subject: args.subject,
     html: args.html,
     ...(replyTo !== undefined && replyTo.length > 0
       ? { replyTo: [replyTo] }
       : {}),
+    // Bulk/nudge mail only, derived from `kind` here rather than at the six
+    // call sites — see `unsubscribeHeaders` (M15).
+    ...unsubscribeHeaders(args.kind, replyTo),
   });
   return await ctx.db.insert("messages", {
     orgId: args.orgId,
     eventId: args.eventId,
     contactId: args.contactId,
-    toEmail: args.toEmail,
+    // Normalized so `by_eventId_and_toEmail` can answer the per-contact log
+    // with an indexed equality (M4). Every caller already passes cleanEmail()/
+    // normalizeEmail() output; doing it here too makes that a guarantee of the
+    // write path instead of a convention six call sites have to remember.
+    toEmail: normalizeLogAddress(args.toEmail),
     kind: args.kind,
     subject: args.subject,
     resendEmailId: emailId,
@@ -161,9 +175,66 @@ export async function notifyOrganizers(
  * broadcast apart from a lifecycle email. */
 export const ONE_OFF_KIND = "manual.oneoff";
 
+// ── Bulk-mail opt-out (M15) ──────────────────────────────────────────────
+//
+// Two kinds of mail leave StageStack. Transactional lifecycle mail (an
+// invitation, a decision, a calendar update) is a one-to-one consequence of
+// something the recipient or their organizer did, and an opt-out header on it
+// would offer to break a flow the recipient still needs. Bulk/nudge mail — an
+// organizer broadcast to a whole audience, and the recurring reminder digests —
+// is mail a recipient can legitimately want to stop, and the one Gmail/Yahoo
+// bulk-sender rules (2024) penalise when `List-Unsubscribe` is missing.
+//
+// Only the second group gets the header, keyed off the machine `kind` so the
+// classification lives in one place instead of at every send site.
+const BULK_KIND_PREFIXES = ["reminder."];
+
+/** Is this `kind` bulk/nudge mail (broadcasts + reminder digests) rather than
+ * transactional lifecycle mail? */
+export function isBulkKind(kind: string): boolean {
+  return (
+    kind === ONE_OFF_KIND ||
+    BULK_KIND_PREFIXES.some((prefix) => kind.startsWith(prefix))
+  );
+}
+
+/**
+ * `List-Unsubscribe` for bulk kinds, empty for everything else.
+ *
+ * DELIBERATELY `mailto:`, not RFC 8058 one-click. One-click needs an
+ * unauthenticated HTTP endpoint plus a signed per-recipient token, and — the
+ * part that matters — a suppression row the send path checks, or the endpoint
+ * accepts requests and silently ignores them. A `mailto:` aimed at a mailbox a
+ * human already reads (the event's reply-to, else the deployment's own
+ * MAIL_FROM) is honest today: the request reaches the person who can honour it,
+ * which is exactly what replying to the email does. `List-Unsubscribe-Post` is
+ * omitted on purpose — it promises a one-click HTTPS POST target, so sending it
+ * alongside a mailto: would advertise a capability that does not exist.
+ *
+ * docs/ARCHITECTURE.md ("Bulk mail & unsubscribe") records what the automated
+ * per-event opt-out needs: a suppression table plus a check in `sendLoggedEmail`.
+ */
+export function unsubscribeHeaders(
+  kind: string,
+  replyTo: string | undefined,
+): { headers?: Array<{ name: string; value: string }> } {
+  if (!isBulkKind(kind)) return {};
+  const target =
+    replyTo !== undefined && replyTo.length > 0 ? replyTo : mailFromAddress();
+  return {
+    headers: [
+      {
+        name: "List-Unsubscribe",
+        value: `<mailto:${target}?subject=Unsubscribe>`,
+      },
+    ],
+  };
+}
+
 const MAX_ONEOFF_SUBJECT = 300;
 const MAX_ONEOFF_HTML = 50_000;
-/** Bounded scan for the "same address, no linked contact" half of the log. */
+/** Newest-first rows read per source in the per-contact log. Both sources are
+ * indexed (M4), so this is a display bound, not a scan bound. */
 const MESSAGE_SCAN = 2000;
 
 export type OneOffTarget =
@@ -329,8 +400,20 @@ export type ContactMessageRow = {
  *
  * Two sources, because `messages.contactId` points at the ORG contact and is
  * only stamped when the send site knew about it: the indexed rows for the
- * linked org contact, plus an event-bounded pass matching the address itself.
+ * linked org contact, plus the rows addressed to this snapshot's email.
  * Merged by id, newest first.
+ *
+ * The address half is an INDEXED equality on (eventId, toEmail) — M4. It used
+ * to take the OLDEST 2000 messages on the whole event and `.filter()` them in
+ * memory, so on a busy event the panel cost a 2000-row scan AND missed every
+ * recent message. Both reads are now newest-first and touch only this
+ * contact's rows.
+ *
+ * Truncation at MESSAGE_SCAN is deliberately a plain bound here, not an
+ * `event_too_large` refusal: this is a listing, the rows are newest-first, so
+ * a contact with more than MESSAGE_SCAN messages sees the most recent ones —
+ * dropping the oldest tail is what a log view means by a limit, and no
+ * decision is derived from completeness.
  */
 export async function contactLog(
   ctx: QueryCtx,
@@ -342,7 +425,11 @@ export async function contactLog(
   if (contact === null || contact.eventId !== caller.event._id) {
     notFound("contact", "No such contact on this event.");
   }
-  const email = contact.email?.trim().toLowerCase();
+  const rawEmail = contact.email?.trim();
+  const email =
+    rawEmail === undefined || rawEmail.length === 0
+      ? undefined
+      : normalizeLogAddress(rawEmail);
 
   const byContact =
     contact.contactId === undefined
@@ -350,17 +437,30 @@ export async function contactLog(
       : await ctx.db
           .query("messages")
           .withIndex("by_contactId", (q) => q.eq("contactId", contact.contactId))
+          .order("desc")
           .take(MESSAGE_SCAN);
 
-  const byEvent =
+  // Addresses are stored normalized (sendLoggedEmail), so one equality covers
+  // every casing we write. The as-typed variant is read too, and only when it
+  // differs: rows written before normalization was enforced could carry the
+  // address exactly as an organizer typed it, and this keeps them visible
+  // without a migration.
+  const addressQueries =
     email === undefined
       ? []
-      : (
-          await ctx.db
+      : [
+          email,
+          ...(rawEmail !== undefined && rawEmail !== email ? [rawEmail] : []),
+        ].map((address) =>
+          ctx.db
             .query("messages")
-            .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
-            .take(MESSAGE_SCAN)
-        ).filter((m) => m.toEmail.trim().toLowerCase() === email);
+            .withIndex("by_eventId_and_toEmail", (q) =>
+              q.eq("eventId", caller.event._id).eq("toEmail", address),
+            )
+            .order("desc")
+            .take(MESSAGE_SCAN),
+        );
+  const byEvent = (await Promise.all(addressQueries)).flat();
 
   const merged = new Map<Id<"messages">, Doc<"messages">>();
   for (const message of [...byContact, ...byEvent]) {

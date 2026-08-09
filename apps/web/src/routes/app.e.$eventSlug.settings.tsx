@@ -20,6 +20,7 @@ import {
   Textarea,
 } from '~/ds'
 import { fromInputValue, timezoneOptions, toInputValue } from '~/lib/datetime'
+import { siteOrigin } from '~/lib/origin'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
@@ -325,7 +326,14 @@ function SlugSection({
           stop resolving the moment you save.
         </Callout>
         {form.conflict ? <ConflictNotice onDiscard={form.discard} /> : null}
-        <Field label="Slug" htmlFor="s-slug" hint={`stagestack.dev/e/${slug.trim()}`}>
+        {/* The hint must name the host the organizer is actually on: on a
+            self-host or a preview deployment "stagestack.dev" points at
+            someone else's data. siteOrigin() is the isomorphic resolver. */}
+        <Field
+          label="Slug"
+          htmlFor="s-slug"
+          hint={`${siteOrigin()}/e/${slug.trim()}`}
+        >
           <Input
             id="s-slug"
             value={slug}

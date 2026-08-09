@@ -11,7 +11,7 @@
     "start": "node .output/server/index.mjs",
     "test": "vitest run",
     "format": "prettier --write .",
-    "lint": "npm run typecheck && eslint .  --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "npm run typecheck && eslint . --report-unused-disable-directives --max-warnings 0",
     "lint:ds": "eslint src --no-warn-ignored"
   },
   "dependencies": {

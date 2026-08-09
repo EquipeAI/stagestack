@@ -1,9 +1,10 @@
 import { ConvexError } from "convex/values";
+import { internal } from "../_generated/api";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { requireOrganizer } from "../lib/functions";
-import { assertEventActive } from "./validation";
+import { assertEventActive, takeAll } from "./validation";
 import { logAudit } from "./audit";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -26,8 +27,18 @@ import { logAudit } from "./audit";
 
 const SESSION_SCAN = 1000;
 const PARTICIPANT_SCAN = 5000;
+const CONTACT_SCAN = 2000;
 const AGENDA_SCAN = 500;
 const FLAG_SCAN = 3000;
+const LIBRARY_SCAN = 500;
+
+// Every read feeding the published projection goes through `takeAll` (shared
+// with the rest of the backend, ./validation): a plain `.take(cap)` would
+// silently drop the overflow and the public program would quietly lose
+// sessions — worse than a loud failure, the same judgment `comms.sendOneOff`
+// applies to a capped audience. NB `takeAll` throws `event_too_large`;
+// `takeCapped` from the same module RETURNS a `capped` flag instead. Publishing
+// must never be the fail-silent one, so this file wants `takeAll`.
 
 export type PublicSpeaker = {
   name: string;
@@ -97,10 +108,13 @@ async function publicationFlags(
   ctx: QueryCtx,
   eventId: Id<"events">,
 ): Promise<Map<string, boolean>> {
-  const flags = await ctx.db
-    .query("publicationFlags")
-    .withIndex("by_eventId_and_target", (q) => q.eq("eventId", eventId))
-    .take(FLAG_SCAN);
+  const flags = await takeAll(
+    ctx.db
+      .query("publicationFlags")
+      .withIndex("by_eventId_and_target", (q) => q.eq("eventId", eventId)),
+    FLAG_SCAN,
+    "publication flags",
+  );
   const map = new Map<string, boolean>();
   for (const f of flags) map.set(flagKey(f.targetType, f.targetId), f.published);
   return map;
@@ -129,31 +143,90 @@ export async function computeProgram(
   const lineupPublished = event.publicPageEnabled === true;
   const agendaPublished = isPublished(flags, "agenda", "event", false);
 
-  const [sessions, agendaItems, tracks, rooms] = await Promise.all([
-    ctx.db
-      .query("sessions")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(SESSION_SCAN),
-    ctx.db
-      .query("agendaItems")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(AGENDA_SCAN),
-    ctx.db
-      .query("tracks")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(500),
-    ctx.db
-      .query("rooms")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(500),
-  ]);
+  // ONE read per table, grouped in memory (the shape audiences.loadEventState
+  // uses). Reading participants per session and contacts per participant made
+  // the rebuild an N+1: a 500-session event issued ~500 queries plus a `get`
+  // per speaker slot, and the same contact was fetched once per session they
+  // speak in — all inside a single transaction.
+  const [sessions, agendaItems, tracks, rooms, participants, contacts] =
+    await Promise.all([
+      takeAll(
+        ctx.db
+          .query("sessions")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        SESSION_SCAN,
+        "sessions",
+      ),
+      takeAll(
+        ctx.db
+          .query("agendaItems")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        AGENDA_SCAN,
+        "agenda items",
+      ),
+      takeAll(
+        ctx.db
+          .query("tracks")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        LIBRARY_SCAN,
+        "tracks",
+      ),
+      takeAll(
+        ctx.db
+          .query("rooms")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        LIBRARY_SCAN,
+        "rooms",
+      ),
+      takeAll(
+        ctx.db
+          .query("sessionParticipants")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        PARTICIPANT_SCAN,
+        "participations",
+      ),
+      takeAll(
+        ctx.db
+          .query("eventContacts")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        CONTACT_SCAN,
+        "speaker profiles",
+      ),
+    ]);
   const trackName = new Map(tracks.map((t) => [t._id, t.name]));
   const roomName = new Map(rooms.map((r) => [r._id, r.name]));
+  const contactById = new Map(contacts.map((c) => [c._id, c]));
+  // `by_eventId` and `by_sessionId` both order by `_creationTime` within their
+  // prefix, so grouping the event-wide read preserves the per-session order the
+  // old per-session query returned — the projection stays byte-identical.
+  const participantsBySession = new Map<
+    Id<"sessions">,
+    Array<Doc<"sessionParticipants">>
+  >();
+  for (const participant of participants) {
+    const group = participantsBySession.get(participant.sessionId);
+    if (group === undefined) {
+      participantsBySession.set(participant.sessionId, [participant]);
+    } else {
+      group.push(participant);
+    }
+  }
+
+  // One signed URL per storage id: the same speaker headshot appears in every
+  // session they speak in, and each `getUrl` is a round trip.
+  const urlCache = new Map<Id<"_storage">, string | undefined>();
+  const storageUrl = async (
+    id: Id<"_storage">,
+  ): Promise<string | undefined> => {
+    const cached = urlCache.get(id);
+    if (cached !== undefined || urlCache.has(id)) return cached;
+    const url = (await ctx.storage.getUrl(id)) ?? undefined;
+    urlCache.set(id, url);
+    return url;
+  };
 
   const logoUrl =
-    event.logoId === undefined
-      ? undefined
-      : ((await ctx.storage.getUrl(event.logoId)) ?? undefined);
+    event.logoId === undefined ? undefined : await storageUrl(event.logoId);
 
   const lineup: PublicSession[] = [];
   const agenda: PublicProgram["agenda"] = [];
@@ -165,16 +238,13 @@ export async function computeProgram(
     const sessionPublic = isPublished(flags, "session", session._id, false);
     if (!sessionPublic) continue;
 
-    const participants = await ctx.db
-      .query("sessionParticipants")
-      .withIndex("by_sessionId", (q) => q.eq("sessionId", session._id))
-      .take(PARTICIPANT_SCAN);
-    const confirmed = participants.filter((p) => p.state === "confirmed");
+    const sessionParticipants = participantsBySession.get(session._id) ?? [];
+    const confirmed = sessionParticipants.filter((p) => p.state === "confirmed");
 
     const speakers: PublicSpeaker[] = [];
     for (const p of confirmed) {
-      const contact = await ctx.db.get("eventContacts", p.eventContactId);
-      if (contact === null) continue;
+      const contact = contactById.get(p.eventContactId);
+      if (contact === undefined) continue;
       // A speaker's profile is only publishable when they've confirmed; the
       // organizer publishing the session is what makes it eligible (no
       // separate profile-approval state in v1).
@@ -185,7 +255,7 @@ export async function computeProgram(
         headshotUrl:
           contact.headshotId === undefined
             ? undefined
-            : ((await ctx.storage.getUrl(contact.headshotId)) ?? undefined),
+            : await storageUrl(contact.headshotId),
         links: contact.links,
       });
     }
@@ -211,7 +281,7 @@ export async function computeProgram(
       // to be announced placeholder" — TBA when there's an unconfirmed slot.
       toBeAnnounced:
         confirmed.length === 0 ||
-        participants.some((p) => p.state === "awaiting"),
+        sessionParticipants.some((p) => p.state === "awaiting"),
     };
     lineup.push(publicSession);
 
@@ -287,37 +357,110 @@ function assertProgramFits(program: PublicProgram): void {
   });
 }
 
-/** Recompute and persist the published projection. This is the primary writer
- * of publishedPrograms; every publish/unpublish action ends by calling it so
- * the served blob always matches the current flags. */
-export async function republish(
+/** Order-independent serialization, used only to answer "would this rebuild
+ * change the served bytes?" — the database is free to hand object fields back
+ * in a different order than we built them, and that must not read as a change. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : 1));
+    return `{${entries
+      .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * Recompute and persist the published projection — the ONLY writer of
+ * publishedPrograms. Runs in its own transaction, scheduled by whatever changed
+ * the underlying state (see `requestRebuild`), because a rebuild reads the whole
+ * event graph and must not be charged to the mutation that flipped one flag.
+ *
+ * `publishedBy` set  = an explicit organizer publish: it CREATES the row for a
+ *   never-published event, records the publisher, and enforces the size guard.
+ * `publishedBy` unset = a forced propagation (withdraw/decline/rename): it only
+ *   rewrites an EXISTING blob, keeps the last explicit publisher on record, and
+ *   is never blocked by the size guard (suppressions only shrink the blob, and a
+ *   privacy transition must always land).
+ *
+ * Idempotent by construction: it recomputes from current state rather than
+ * applying a delta, so running it twice — or out of order with another rebuild —
+ * converges on the same bytes. Returns the version now served, or null when
+ * there was nothing to publish.
+ */
+export async function rebuildProgram(
   ctx: MutationCtx,
-  caller: EventCaller,
-): Promise<number> {
-  requireOrganizer(caller);
-  // Re-read the event: a publish action may have just patched it
-  // (publicPageEnabled), and caller.event is the pre-mutation snapshot.
-  const event = (await ctx.db.get("events", caller.event._id)) ?? caller.event;
-  const program = await computeProgram(ctx, event);
-  assertProgramFits(program);
+  eventId: Id<"events">,
+  publishedBy?: Id<"users">,
+): Promise<number | null> {
+  const event = await ctx.db.get("events", eventId);
+  if (event === null) return null;
   const existing = await ctx.db
     .query("publishedPrograms")
-    .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+    .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
     .unique();
-  const version = (existing?.version ?? 0) + 1;
-  const doc = {
-    eventId: caller.event._id,
+
+  if (existing === null) {
+    // A never-published event stays unpublished: only an explicit publish
+    // (which carries the publisher) may create the row.
+    if (publishedBy === undefined) return null;
+    const program = await computeProgram(ctx, event);
+    assertProgramFits(program);
+    await ctx.db.insert("publishedPrograms", {
+      eventId,
+      version: 1,
+      publishedAt: Date.now(),
+      publishedBy,
+      program,
+    });
+    return 1;
+  }
+
+  const program = await computeProgram(ctx, event);
+  if (publishedBy !== undefined) assertProgramFits(program);
+  // Coalescing: several flag flips in quick succession each schedule a rebuild,
+  // and every rebuild after the first recomputes the same bytes. Skipping the
+  // write there costs nothing (the served blob is already right) and avoids both
+  // a meaningless version bump and OCC contention on this single row.
+  if (canonical(existing.program) === canonical(program)) return existing.version;
+  const version = existing.version + 1;
+  await ctx.db.replace("publishedPrograms", existing._id, {
+    eventId,
     version,
     publishedAt: Date.now(),
-    publishedBy: caller.user._id,
+    // On a forced propagation the last explicit publisher stays on record: the
+    // rewrite is a privacy/identity consequence, not a new editorial decision.
+    publishedBy: publishedBy ?? existing.publishedBy,
     program,
-  };
-  if (existing === null) {
-    await ctx.db.insert("publishedPrograms", doc);
-  } else {
-    await ctx.db.replace("publishedPrograms", existing._id, doc);
-  }
+  });
   return version;
+}
+
+/**
+ * Ask for a rebuild instead of doing one inline. `ctx.scheduler.runAfter(0, …)`
+ * only runs the job once THIS transaction commits, so the rebuild scheduled by
+ * the last state change always observes that change — which is all correctness
+ * needs, since `rebuildProgram` recomputes from scratch (a rebuild that runs
+ * late just recomputes the newer state; one that lands out of order writes the
+ * same bytes, and concurrent rebuilds serialize on the single publishedPrograms
+ * row). What this buys: a per-session flag flip, a withdrawal or a decline pays
+ * for its own writes only, never for an O(event) projection rebuild.
+ *
+ * No requireOrganizer — the actor may be a portal speaker withdrawing; the
+ * caller has already authorized the underlying transition.
+ */
+export async function requestRebuild(
+  ctx: MutationCtx,
+  eventId: Id<"events">,
+  publishedBy?: Id<"users">,
+): Promise<void> {
+  await ctx.scheduler.runAfter(0, internal.publish.rebuild, {
+    eventId,
+    publishedBy,
+  });
 }
 
 /**
@@ -329,32 +472,16 @@ export async function republish(
  * name whose owner withdrew, or an identity that no longer exists. A never-
  * published event stays unpublished.
  *
- * No requireOrganizer — the actor may be a portal speaker withdrawing; the
- * caller has already authorized the underlying transition. No size guard —
- * suppressions only shrink the blob, and a rename's growth is bounded far
- * below the guard's headroom; a privacy transition must never be blocked.
+ * Inline (same transaction) variant, kept for callers whose own transaction is
+ * already small and which want the rewrite visible to their own reader: the
+ * portal's speaker-driven transitions go through `requestRebuild` instead, so a
+ * speaker's click never pays for a full rebuild.
  */
 export async function republishIfPublished(
   ctx: MutationCtx,
   eventId: Id<"events">,
 ): Promise<void> {
-  const existing = await ctx.db
-    .query("publishedPrograms")
-    .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-    .unique();
-  if (existing === null) return;
-  const event = await ctx.db.get("events", eventId);
-  if (event === null) return;
-  const program = await computeProgram(ctx, event);
-  await ctx.db.replace("publishedPrograms", existing._id, {
-    eventId,
-    version: existing.version + 1,
-    publishedAt: Date.now(),
-    // The last explicit publisher stays on record: this rewrite is a forced
-    // privacy propagation, not a new editorial decision.
-    publishedBy: existing.publishedBy,
-    program,
-  });
+  await rebuildProgram(ctx, eventId);
 }
 
 async function setFlag(
@@ -395,12 +522,19 @@ export type PublishAction =
   | { kind: "session"; sessionId: Id<"sessions">; published: boolean }
   | { kind: "agendaItem"; itemId: Id<"agendaItems">; published: boolean };
 
-/** Flip one publication control, then rewrite the served projection. */
+/** Flip one publication control and ask for the served projection to be
+ * rewritten. Rewriting after every flag change keeps the served blob
+ * authoritative; an unpublish is just a flag flip + rewrite (decision log #11).
+ * The rewrite is SCHEDULED, not inline: this mutation is one small write, while
+ * the rebuild reads the whole event graph, and a publish console flipping fifty
+ * sessions must not run fifty full rebuilds inside fifty user-facing mutations.
+ * The new version therefore lands a moment later — `publishState` (and the
+ * console's version badge) reports it once it has. */
 export async function publish(
   ctx: MutationCtx,
   caller: EventCaller,
   action: PublishAction,
-): Promise<number> {
+): Promise<void> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
   const eventId = caller.event._id;
@@ -438,9 +572,19 @@ export async function publish(
     action: "publish." + action.kind,
     meta: action,
   });
-  // Republishing after every flag change keeps the served blob authoritative;
-  // an unpublish is just a flag flip + rewrite (decision log #11).
-  return await republish(ctx, caller);
+  // The size guard must reach the ORGANIZER, not a scheduled job: an explicit
+  // publish that would produce an unservable program is refused right here,
+  // naming the largest sessions, and the flag flip rolls back with it. That is
+  // worth a recompute in this transaction — publish clicks are rare, and the
+  // alternative (a job throwing into the void while the console reports success)
+  // would make the failure invisible. Re-read the event first: the lineup case
+  // just patched it and `caller.event` is the pre-mutation snapshot.
+  const event = (await ctx.db.get("events", eventId)) ?? caller.event;
+  assertProgramFits(await computeProgram(ctx, event));
+  // The WRITE still happens off the hot path: one scheduled, idempotent rebuild
+  // per flip, coalescing onto a single publishedPrograms row rewrite instead of
+  // one rewrite (and one OCC conflict) per flip.
+  await requestRebuild(ctx, eventId, caller.user._id);
 }
 
 export type PublishState = {
@@ -453,6 +597,17 @@ export type PublishState = {
   /** Live counts to drive the organizer's publish console. */
   acceptedSessions: number;
   releasedSessions: number;
+  /**
+   * The served blob no longer matches what a rebuild would produce right now.
+   * Two things land here, and both mean "republish": editorial edits waiting for
+   * an explicit publish (by design — decision log #12), and a SCHEDULED rebuild
+   * that never landed because it threw (oversized program, an at-cap read). The
+   * latter is why this exists at all: with the rewrite off the hot path, a failed
+   * rebuild would otherwise leave the public program quietly behind with nobody
+   * to tell. A rebuild that ran and found nothing to change leaves this FALSE —
+   * "already correct" and "failed" must never look the same.
+   */
+  stale: boolean;
 };
 
 /** The organizer's view of what's public and what could be. */
@@ -468,10 +623,15 @@ export async function publishState(
       .query("publishedPrograms")
       .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
       .unique(),
-    ctx.db
-      .query("sessions")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(SESSION_SCAN),
+    // Same cap, same refusal as the projection itself: a console reporting
+    // "412 accepted sessions" for an event that publishes fewer would be a lie.
+    takeAll(
+      ctx.db
+        .query("sessions")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+      SESSION_SCAN,
+      "sessions",
+    ),
   ]);
   const planned = sessions.filter((s) => s.status === "planned");
   const publishedSessionIds: string[] = [];
@@ -486,9 +646,17 @@ export async function publishState(
       publishedAgendaItemIds.push(key.slice("agendaItem:".length));
     }
   }
+  // Compared against a fresh projection rather than against timestamps: it is
+  // the BYTES the public sees that matter, and this page already recomputes the
+  // projection for its live preview.
+  const stale =
+    published !== null &&
+    canonical(published.program) !==
+      canonical(await computeProgram(ctx, caller.event));
   return {
     lineupPublished: caller.event.publicPageEnabled === true,
     agendaPublished: isPublished(flags, "agenda", "event", false),
+    stale,
     version: published?.version ?? null,
     publishedAt: published?.publishedAt ?? null,
     publishedSessionIds,

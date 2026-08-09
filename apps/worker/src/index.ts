@@ -14,6 +14,15 @@ import {
 import { runHelloAgent } from "./hello-agent";
 import { runImportPlan, type ImportContext } from "./import-agent";
 
+// Lease renewal interval. Must stay well under the deployment's
+// WORKER_LEASE_TTL_MS (10 min, convex/worker.ts) — an import plan is ~10
+// sequential LLM exchanges of up to 5 min each, so without renewals the sweep
+// would requeue a job that is still running and a second worker would plan it
+// concurrently (double LLM spend, clobbered capture map). Duplicated rather
+// than imported: importing convex/worker.ts would drag the Convex function
+// registry into this Node process.
+const HEARTBEAT_MS = 2 * 60 * 1000;
+
 const CONVEX_URL = process.env.CONVEX_URL;
 const WORKER_SECRET = process.env.WORKER_SECRET;
 
@@ -27,10 +36,16 @@ const client = new ConvexClient(CONVEX_URL);
 const inFlight = new Set<string>();
 
 type PendingJob = { _id: Id<"jobs">; type: string; payload: unknown };
+// Fencing token minted by `claim`. Every later call about the job carries it,
+// so a worker whose lease was swept and re-claimed elsewhere is refused
+// instead of mutating a job it no longer owns.
+type Lease = { claimToken: string };
 
 // One handler per registry entry (convex/shared/jobTypes.ts). Adding a job
 // type without a handler here is a compile error.
-const handlers: { [K in JobType]: (job: PendingJob) => Promise<unknown> } = {
+const handlers: {
+  [K in JobType]: (job: PendingJob, lease: Lease) => Promise<unknown>;
+} = {
   ping: async (job) => ({ pong: true, at: Date.now(), payload: job.payload }),
   "hello-agent": async (job) => await runHelloAgent(job._id),
   "import-plan": async (job) => {
@@ -40,11 +55,21 @@ const handlers: { [K in JobType]: (job: PendingJob) => Promise<unknown> } = {
     })) as ImportContext;
     return await runImportPlan(job._id, context);
   },
-  "import-execute": async (job) => {
-    const { records } = job.payload as { records: PlannedRecord[] };
+  "import-execute": async (job, lease) => {
+    // The approved records live on the job row; the deployment slices them by
+    // batchIndex. We only count batches here — sending records would let this
+    // process (or an agent that manipulated it) execute rows the organizer
+    // never approved.
+    const { records } = job.payload as { records?: PlannedRecord[] };
+    if (!Array.isArray(records) || records.length === 0) {
+      // Only imports.confirm enqueues these, and it rejects an empty
+      // selection — so this means the row was tampered with or truncated.
+      throw new Error("import-execute job has no approved records");
+    }
+    const total = records.length;
+    const batchCount = Math.ceil(total / IMPORT_LIMITS.executeBatch);
     const results: RecordResult[] = [];
-    for (let i = 0; i < records.length; i += IMPORT_LIMITS.executeBatch) {
-      const batch = records.slice(i, i + IMPORT_LIMITS.executeBatch);
+    for (let batchIndex = 0; batchIndex < batchCount; batchIndex++) {
       // batchIndex is the idempotency key: a re-run after a lost response
       // replays the recorded results instead of duplicating writes.
       const batchResults = await client.mutation(
@@ -52,17 +77,17 @@ const handlers: { [K in JobType]: (job: PendingJob) => Promise<unknown> } = {
         {
           secret,
           jobId: job._id,
-          batchIndex: i / IMPORT_LIMITS.executeBatch,
-          records: batch,
+          claimToken: lease.claimToken,
+          batchIndex,
         },
       );
       results.push(...batchResults);
       console.log(
-        `[worker] import ${job._id}: ${Math.min(i + batch.length, records.length)}/${records.length} records`,
+        `[worker] import ${job._id}: ${Math.min(results.length, total)}/${total} records`,
       );
     }
     return {
-      total: records.length,
+      total,
       ok: results.filter((r) => r.ok).length,
       failed: results.filter((r) => !r.ok).length,
       results,
@@ -70,11 +95,40 @@ const handlers: { [K in JobType]: (job: PendingJob) => Promise<unknown> } = {
   },
 };
 
-async function runJob(job: PendingJob): Promise<unknown> {
+async function runJob(job: PendingJob, lease: Lease): Promise<unknown> {
   if (!isJobType(job.type)) {
     throw new Error(`Unknown job type: ${job.type}`);
   }
-  return await handlers[job.type](job);
+  return await handlers[job.type](job, lease);
+}
+
+/** Renew the lease until the returned stop() is called. A refused renewal
+ * means the lease is gone (swept and re-claimed, or already finished): stop
+ * renewing and say so loudly — the job's own finish will be refused too. */
+function startHeartbeat(job: PendingJob, lease: Lease): () => void {
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        const held = await client.mutation(api.worker.touch, {
+          secret,
+          jobId: job._id,
+          claimToken: lease.claimToken,
+        });
+        if (!held) {
+          clearInterval(timer);
+          console.warn(
+            `[worker] lost the lease on ${job._id} — its results will be discarded`,
+          );
+        }
+      } catch (err) {
+        // Transport blip: keep the timer, the TTL tolerates a few misses.
+        console.error(`[worker] heartbeat failed for ${job._id}`, err);
+      }
+    })();
+  }, HEARTBEAT_MS);
+  // Don't hold the event loop open on shutdown.
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 // Set while shutting down: no new claims, in-flight jobs get to finish.
@@ -87,29 +141,39 @@ async function claimAndRun(job: PendingJob) {
   // and an escaped rejection here would crash the process (systemd
   // Restart=always would then crash-loop against the same job).
   try {
-    const claimed = await client.mutation(api.worker.claim, {
+    const claimToken = await client.mutation(api.worker.claim, {
       secret,
       jobId: job._id,
     });
-    if (!claimed) return; // lost the race or already handled
+    if (claimToken === null) return; // lost the race or already handled
+    const lease: Lease = { claimToken };
     console.log(`[worker] claimed ${job.type} ${job._id}`);
+    const stopHeartbeat = startHeartbeat(job, lease);
     try {
-      const result = await runJob(job);
-      await client.mutation(api.worker.finish, {
+      const result = await runJob(job, lease);
+      const accepted = await client.mutation(api.worker.finish, {
         secret,
         jobId: job._id,
+        claimToken,
         result,
       });
-      console.log(`[worker] done ${job._id}`);
+      console.log(
+        accepted
+          ? `[worker] done ${job._id}`
+          : `[worker] finish refused for ${job._id} (lease lost) — result discarded`,
+      );
     } catch (err) {
       // Job failure: report it. If this finish itself throws, the outer
       // catch logs and the lease sweep requeues the job.
       await client.mutation(api.worker.finish, {
         secret,
         jobId: job._id,
+        claimToken,
         error: err instanceof Error ? err.message : String(err),
       });
       console.error(`[worker] failed ${job._id}`, err);
+    } finally {
+      stopHeartbeat();
     }
   } catch (err) {
     // Claim or finish never reached the deployment. Don't rethrow: the lease

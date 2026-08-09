@@ -27,6 +27,58 @@ export function normalizeEmail(email: string): string {
   return normalized;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Bounded reads (H5). Every event-graph read is capped so one oversized event
+// can't blow a transaction, but a cap that silently drops rows turns a read
+// into a WRONG ANSWER: a missed double-booking, a speaker who stops being
+// chased, a dashboard that reports readiness it never verified. So each call
+// site picks one of exactly two behaviours below — never a bare `.take(cap)`.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Structural view of a Convex query builder — keeps these helpers pure, so
+ * every call site still composes its own `.withIndex()`/`.order()` chain. */
+type Takeable<T> = { take(count: number): Promise<Array<T>> };
+
+/**
+ * Read at most `cap` rows AND report whether more exist.
+ *
+ * `cap + 1` is load-bearing: it is the only way to tell "exactly full" from
+ * "overflowing". Probing with `cap` and treating `rows.length === cap` as
+ * truncated is an off-by-one that cries wolf on an event sitting exactly at
+ * the cap — do not "simplify" it back. Both helpers share this one probe so
+ * they can never disagree about what "at the cap" means.
+ */
+export async function takeCapped<T>(
+  query: Takeable<T>,
+  cap: number,
+): Promise<{ rows: Array<T>; capped: boolean }> {
+  const rows = await query.take(cap + 1);
+  return { rows: rows.slice(0, cap), capped: rows.length > cap };
+}
+
+/**
+ * Read rows that the answer DEPENDS ON: refuse rather than answer from a
+ * partial read. `what` names the rows in organizer language ("sessions",
+ * "speaker participations") because the message is rendered in the UI.
+ *
+ * One code for all call sites (`event_too_large`) so the UI has a single case
+ * to handle no matter which read hit its ceiling.
+ */
+export async function takeAll<T>(
+  query: Takeable<T>,
+  cap: number,
+  what: string,
+): Promise<Array<T>> {
+  const { rows, capped } = await takeCapped(query, cap);
+  if (capped) {
+    throw new ConvexError({
+      code: "event_too_large",
+      message: `This event has more than ${cap} ${what} — more than StageStack reads in one pass. Answering from a partial read would be wrong (missed schedule conflicts, false readiness), so this view is refused instead of guessing. Split the event, or contact support@stagestack.dev to raise the ${cap}-${what} limit.`,
+    });
+  }
+  return rows;
+}
+
 export type AssertTextOptions = {
   /** Human label used in the error message, e.g. "Event name". */
   label: string;

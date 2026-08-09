@@ -20,6 +20,10 @@ export default defineConfig([
   {
     name: 'stagestack/design-adherence',
     files: ['src/**/*.{ts,tsx,jsx}'],
+    // Tests legitimately assert on computed px values and raw style output, so
+    // the design-adherence literal rules would flag correct assertions. The
+    // rules stay fully in force for real source files.
+    ignores: ['**/*.test.*', '**/*.spec.*'],
     rules: {
       'no-restricted-imports': adherence.rules['no-restricted-imports'],
       'no-restricted-syntax': adherence.rules['no-restricted-syntax'],

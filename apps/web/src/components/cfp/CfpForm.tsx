@@ -190,30 +190,39 @@ function FieldRow({
           .join(' ')
       : field.help
 
+  // `radio` and `multiselect` render a group of inputs rather than one
+  // labelable element, so a <label for> aimed at them names nothing; Field
+  // names the group with aria-labelledby instead, and the group keeps `id` so
+  // the Review step's error-jump still has somewhere to land.
+  const grouped = field.kind === 'radio' || field.kind === 'multiselect'
+
   return (
     <Field
       label={field.label}
-      htmlFor={id}
+      htmlFor={grouped ? undefined : id}
       required={field.required}
       hint={hint}
       error={error ?? undefined}
     >
-      <Control
-        id={id}
-        field={field}
-        value={value}
-        onChange={onChange}
-        proposalId={proposalId}
-        disabled={disabled}
-        invalid={invalid}
-        uploadedName={uploadedName}
-        onUploaded={onUploaded}
-      />
+      {/* Called, not rendered as <Control>: Field wires aria-describedby by
+          cloning its child, so the child has to be the control itself and not
+          a wrapper component that would swallow the attribute. */}
+      {renderControl({
+        id,
+        field,
+        value,
+        onChange,
+        proposalId,
+        disabled,
+        invalid,
+        uploadedName,
+        onUploaded,
+      })}
     </Field>
   )
 }
 
-function Control({
+function renderControl({
   id,
   field,
   value,
@@ -258,6 +267,10 @@ function Control({
           id={id}
           value={text}
           disabled={disabled}
+          // Select has no `invalid` prop; it spreads unknown props onto its
+          // <select>, so the state is stated as the ARIA attribute directly.
+          // eslint-disable-next-line no-restricted-syntax -- aria-* is not a design-system prop
+          aria-invalid={invalid || undefined}
           onChange={(e) => {
             onChange(e.target.value)
           }}
@@ -274,8 +287,18 @@ function Control({
       return (
         <RadioGroup
           name={id}
+          // The group is the control here: it carries the id the error-jump
+          // resolves, and tabIndex -1 makes that jump able to focus it without
+          // adding a stop to the tab order the radios already provide.
+          id={id}
+          tabIndex={-1}
+          // Restating the role RadioGroup renders is what lets <Field> see a
+          // group rather than a labelable control from the outside, and so name
+          // it with aria-labelledby instead of an inert <label for>.
+          role="radiogroup"
           options={options}
           value={text}
+          aria-invalid={invalid || undefined}
           onChange={(next) => {
             if (!disabled) onChange(next)
           }}
@@ -284,7 +307,13 @@ function Control({
     case 'multiselect': {
       const selected = answerList(value)
       return (
+        // role="group" is what makes the description <Field> attaches to this
+        // wrapper reachable: aria-describedby is ignored on a bare <div>. The
+        // id and tabIndex are there for the same reason as in the radio case.
         <div
+          role="group"
+          id={id}
+          tabIndex={-1}
           style={{
             display: 'flex',
             flexDirection: 'column',
@@ -297,6 +326,10 @@ function Control({
               label={option}
               disabled={disabled}
               checked={selected.includes(option)}
+              // <Field> can only mark the wrapper, so each box states it
+              // itself. Checkbox spreads unknown props onto its <input>.
+              // eslint-disable-next-line no-restricted-syntax -- aria-* is not a design-system prop
+              aria-invalid={invalid || undefined}
               onChange={(e) => {
                 onChange(
                   e.target.checked

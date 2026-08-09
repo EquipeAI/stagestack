@@ -8,6 +8,7 @@ import type {
 } from '@convex/model/publish'
 import { Avatar, Badge, Icon, Logo, Tag } from '~/ds'
 import { DATE_LOCALE, formatDateRange } from '~/lib/datetime'
+import { PRODUCT_ORIGIN, siteOrigin } from '~/lib/origin'
 
 // One renderer for the published program, reused by the public event page
 // (/e/<slug>), the organizer's live preview, and the external embed
@@ -31,18 +32,6 @@ function dayKey(ms: number, zone: string) {
 function dayLabel(ms: number, zone: string) {
   const dt = DateTime.fromMillis(ms, { zone, locale: DATE_LOCALE })
   return dt.isValid ? dt.toFormat('cccc, d LLL yyyy') : '—'
-}
-
-const PRODUCT_ORIGIN = 'https://stagestack.dev'
-
-/**
- * The origin this app is served from — a link handed out from a preview
- * deployment has to point back at that deployment, not at production. The
- * browser knows its own origin; a server render falls back to the production
- * host, which is where these links are generated in practice.
- */
-export function siteOrigin() {
-  return typeof window === 'undefined' ? PRODUCT_ORIGIN : window.location.origin
 }
 
 /** Public link surface derived from one slug + the deployment URL. */
@@ -558,7 +547,7 @@ export function AgendaSection({
 export function PoweredBy({ compact = false }: { compact?: boolean }) {
   return (
     <a
-      href="https://stagestack.dev"
+      href={PRODUCT_ORIGIN}
       target="_blank"
       rel="noreferrer"
       style={{

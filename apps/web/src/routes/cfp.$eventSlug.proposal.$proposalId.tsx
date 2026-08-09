@@ -58,6 +58,10 @@ import { deepEqual } from '~/lib/cfpForm'
 export const Route = createFileRoute('/cfp/$eventSlug/proposal/$proposalId')({
   component: ManageRoute,
   errorComponent: CfpRouteError,
+  // Auth-gated, so a crawler sees nothing — but there is no reason for one
+  // submitter's proposal URL to be indexable at all. Same meta the embed,
+  // invite and portal routes use.
+  head: () => ({ meta: [{ name: 'robots', content: 'noindex' }] }),
 })
 
 type MyProposalView = FunctionReturnType<typeof api.cfp.getMyProposal>

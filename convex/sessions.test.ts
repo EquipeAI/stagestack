@@ -29,6 +29,21 @@ async function messageRows(t: TestT) {
   return await t.run(async (ctx) => ctx.db.query("messages").collect());
 }
 
+/**
+ * A publication flag flip now SCHEDULES the projection rebuild (H4) instead of
+ * recomputing the whole event inside the user-facing mutation, so a setup that
+ * publishes and then reads the served blob has to let the queued job run.
+ * `sessions.correct` itself still republishes inline — that is what the test
+ * below asserts — this only drains the *setup's* publish. Same drain shape as
+ * publish.test.ts and comms.test.ts: `runAfter(0)` needs real event-loop turns.
+ */
+async function drainScheduled(t: TestT): Promise<void> {
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+}
+
 async function sessionRows(t: TestT) {
   return await t.run(async (ctx) => ctx.db.query("sessions").collect());
 }
@@ -103,7 +118,7 @@ describe("sessions.setStatus (staging)", () => {
 
     // The organizer sees the true status...
     const listed = await alice.query(api.cfp.listProposals, { eventSlug });
-    expect(listed[0].proposal.status).toBe("acceptQueue");
+    expect(listed.rows[0].proposal.status).toBe("acceptQueue");
     expect(await proposalStatus(t, proposalId)).toBe("acceptQueue");
 
     // ...the submitter sees "pending" — THE masking rule (MILESTONES M2).
@@ -567,6 +582,7 @@ describe("sessions.correct", () => {
       sessionId,
       published: true,
     });
+    await drainScheduled(t);
     let program = (await t.query(api.publish.publicProgram, {
       slug: eventSlug,
     }))!;

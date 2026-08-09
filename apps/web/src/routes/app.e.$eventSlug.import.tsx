@@ -3,7 +3,11 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Id } from '@convex/_generated/dataModel'
-import { Badge, Button, Callout, Card, Checkbox, EmptyState, Tag, Textarea } from '~/ds'
+// The plan's shape is the same contract the executor re-validates against, so
+// the review UI reads it from convex/shared/importPlan.ts instead of restating
+// it — a field added to vImportRecord must not silently become invisible here.
+import type { ImportPlan, PlannedRecord } from '@convex/shared/importPlan'
+import { Badge, Button, Callout, Card, Checkbox, DescriptionList, EmptyState, Tag, Textarea } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
 import { errorMessage } from '~/lib/errors'
@@ -11,22 +15,6 @@ import { errorMessage } from '~/lib/errors'
 export const Route = createFileRoute('/app/e/$eventSlug/import')({
   component: ImportPage,
 })
-
-type PlannedRecord = {
-  id: string
-  sourceRow?: number
-  record: Record<string, unknown> & { kind: string }
-  uncertainty?: string
-  duplicateOf?: string
-  reuse?: boolean
-}
-
-type ImportPlan = {
-  summary: string
-  columns?: Array<string>
-  records: Array<PlannedRecord>
-  skippedRows: Array<{ row: number; reason: string }>
-}
 
 type ExecutionReport = {
   total: number
@@ -44,44 +32,129 @@ const KIND_LABEL: Record<string, string> = {
 }
 
 function recordTitle(r: PlannedRecord): string {
-  const rec = r.record as {
-    kind: string
-    title?: string
-    name?: string
-    firstName?: string
-    lastName?: string
-  }
+  const rec = r.record
   switch (rec.kind) {
     case 'proposal':
     case 'session':
-      return rec.title ?? '(untitled)'
+      return rec.title.trim() === '' ? '(untitled)' : rec.title
     case 'track':
     case 'tag':
-      return rec.name ?? '(unnamed)'
+      return rec.name.trim() === '' ? '(unnamed)' : rec.name
     case 'contact':
-      return `${rec.firstName ?? ''} ${rec.lastName ?? ''}`.trim() || '(unnamed)'
-    default:
-      return '(unknown)'
+      return `${rec.firstName} ${rec.lastName}`.trim() || '(unnamed)'
   }
 }
 
-function recordDetail(r: PlannedRecord): string {
-  const rec = r.record as {
-    kind: string
-    abstract?: string
-    email?: string
-    description?: string
-    speakers?: Array<{ firstName: string; lastName: string }>
-    speaker?: { firstName: string; lastName: string }
+const FIELD_LABEL: Record<string, string> = {
+  firstName: 'First name',
+  lastName: 'Last name',
+  email: 'Email',
+  tagline: 'Tagline',
+  bio: 'Bio',
+  name: 'Name',
+  title: 'Title',
+  abstract: 'Abstract',
+  trackName: 'Track',
+  description: 'Description',
+  speakers: 'Speakers',
+  speaker: 'Speaker',
+}
+
+function personText(value: unknown): string {
+  const p = value as { firstName?: string; lastName?: string; email?: string }
+  const name = `${p.firstName ?? ''} ${p.lastName ?? ''}`.trim()
+  const parts = [name === '' ? '(unnamed)' : name]
+  if (p.email !== undefined && p.email !== '') parts.push(`<${p.email}>`)
+  return parts.join(' ')
+}
+
+function fieldText(key: string, value: unknown): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
   }
-  if (rec.kind === 'proposal' && rec.speakers?.length) {
-    return rec.speakers.map((s) => `${s.firstName} ${s.lastName}`).join(', ')
+  if (key === 'speakers' && Array.isArray(value)) {
+    return value.map(personText).join(' · ')
   }
-  if (rec.kind === 'session' && rec.speaker) {
-    return `${rec.speaker.firstName} ${rec.speaker.lastName}`
-  }
-  if (rec.kind === 'contact' && rec.email) return rec.email
-  return ''
+  if (key === 'speaker') return personText(value)
+  // Never expected from a validated plan — shown as JSON rather than dropped,
+  // because the rule here is "nothing gets written that wasn't reviewed".
+  return JSON.stringify(value)
+}
+
+/**
+ * Every field of a planned record that the executor will write, enumerated from
+ * the record itself rather than from a hand-written list. The plan is authored
+ * by an LLM reading an attacker-supplied spreadsheet and then written under the
+ * approving organizer's authority (MILESTONES M1), so a field the UI forgets to
+ * render is a field an injected value can hide in.
+ */
+function writeableFields(
+  r: PlannedRecord,
+): Array<{ key: string; label: string; text: string }> {
+  return Object.entries(r.record as Record<string, unknown>)
+    .filter(([key, value]) => key !== 'kind' && value !== undefined)
+    .map(([key, value]) => ({
+      key,
+      label: FIELD_LABEL[key] ?? key,
+      text: fieldText(key, value),
+    }))
+}
+
+// Long enough that clamping earns its keep; short enough that a bio or an
+// abstract still shows its opening sentence at a glance.
+const CLAMP_AT = 160
+
+/** One field value: clamped to two lines by default, expandable in place. The
+ * value is always on screen — hiding it behind a click is what created the
+ * blind spot in the first place. */
+function FieldValue({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const clamp = text.length > CLAMP_AT && !expanded
+  return (
+    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
+      <span
+        style={{
+          minWidth: 0,
+          // pre-wrap so a smuggled newline or run of spaces is visible.
+          whiteSpace: 'pre-wrap',
+          overflowWrap: 'anywhere',
+          ...(clamp
+            ? {
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical' as const,
+                overflow: 'hidden',
+              }
+            : {}),
+        }}
+      >
+        {text === '' ? '(empty)' : text}
+      </span>
+      {text.length > CLAMP_AT ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? 'Show less' : `Show all ${text.length} characters`}
+        </Button>
+      ) : null}
+    </span>
+  )
+}
+
+function PlannedFields({ record }: { record: PlannedRecord }) {
+  const fields = writeableFields(record)
+  if (fields.length === 0) return null
+  return (
+    <DescriptionList
+      items={fields.map((f) => ({
+        term: f.label,
+        value: <FieldValue key={f.key} text={f.text} />,
+      }))}
+    />
+  )
 }
 
 type ViewSelection = {
@@ -322,9 +395,9 @@ function PlanView({
                   key={r.id}
                   style={{
                     display: 'flex',
-                    alignItems: 'center',
+                    alignItems: 'flex-start',
                     gap: 'var(--space-3)',
-                    padding: 'var(--space-2) 0',
+                    padding: 'var(--space-3) 0',
                     borderBottom: 'var(--space-px) solid var(--border-subtle)',
                   }}
                 >
@@ -333,26 +406,51 @@ function PlanView({
                     onChange={() => toggle(r.id)}
                     name={`include-${r.id}`}
                   />
-                  <Tag>{KIND_LABEL[r.record.kind] ?? r.record.kind}</Tag>
-                  <span style={{ flex: '1 1 12rem', minWidth: 0 }}>
-                    <strong>{recordTitle(r)}</strong>
-                    {recordDetail(r) !== '' ? (
-                      <span style={{ color: 'var(--text-tertiary)' }}>
-                        {' '}
-                        — {recordDetail(r)}
-                      </span>
-                    ) : null}
-                  </span>
-                  {r.reuse === true ? (
-                    <Badge tone="info">reuses existing</Badge>
-                  ) : r.duplicateOf !== undefined ? (
-                    <Badge tone="attention" dot>
-                      possible duplicate
-                    </Badge>
-                  ) : null}
-                  {r.uncertainty !== undefined ? (
-                    <Badge tone="attention">{r.uncertainty}</Badge>
-                  ) : null}
+                  <div
+                    style={{
+                      flex: '1 1 auto',
+                      minWidth: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 'var(--space-2)',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 'var(--space-3)',
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <Tag>{KIND_LABEL[r.record.kind] ?? r.record.kind}</Tag>
+                      <strong style={{ minWidth: 0 }}>{recordTitle(r)}</strong>
+                      {r.sourceRow !== undefined ? (
+                        <span
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: 'var(--text-sm)',
+                            color: 'var(--text-tertiary)',
+                          }}
+                        >
+                          row {r.sourceRow}
+                        </span>
+                      ) : null}
+                      {r.reuse === true ? (
+                        <Badge tone="info">reuses existing</Badge>
+                      ) : r.duplicateOf !== undefined ? (
+                        <Badge tone="attention" dot>
+                          possible duplicate
+                        </Badge>
+                      ) : null}
+                      {r.uncertainty !== undefined ? (
+                        <Badge tone="attention">{r.uncertainty}</Badge>
+                      ) : null}
+                    </div>
+                    {/* Approval means "write exactly this", so every field the
+                        executor will write is on screen under its own label. */}
+                    <PlannedFields record={r} />
+                  </div>
                 </li>
               ))}
             </ul>
@@ -376,9 +474,9 @@ function PlanView({
                     const executeJobId = await confirm({
                       eventSlug,
                       planJobId: jobId,
-                      // The route types the plan loosely (job.result is any);
-                      // the server re-validates against vPlannedRecord.
-                      records: included as never,
+                      // Typed by the shared contract; the server still
+                      // re-validates against vPlannedRecord.
+                      records: included,
                     })
                     pushToast('Import approved', `${included.length} records queued.`)
                     onConfirmed(executeJobId)

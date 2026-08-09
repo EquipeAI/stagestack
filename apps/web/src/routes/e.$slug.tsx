@@ -5,6 +5,7 @@ import { api } from '@convex/_generated/api'
 import type * as React from 'react'
 import { EmptyState, Logo } from '~/ds'
 import { PoweredBy, ProgramView } from '~/components/public/ProgramView'
+import { siteOrigin } from '~/lib/origin'
 
 // The public event page: /e/<slug>. Unauthenticated and SSR-first — it is the
 // shareable URL judges (and attendees) open, so the program is fetched in the
@@ -30,6 +31,11 @@ export const Route = createFileRoute('/e/$slug')({
         ? event.description.slice(0, 200)
         : `The program for ${event.name}.`
     const title = `${event.name} — StageStack`
+    // og:url has to be the origin this page was actually served from — a
+    // self-hosted install or a preview deployment must not advertise the
+    // production host. siteOrigin() is the one helper that knows: this `head`
+    // runs during SSR, where it reads the request's (forwarded) host.
+    const url = `${siteOrigin()}/e/${params.slug}`
     return {
       meta: [
         { title },
@@ -37,7 +43,7 @@ export const Route = createFileRoute('/e/$slug')({
         { property: 'og:type', content: 'website' },
         { property: 'og:title', content: event.name },
         { property: 'og:description', content: description },
-        { property: 'og:url', content: `https://stagestack.dev/e/${params.slug}` },
+        { property: 'og:url', content: url },
         ...(event.logoUrl !== undefined
           ? [{ property: 'og:image', content: event.logoUrl }]
           : []),

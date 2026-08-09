@@ -38,6 +38,10 @@ function parsePortalSearch(input: Record<string, unknown>): PortalSearch {
 export const Route = createFileRoute('/portal/$eventSlug')({
   component: PortalRoute,
   validateSearch: parsePortalSearch,
+  // Invitation and acceptance emails hand this URL out directly, so it lands in
+  // inboxes and shared channels the same way the invite link does — it must
+  // never end up in a search index. Same meta the embed and invite routes use.
+  head: () => ({ meta: [{ name: 'robots', content: 'noindex' }] }),
 })
 
 function PortalRoute() {

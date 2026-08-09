@@ -4,6 +4,7 @@ import { setupRouterSsrQueryIntegration } from '@tanstack/react-router-ssr-query
 import { ConvexQueryClient } from '@convex-dev/react-query'
 import { ConvexProvider } from 'convex/react'
 import { routeTree } from './routeTree.gen'
+import { RouteError, RouteNotFound } from '~/components/RouteBoundary'
 
 export function getRouter() {
   // Fail loud at boot — continuing with an undefined URL fails obscurely
@@ -35,10 +36,11 @@ export function getRouter() {
     },
     scrollRestoration: true,
     defaultPreloadStaleTime: 0, // Let React Query handle all caching
-    // Stack traces are dev-only; never render them to end users in prod.
-    defaultErrorComponent: (err) =>
-      import.meta.env.DEV ? <p>{err.error.stack}</p> : <p>Something went wrong</p>,
-    defaultNotFoundComponent: () => <p>not found</p>,
+    // Every route inherits these unless it declares its own. Public links
+    // (/e, /embed, /invite, the portal) rely on them, so they are styled —
+    // and stack traces stay dev-only, never rendered to end users in prod.
+    defaultErrorComponent: RouteError,
+    defaultNotFoundComponent: RouteNotFound,
     Wrap: ({ children }) => (
       <ConvexProvider client={convexQueryClient.convexClient}>
         {children}

@@ -4,6 +4,7 @@ import type { EventCaller } from "../lib/functions";
 import { requireOrganizer } from "../lib/functions";
 import { conflictsFor, toScheduledThings, type Conflict } from "./agenda";
 import { isOpen, isOverdue } from "./tasks";
+import { takeAll } from "./validation";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Readiness & the speaker-tracking dashboard (M4).
@@ -18,6 +19,10 @@ import { isOpen, isOverdue } from "./tasks";
 // reactive instead of quietly stale.
 // ─────────────────────────────────────────────────────────────────────────
 
+// Read ceilings. The dashboard is an ASSERTION about readiness, so each read
+// refuses (`takeAll` → `event_too_large`) rather than truncating: a dropped
+// task or participant row would report a session as Ready that nobody
+// verified, which is worse than an error the organizer can escalate (H5).
 const SESSION_SCAN = 1000;
 const PARTICIPANT_SCAN = 5000;
 const INSTANCE_SCAN = 8000;
@@ -199,26 +204,41 @@ export async function dashboard(
   const eventId = caller.event._id;
   const [sessions, participants, instances, contacts, agendaItems] =
     await Promise.all([
-      ctx.db
-        .query("sessions")
-        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-        .take(SESSION_SCAN),
-      ctx.db
-        .query("sessionParticipants")
-        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-        .take(PARTICIPANT_SCAN),
-      ctx.db
-        .query("taskInstances")
-        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-        .take(INSTANCE_SCAN),
-      ctx.db
-        .query("eventContacts")
-        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-        .take(CONTACT_SCAN),
-      ctx.db
-        .query("agendaItems")
-        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-        .take(ITEM_SCAN),
+      takeAll(
+        ctx.db
+          .query("sessions")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        SESSION_SCAN,
+        "sessions",
+      ),
+      takeAll(
+        ctx.db
+          .query("sessionParticipants")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        PARTICIPANT_SCAN,
+        "speaker participations",
+      ),
+      takeAll(
+        ctx.db
+          .query("taskInstances")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        INSTANCE_SCAN,
+        "tasks",
+      ),
+      takeAll(
+        ctx.db
+          .query("eventContacts")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        CONTACT_SCAN,
+        "speaker profiles",
+      ),
+      takeAll(
+        ctx.db
+          .query("agendaItems")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        ITEM_SCAN,
+        "agenda items",
+      ),
     ]);
   const contactById = new Map(contacts.map((c) => [c._id, c]));
 
@@ -235,8 +255,19 @@ export async function dashboard(
 
   const openByContact = new Map<Id<"eventContacts">, number>();
   const overdueByContact = new Map<Id<"eventContacts">, number>();
+  // Grouped ONCE, in the pass that is already walking every instance (M6).
+  // The per-session rows below used to run `instances.filter(...)` per session,
+  // which is sessions × instances comparisons — 8M at the read caps — on every
+  // reactive invalidation of a query the whole dashboard subscribes to.
+  const instancesBySession = new Map<
+    Id<"sessions">,
+    Array<Doc<"taskInstances">>
+  >();
   let overdueTotal = 0;
   for (const instance of instances) {
+    const forSession = instancesBySession.get(instance.sessionId) ?? [];
+    forSession.push(instance);
+    instancesBySession.set(instance.sessionId, forSession);
     if (isOverdue(instance, now)) overdueTotal += 1;
     const contactId = instance.eventContactId;
     if (contactId === undefined) continue;
@@ -308,7 +339,7 @@ export async function dashboard(
       title: session.title,
       readiness: sessionReadiness({
         participants: participantsBySession.get(session._id) ?? [],
-        instances: instances.filter((i) => i.sessionId === session._id),
+        instances: instancesBySession.get(session._id) ?? [],
         now,
         conflicts: conflicts.get(session._id) ?? [],
       }),

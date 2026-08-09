@@ -77,7 +77,7 @@ function Abstracts({
   eventSlug: string
   event: Doc<'events'>
 }) {
-  const rows = useQuery(api.cfp.listProposals, { eventSlug })
+  const list = useQuery(api.cfp.listProposals, { eventSlug })
   const form = useQuery(api.cfp.getForm, { eventSlug })
   const progress = useQuery(api.reviews.progress, { eventSlug })
   const search = Route.useSearch()
@@ -140,20 +140,43 @@ function Abstracts({
   )
   const def = form === undefined ? null : (form.published ?? form.working)
 
-  const all = useMemo(() => rows ?? [], [rows])
+  // Reaching PAST the read cap (H5): when the organizer has narrowed to ONE
+  // status, re-read the CFP on that status's own index. Each status is capped
+  // separately, so a 700-proposal event can still work a whole queue — and the
+  // callout below can honestly tell them narrowing helps. The unfiltered page
+  // stays subscribed so the chips keep counting the event, not the queue.
+  const queueStatus = state.statuses.length === 1 ? state.statuses[0] : undefined
+  const queue = useQuery(
+    api.cfp.listProposals,
+    queueStatus === undefined ? 'skip' : { eventSlug, status: queueStatus },
+  )
+
+  // The unfiltered page: what the status chips count, and what the table shows
+  // unless a single-status queue is loaded below.
+  const page = useMemo(() => list?.rows ?? [], [list])
+  const all = useMemo(() => (queue === undefined ? page : queue.rows), [page, queue])
+  // Two different truths, both worth telling (H5). `capped` is about the rows
+  // ON SCREEN — it is what makes the counter read "N+" instead of the flat
+  // "500 of 500" that hid 200 proposals. `pageCapped` is about the unfiltered
+  // read the status counts are computed from, which stays partial even when a
+  // narrowed queue is complete.
+  const capped = queue === undefined ? (list?.capped ?? false) : queue.capped
+  const pageCapped = list?.capped ?? false
   const index = useMemo(() => searchIndex(all, ids), [all, ids])
   const visible = useMemo(() => {
     const live = { ...state, q }
     return sortRows(filterRows(all, live, index), live, ids, progress)
   }, [all, state, q, index, ids, progress])
 
+  // Counted on the unfiltered page, so narrowing to one status never makes the
+  // other chips read zero.
   const counts = useMemo(() => {
-    const out: Record<string, number> = { all: all.length }
-    for (const row of all) {
+    const out: Record<string, number> = { all: page.length }
+    for (const row of page) {
       out[row.proposal.status] = (out[row.proposal.status] ?? 0) + 1
     }
     return out
-  }, [all])
+  }, [page])
 
   const selection = useMemo(
     () => all.filter((r) => selected.has(r.proposal._id)),
@@ -249,7 +272,7 @@ function Abstracts({
     })
   }
 
-  if (rows === undefined) {
+  if (list === undefined) {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading proposals…</p>
   }
 
@@ -328,7 +351,24 @@ function Abstracts({
         }
       />
 
-      {rows.length === 0 ? (
+      {capped ? (
+        <Callout tone="attention" title="This list is not the whole CFP">
+          This event has more proposals than one page loads, so only the{' '}
+          {all.length} newest are on screen — search, sorting and export cover
+          just those. Narrow to a single status above and StageStack reloads
+          that queue on its own, so you can work {queueStatus ?? 'each status'}{' '}
+          to the end; nothing here affects reviews or decisions.
+        </Callout>
+      ) : pageCapped ? (
+        <Callout tone="info" title="Status counts are partial">
+          This {queueStatus ?? 'status'} queue is complete, but the counts on
+          the chips above are taken from the newest {page.length} proposals
+          across every status — narrow to one status to see that queue in full,
+          as you are now.
+        </Callout>
+      ) : null}
+
+      {page.length === 0 ? (
         <Card>
           <EmptyState
             icon="inbox"
@@ -371,7 +411,10 @@ function Abstracts({
                 fontVariantNumeric: 'tabular-nums',
               }}
             >
+              {/* The "+" is the honest total when the page is capped: this
+                  span used to read "500 of 500" on a 700-proposal event. */}
               Showing {visible.length} of {all.length}
+              {capped ? '+' : ''}
             </span>
           </div>
 

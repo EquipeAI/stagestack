@@ -20,13 +20,25 @@ export const modules = import.meta.glob("./**/*.*s");
 const ISSUER = "https://test.clerk.example.com";
 
 /**
- * A convexTest instance with both mounted components registered under the same
- * names used in `convex/convex.config.ts` (`resend`, `rateLimiter`).
+ * A convexTest instance with every mounted component registered under the same
+ * names used in `convex/convex.config.ts` (`resend`, `rateLimiter`) — plus the
+ * rate limiter the resend component mounts inside itself.
  */
 export function setupTest() {
   const t = convexTest(schema, modules);
   resendComponent.register(t, "resend");
   rateLimiterComponent.register(t, "rateLimiter");
+  // The resend component mounts its OWN rate limiter (see the component's
+  // convex.config.ts), and convex-test resolves nested components by path. Not
+  // registering it means every drained email batch logs a "Component
+  // resend/rateLimiter is not registered" error instead of running.
+  //
+  // Do NOT also register `resend/emailWorkpool` to silence the last such line:
+  // the workpool is what actually SENDS a batch, so registering it turns a
+  // harmless log into real outbound fetches to api.resend.com (401s) and makes
+  // publish.test.ts's release path time out. The remaining stderr noise is the
+  // sound of the suite deliberately not talking to Resend.
+  rateLimiterComponent.register(t, "resend/rateLimiter");
   return t;
 }
 

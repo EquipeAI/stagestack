@@ -9,6 +9,10 @@ import { useLastLoaded, useNow } from '~/components/tasks/useNow'
 import { ROLE_LABEL } from '~/lib/roles'
 
 export const Route = createFileRoute('/invite/$token')({
+  // The token in this URL *is* the credential (single-use, TTL-bounded), so the
+  // page must never end up in a search index the way a shared link in a public
+  // channel otherwise would. Same meta the embed route uses.
+  head: () => ({ meta: [{ name: 'robots', content: 'noindex' }] }),
   component: InvitePage,
 })
 

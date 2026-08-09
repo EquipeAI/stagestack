@@ -124,7 +124,17 @@ export default defineSchema({
     archivedAt: v.optional(v.number()),
   })
     .index("by_orgId", ["orgId"])
-    .index("by_slug", ["slug"]),
+    .index("by_slug", ["slug"])
+    // The hourly reminder sweep (convex/reminders.ts) dispatches only events
+    // that opted into reminders. Indexing the cadence lets it SELECT those
+    // rows instead of scanning the head of the table and silently missing
+    // every event past the scan bound (H5). Only `undefined` means "off", so
+    // the sweep's range is `gte(reminderCadenceDays, 0)` — a present number.
+    // Trade-off taken deliberately: long-finished events with a cadence stay
+    // in the range (one row read each, then filtered by the grace window),
+    // whereas indexing `endsAt` instead would read every upcoming event
+    // including the majority that have reminders switched off.
+    .index("by_reminderCadenceDays", ["reminderCadenceDays"]),
 
   // ── Org contact directory (current profiles) ─────────────────────────
   // Portal claims live on eventContacts.userId; the directory row itself
@@ -212,6 +222,18 @@ export default defineSchema({
     // WORKER_MAX_ATTEMPTS (convex/worker.ts) the sweep fails the job instead
     // of requeueing it.
     attempts: v.optional(v.number()),
+    // Fencing token minted on each claim (worker.claim). finish/touch/
+    // importExecuteBatch require it, so a worker whose lease was swept and
+    // re-claimed by someone else can no longer mutate the row or execute
+    // batches against it — status alone can't tell the two claims apart.
+    // Optional: rows claimed before this field existed simply have no token
+    // and are refused (their lease expires and the sweep requeues them).
+    claimToken: v.optional(v.string()),
+    // Last lease renewal from the claiming worker (worker.touch). The sweep
+    // measures the lease from this when present, so a legitimately long job
+    // (an import plan is ~10 sequential LLM exchanges) is not requeued
+    // underneath the worker that is still working on it.
+    heartbeatAt: v.optional(v.number()),
     // Committed import-execute batches with their recorded results: replaying
     // a batch whose response was lost returns the record instead of writing
     // duplicates (worker.ts importExecuteBatch).
@@ -601,5 +623,20 @@ export default defineSchema({
   })
     .index("by_eventId", ["eventId"])
     .index("by_contactId", ["contactId"])
-    .index("by_resendEmailId", ["resendEmailId"]),
+    .index("by_resendEmailId", ["resendEmailId"])
+    // Per-contact comms log (M4): `toEmail` is stored NORMALIZED (trimmed +
+    // lowercased) by every write path, so an indexed equality on the address
+    // replaces the event-wide scan + unindexed `.filter()` this used to need.
+    // Storing the normalization rather than adding a second `toEmailLower`
+    // column means existing rows keep working: they were already written from
+    // cleanEmail()/normalizeEmail() output, so they are already lowercase —
+    // no field is `undefined` on old docs and no migration is required for
+    // correctness (model/comms.ts also reads the as-typed variant for any
+    // stray mixed-case legacy row).
+    .index("by_eventId_and_toEmail", ["eventId", "toEmail"])
+    // Calendar trail lookups (M5): releasing slots must find each
+    // participant's most recent schedule.* message. Indexing (eventId, kind)
+    // lets one read per kind cover the whole release wave, instead of
+    // re-scanning every message on the event once per session.
+    .index("by_eventId_and_kind", ["eventId", "kind"]),
 });

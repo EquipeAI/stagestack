@@ -3,6 +3,13 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { DEFAULT_TEMPLATES } from "./model/templates";
 import {
+  mailFrom,
+  mailFromAddress,
+  resend,
+  resendTestMode,
+} from "./emails";
+import { isBulkKind } from "./model/comms";
+import {
   createEvent,
   createOrg,
   expectRejectedWith,
@@ -551,6 +558,56 @@ describe("comms.sendOneOff", () => {
     );
   });
 
+  test("an audience whose task read hits its cap refuses, so `truncated` can be trusted (H5)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+
+    // The overdue-task audience reads the event's requirements (cap 200). At
+    // the cap it still answers; one row past it the audience could only be
+    // understated — and an understated audience reports `truncated: false`,
+    // which is exactly what sendOneOff trusts before it fans out.
+    const eventId = await eventIdOf(t, eventSlug);
+    const addRequirements = async (count: number) => {
+      await t.run(async (ctx) => {
+        for (let i = 0; i < count; i += 1) {
+          await ctx.db.insert("requirements", {
+            eventId,
+            title: `Extra ${i}`,
+            scope: "participant",
+            evidence: "manual",
+            reviewRequired: false,
+            dueAt: PAST_DUE,
+            active: true,
+          });
+        }
+      });
+    };
+    await addRequirements(200);
+    expect(
+      (await alice.query(api.comms.listAudiences, { eventSlug, now: NOW })).find(
+        (c) => c.kind === "overdueTasks",
+      ),
+    ).toMatchObject({ truncated: false });
+
+    await addRequirements(1);
+    await expectRejectedWith(
+      alice.query(api.comms.listAudiences, { eventSlug, now: NOW }),
+      "event_too_large",
+    );
+    await expectRejectedWith(
+      alice.mutation(api.comms.sendOneOff, {
+        eventSlug,
+        to: { kind: "audience", audience: "overdueTasks" },
+        subject: "x",
+        html: "<p>x</p>",
+        now: NOW,
+      }),
+      "event_too_large",
+    );
+  });
+
   test("reviewers cannot send", async () => {
     const t = setupTest();
     const { eventSlug } = await organizerEvent(t);
@@ -645,6 +702,75 @@ describe("comms.contactLog", () => {
       eventContactId,
     });
     expect(log.map((m) => m.kind)).toEqual(["invitation.direct"]);
+  });
+
+  test("the address half is indexed and case-insensitive, including pre-normalization rows (M4)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const eventId = await eventIdOf(t, eventSlug);
+    // A snapshot whose address kept the casing it arrived with (the import
+    // path does not normalize what it stores).
+    const eventContactId = await t.run(async (ctx) => {
+      const orgId = (await ctx.db.get("events", eventId))!.orgId;
+      const contactId = await ctx.db.insert("eventContacts", {
+        eventId,
+        orgId,
+        firstName: "Dana",
+        lastName: "Keynote",
+        email: "Dana@Example.com",
+      });
+      // What the write path stores today: the normalized address, which is
+      // what the (eventId, toEmail) index is queried with.
+      await ctx.db.insert("messages", {
+        orgId,
+        eventId,
+        toEmail: "dana@example.com",
+        kind: "normalized.send",
+        subject: "Recent",
+        deliveryStatus: "delivered",
+      });
+      // A row written BEFORE normalization was enforced, carrying the address
+      // exactly as typed: still visible, which is how the backfill gap is
+      // handled without a migration.
+      await ctx.db.insert("messages", {
+        orgId,
+        eventId,
+        toEmail: "Dana@Example.com",
+        kind: "legacy.mixedCase",
+        subject: "Sent last year",
+        deliveryStatus: "delivered",
+      });
+      // Noise the index must exclude: same event, someone else's address.
+      await ctx.db.insert("messages", {
+        orgId,
+        eventId,
+        toEmail: "other@example.com",
+        kind: "someone.else",
+        subject: "Not Dana's",
+        deliveryStatus: "delivered",
+      });
+      return contactId;
+    });
+
+    // A real send through the one write path lands on the normalized address,
+    // so it is found by the same indexed read.
+    await alice.mutation(api.sessions.invitePortal, {
+      eventSlug,
+      eventContactId,
+    });
+
+    const log = await alice.query(api.comms.contactLog, {
+      eventSlug,
+      eventContactId,
+    });
+    expect(log.map((m) => m.kind).sort()).toEqual([
+      "legacy.mixedCase",
+      "normalized.send",
+      "portal.invite",
+    ]);
+    expect(log.find((m) => m.kind === "portal.invite")?.toEmail).toBe(
+      "dana@example.com",
+    );
   });
 });
 
@@ -1132,6 +1258,58 @@ describe("reminders.sweep", () => {
     }
   });
 
+  test("an event past the old 500-event scan window still gets its reminders (H5)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    await manualRequirement(alice, eventSlug, "Upload your slides");
+    await setCadence(alice, eventSlug, 1);
+    await clearMessages(t);
+    await elapseReminders(t);
+
+    // 600 other events, ALL created before this assertion and none of them
+    // wanting reminders. The old dispatcher read `events.take(500)` in
+    // creation order, so anything past the 500th row was never dispatched —
+    // invisibly. The cadence index means the filler rows are not even read.
+    const orgId = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      for (let i = 0; i < 600; i += 1) {
+        await ctx.db.insert("events", {
+          orgId: event.orgId,
+          name: `Filler ${i}`,
+          slug: `filler-${i}`,
+          startsAt: event.startsAt,
+          endsAt: event.endsAt,
+          timezone: event.timezone,
+          cfpPublished: false,
+        });
+      }
+      return event.orgId;
+    });
+
+    expect(await runSweep(t, NOW)).toMatchObject({ events: 1 });
+    expect(
+      (await messagesOfKind(t, "reminder.tasks")).map((m) => m.toEmail),
+    ).toEqual(["bob@example.com"]);
+
+    // And one of those far-past-500 events opting in is dispatched too.
+    await t.run(async (ctx) => {
+      const filler = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", "filler-599"))
+        .unique();
+      if (filler === null) throw new Error("no filler event");
+      expect(filler.orgId).toBe(orgId);
+      await ctx.db.patch("events", filler._id, { reminderCadenceDays: 1 });
+    });
+    expect(await runSweep(t, NOW)).toMatchObject({ events: 2 });
+  });
+
   test("the sweep stops chasing after the post-event grace window", async () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
@@ -1216,6 +1394,221 @@ describe("reminders.sweep", () => {
       participationEmails: 1,
       deferredRecipients: 0,
     });
+  });
+});
+
+// ── Mail identity & bulk-mail opt-out (M14/M15) ──────────────────────────
+//
+// Two self-host properties that only exist if they are pinned:
+//   • WHO the mail claims to be from, and whether real sends are allowed, come
+//     from deployment env vars — not from constants baked into the code.
+//   • Bulk/nudge mail (organizer broadcasts, reminder digests) carries
+//     `List-Unsubscribe`; transactional lifecycle mail does not, because an
+//     opt-out on an invitation offers to break a flow the recipient needs.
+
+/** The subset of the Resend client's send options these tests assert on. */
+type SentOptions = {
+  from: string;
+  to: string | string[];
+  subject: string;
+  headers?: Array<{ name: string; value: string }>;
+};
+
+/** Spy that still performs the real send, so the comms log is written exactly
+ * as in production and only the transport arguments are observed. */
+function captureSends() {
+  const spy = vi.spyOn(resend, "sendEmail");
+  const sent: SentOptions[] = [];
+  return {
+    /** Snapshots the calls before restoring — `mockRestore()` also clears them. */
+    restore: () => {
+      sent.push(
+        ...spy.mock.calls.map((call) => call[1] as unknown as SentOptions),
+      );
+      spy.mockRestore();
+    },
+    options: (): SentOptions[] => sent,
+  };
+}
+
+function headerValue(
+  options: SentOptions | undefined,
+  name: string,
+): string | undefined {
+  return options?.headers?.find((h) => h.name === name)?.value;
+}
+
+/** Run `body` with one env var set (or removed), then put it back. */
+async function withEnv(
+  name: string,
+  value: string | undefined,
+  body: () => Promise<void>,
+): Promise<void> {
+  const previous = process.env[name];
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+  try {
+    await body();
+  } finally {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  }
+}
+
+describe("mail identity (M14)", () => {
+  test("MAIL_FROM drives every envelope From, with a default", () => {
+    expect(mailFrom()).toBe("StageStack <hello@stagestack.dev>");
+    expect(mailFromAddress()).toBe("hello@stagestack.dev");
+  });
+
+  test("RESEND_TEST_MODE only turns OFF on an explicit false-y value", async () => {
+    for (const value of ["false", "FALSE", " off ", "0", "no"]) {
+      await withEnv("RESEND_TEST_MODE", value, async () =>
+        expect(resendTestMode()).toBe(false),
+      );
+    }
+    // Unset, blank, or a typo ⇒ test mode STAYS ON: guessing wrong here would
+    // mail real speakers from a domain the deployment may not own.
+    for (const value of [undefined, "", "true", "flase", "yes"]) {
+      await withEnv("RESEND_TEST_MODE", value, async () =>
+        expect(resendTestMode()).toBe(true),
+      );
+    }
+  });
+
+  test("a fresh clone's default REFUSES to mail a real speaker", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    // The suite pins RESEND_TEST_MODE=false (test.helpers.ts); dropping it
+    // reproduces an unconfigured deployment. The flag is read per send, so no
+    // module reload is needed for it to take effect.
+    await withEnv("RESEND_TEST_MODE", undefined, async () => {
+      await expect(
+        inviteSpeaker(
+          alice,
+          eventSlug,
+          { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+          "Opening keynote",
+        ),
+      ).rejects.toThrow(/Test mode is enabled/);
+    });
+  });
+
+  test("MAIL_FROM is the From on a real send", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const sends = captureSends();
+    try {
+      await withEnv("MAIL_FROM", "Selfhost Events <events@example.org>", () =>
+        inviteSpeaker(
+          alice,
+          eventSlug,
+          { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+          "Opening keynote",
+        ).then(() => undefined),
+      );
+    } finally {
+      sends.restore();
+    }
+    expect(sends.options()[0].from).toBe(
+      "Selfhost Events <events@example.org>",
+    );
+  });
+});
+
+describe("bulk-mail unsubscribe (M15)", () => {
+  test("classifies broadcasts and reminder digests as bulk, lifecycle mail as not", () => {
+    expect(isBulkKind("manual.oneoff")).toBe(true);
+    expect(isBulkKind("reminder.tasks")).toBe(true);
+    expect(isBulkKind("reminder.participation")).toBe(true);
+    expect(isBulkKind("invitation.direct")).toBe(false);
+    expect(isBulkKind("cfp.confirmation")).toBe(false);
+    expect(isBulkKind("schedule.released")).toBe(false);
+  });
+
+  test("a one-off broadcast carries mailto: List-Unsubscribe and no one-click POST", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { eventContactId } = await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+      "Opening keynote",
+    );
+    await clearMessages(t);
+
+    const sends = captureSends();
+    try {
+      await alice.mutation(api.comms.sendOneOff, {
+        eventSlug,
+        to: { kind: "contact", eventContactId },
+        subject: "One more thing",
+        html: "<p>Hi {{speaker.firstName}}.</p>",
+        now: NOW,
+      });
+    } finally {
+      sends.restore();
+    }
+    const [options] = sends.options();
+    // No event reply-to configured, so the request lands in the deployment's
+    // own monitored mailbox.
+    expect(headerValue(options, "List-Unsubscribe")).toBe(
+      "<mailto:hello@stagestack.dev?subject=Unsubscribe>",
+    );
+    // RFC 8058 one-click promises an HTTPS POST target; we have none, so the
+    // header must not appear.
+    expect(headerValue(options, "List-Unsubscribe-Post")).toBeUndefined();
+    // The send itself is unaffected: the comms log still records it.
+    expect(await messagesOfKind(t, "manual.oneoff")).toHaveLength(1);
+  });
+
+  test("a reminder digest points the opt-out at the event's reply-to", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    await alice.mutation(api.events.updateSettings, {
+      eventSlug,
+      patch: { replyTo: "speakers@acme.example" },
+    });
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    await manualRequirement(alice, eventSlug, "Sign the speaker release");
+    await setCadence(alice, eventSlug, 3);
+    await clearMessages(t);
+    await elapseReminders(t);
+
+    const sends = captureSends();
+    try {
+      await sweepEventNow(t, eventSlug, NOW);
+    } finally {
+      sends.restore();
+    }
+    expect(await messagesOfKind(t, "reminder.tasks")).toHaveLength(1);
+    expect(headerValue(sends.options()[0], "List-Unsubscribe")).toBe(
+      "<mailto:speakers@acme.example?subject=Unsubscribe>",
+    );
+  });
+
+  test("transactional lifecycle mail carries NO opt-out", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const sends = captureSends();
+    try {
+      // A direct invitation: the recipient needs this link to take the slot,
+      // so offering to unsubscribe from it would break the flow.
+      await inviteSpeaker(
+        alice,
+        eventSlug,
+        { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+        "Opening keynote",
+      );
+    } finally {
+      sends.restore();
+    }
+    const options = sends.options();
+    expect(options.length).toBeGreaterThan(0);
+    for (const sent of options) {
+      expect(headerValue(sent, "List-Unsubscribe")).toBeUndefined();
+    }
   });
 });
 

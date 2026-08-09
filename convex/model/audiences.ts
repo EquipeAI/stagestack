@@ -3,6 +3,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { requireOrganizer } from "../lib/functions";
 import { isOpen, isOverdue } from "./tasks";
+import { takeAll } from "./validation";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Operational audiences (M5). Derived ONLY from event relationships and state —
@@ -146,24 +147,43 @@ export type EventState = {
   managers: ManagerLookup;
 };
 
-/** One read of the participant graph, shared by every speaker-derived kind. */
+/**
+ * One read of the participant graph, shared by every speaker-derived kind.
+ *
+ * REFUSES (`event_too_large`) rather than truncating (H5). `finalize` already
+ * reports an honest `truncated` for the RECIPIENT cap, and `sendOneOff`
+ * refuses to send on it — but that guarantee is only as good as the read
+ * underneath it: a silently capped participant read would understate
+ * `totalKnown`, so `truncated` would come back false and the send would
+ * quietly reach part of the audience. Same posture as the agenda/readiness
+ * loaders, and the reason the recipient cap can stay a reported flag.
+ */
 export async function loadEventState(
   ctx: QueryCtx,
   event: Doc<"events">,
 ): Promise<EventState> {
   const [participants, contacts, sessions] = await Promise.all([
-    ctx.db
-      .query("sessionParticipants")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(PARTICIPANT_SCAN),
-    ctx.db
-      .query("eventContacts")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(CONTACT_SCAN),
-    ctx.db
-      .query("sessions")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(SESSION_SCAN),
+    takeAll(
+      ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      PARTICIPANT_SCAN,
+      "speaker participations",
+    ),
+    takeAll(
+      ctx.db
+        .query("eventContacts")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      CONTACT_SCAN,
+      "speaker profiles",
+    ),
+    takeAll(
+      ctx.db
+        .query("sessions")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      SESSION_SCAN,
+      "sessions",
+    ),
   ]);
   const managerIds = [
     ...new Set(
@@ -226,15 +246,25 @@ async function overdueTaskAudience(
   state: EventState,
   now: number,
 ): Promise<AudienceResult> {
+  // Refuse rather than truncate: `truncated` is what stops sendOneOff from
+  // half-sending, and it is computed from the deduped recipients — a dropped
+  // task row would remove a genuinely overdue speaker from the audience while
+  // still reporting the total as exact.
   const [requirements, instances] = await Promise.all([
-    ctx.db
-      .query("requirements")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(REQUIREMENT_SCAN),
-    ctx.db
-      .query("taskInstances")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(INSTANCE_SCAN),
+    takeAll(
+      ctx.db
+        .query("requirements")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      REQUIREMENT_SCAN,
+      "requirements",
+    ),
+    takeAll(
+      ctx.db
+        .query("taskInstances")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      INSTANCE_SCAN,
+      "tasks",
+    ),
   ]);
   const requirementById = new Map(requirements.map((r) => [r._id, r]));
   const participantById = new Map(state.participants.map((p) => [p._id, p]));
@@ -277,12 +307,15 @@ async function reviewerAudience(
   ctx: QueryCtx,
   event: Doc<"events">,
 ): Promise<AudienceResult> {
-  const reviews = await ctx.db
-    .query("reviews")
-    .withIndex("by_eventId_and_reviewerUserId", (q) =>
-      q.eq("eventId", event._id),
-    )
-    .take(REVIEW_SCAN);
+  const reviews = await takeAll(
+    ctx.db
+      .query("reviews")
+      .withIndex("by_eventId_and_reviewerUserId", (q) =>
+        q.eq("eventId", event._id),
+      ),
+    REVIEW_SCAN,
+    "reviews",
+  );
   const reviewerIds = [...new Set(reviews.map((r) => r.reviewerUserId))];
   const users = await Promise.all(
     reviewerIds.map((id) => ctx.db.get("users", id)),

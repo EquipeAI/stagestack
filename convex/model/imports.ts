@@ -65,6 +65,11 @@ export async function resolveJobCaller(
   return { user, org, event, role: "organizer", orgRole: null };
 }
 
+/** Validate a planner result before it becomes an organizer-visible plan.
+ * Called from `worker.finish` for `import-plan` jobs: the plan is produced by
+ * an LLM on the worker VM, and nothing else on that path is server-validated
+ * until `imports.confirm` revalidates the records the organizer picked. A
+ * malformed plan fails the job instead of surfacing as a broken review UI. */
 export function assertPlanShape(plan: unknown): asserts plan is ImportPlan {
   const p = plan as ImportPlan;
   if (

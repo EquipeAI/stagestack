@@ -59,18 +59,28 @@ npm run dev
 `npm run dev` starts a Convex dev deployment and the web app on
 `http://localhost:3000`.
 
-Configuration lives in three places (full reference in
-[ARCHITECTURE.md](docs/ARCHITECTURE.md)):
+Configuration lives in three places. [`.env.example`](.env.example) lists every
+variable the code reads, with what breaks without it; the reference is in
+[ARCHITECTURE.md](docs/ARCHITECTURE.md):
 
 - **Root `.env.local`** (mirrored to `apps/web/.env.local` for Vite):
   `VITE_CONVEX_URL`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`.
 - **Convex deployment** (`npx convex env set`): `CLERK_JWT_ISSUER_DOMAIN`,
-  `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `SITE_URL`, `WORKER_SECRET`.
+  `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `RESEND_TEST_MODE`, `MAIL_FROM`,
+  `SITE_URL`, `WORKER_SECRET`.
 - **Worker** (`apps/worker`, only for the import agent): `CONVEX_URL`,
   `WORKER_SECRET`, `OPENROUTER_API_KEY`.
 
-Two setup notes: Clerk needs a JWT template named `convex`, and the Resend
-component starts in `testMode` — flip it deliberately when you want real email.
+Three setup notes:
+
+- Clerk needs a JWT template named `convex`.
+- Email starts in Resend's **test mode**, which accepts only Resend's own test
+  addresses and refuses everyone else. When your sending domain is verified, set
+  `RESEND_TEST_MODE=false` *and* `MAIL_FROM="Your Event <hello@yourdomain>"` on
+  the deployment — mail from a domain you have not verified fails, whatever the
+  mode.
+- Set `SITE_URL` to your own origin, or every link inside an email points at
+  `https://stagestack.dev`.
 
 Tests: `npm test` (Vitest against the Convex functions via `convex-test`).
 

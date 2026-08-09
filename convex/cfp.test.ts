@@ -341,6 +341,26 @@ describe("cfp.startProposal", () => {
     const carol = await signIn(t, "carol");
     await carol.mutation(api.cfp.startProposal, { eventSlug });
   });
+
+  test("rate limits proposal creation per user when maxSubmissionsPerUser is unset", async () => {
+    const t = setupTest();
+    const { bob, eventSlug } = await openEventWithSubmitter(t);
+    // Default settings: no organizer-configured cap, so the rate limiter is
+    // the only floor. 10 drafts/hour are allowed; the 11th is refused (the
+    // bucket's period never elapses mid-test, so no clock control is needed).
+    for (let i = 0; i < 10; i++) {
+      await bob.mutation(api.cfp.startProposal, { eventSlug });
+    }
+    await expectRejectedWith(
+      bob.mutation(api.cfp.startProposal, { eventSlug }),
+      "rate_limited",
+    );
+    expect(await bob.query(api.cfp.myProposals, {})).toHaveLength(10);
+
+    // Keyed per user: another submitter is unaffected.
+    const carol = await signIn(t, "carol");
+    await carol.mutation(api.cfp.startProposal, { eventSlug });
+  });
 });
 
 describe("cfp.saveAnswers", () => {
@@ -736,16 +756,23 @@ describe("cfp.listProposals", () => {
     const { alice, bob, eventSlug, proposalId } = await readyProposal(t);
     await bob.mutation(api.cfp.submitProposal, { proposalId });
 
-    const rows = await alice.query(api.cfp.listProposals, { eventSlug });
-    expect(rows).toHaveLength(1);
-    expect(rows[0].proposal.title).toBe("Convex in anger");
-    expect(rows[0].speakerCount).toBe(1);
+    const listed = await alice.query(api.cfp.listProposals, { eventSlug });
+    expect(listed.rows).toHaveLength(1);
+    expect(listed.capped).toBe(false);
+    expect(listed.rows[0].proposal.title).toBe("Convex in anger");
+    expect(listed.rows[0].speakerCount).toBe(1);
 
     expect(
-      await alice.query(api.cfp.listProposals, { eventSlug, status: "draft" }),
+      (await alice.query(api.cfp.listProposals, { eventSlug, status: "draft" }))
+        .rows,
     ).toEqual([]);
     expect(
-      await alice.query(api.cfp.listProposals, { eventSlug, status: "pending" }),
+      (
+        await alice.query(api.cfp.listProposals, {
+          eventSlug,
+          status: "pending",
+        })
+      ).rows,
     ).toHaveLength(1);
 
     const rita = await signIn(t, "rita");
@@ -782,8 +809,58 @@ describe("cfp.listProposals", () => {
       to: "acceptQueue",
     });
 
-    const rows = await alice.query(api.cfp.listProposals, { eventSlug });
+    const { rows } = await alice.query(api.cfp.listProposals, { eventSlug });
     expect(rows.map((r) => r.proposal._id)).toEqual([second, proposalId]);
+  });
+
+  test("a list past the read cap reports capped instead of pretending it is whole (H5)", async () => {
+    const t = setupTest();
+    const { alice, bob, eventSlug, proposalId } = await readyProposal(t);
+    await bob.mutation(api.cfp.submitProposal, { proposalId });
+
+    // Exactly at the cap: still the whole story, so `capped` must stay false —
+    // the cap+1 probe exists precisely so a full page isn't cried wolf over.
+    const [eventId, submitterUserId] = await t.run(async (ctx) => {
+      const proposal = (await ctx.db.get("proposals", proposalId))!;
+      return [proposal.eventId, proposal.submitterUserId] as const;
+    });
+    const bulkInsert = async (count: number) => {
+      await t.run(async (ctx) => {
+        for (let i = 0; i < count; i += 1) {
+          await ctx.db.insert("proposals", {
+            eventId,
+            submitterUserId,
+            status: "pending",
+            title: `Bulk ${i}`,
+            answers: {},
+            formVersion: 1,
+            submittedAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+        }
+      });
+    };
+    await bulkInsert(499);
+    const full = await alice.query(api.cfp.listProposals, { eventSlug });
+    expect(full.rows).toHaveLength(500);
+    expect(full.capped).toBe(false);
+
+    // One more proposal than a page holds: the count the UI renders must admit
+    // it is partial rather than reading "500 of 500".
+    await bulkInsert(1);
+    const over = await alice.query(api.cfp.listProposals, { eventSlug });
+    expect(over.rows).toHaveLength(500);
+    expect(over.capped).toBe(true);
+    // A status-filtered read is capped independently, on its own index.
+    const pending = await alice.query(api.cfp.listProposals, {
+      eventSlug,
+      status: "pending",
+    });
+    expect(pending.capped).toBe(true);
+    expect(
+      (await alice.query(api.cfp.listProposals, { eventSlug, status: "draft" }))
+        .capped,
+    ).toBe(false);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSheet, toCsv, xlsxBytes } from './exporters'
+import { buildSheet, sheetSafe, toCsv, xlsxBytes } from './exporters'
 import type { FormDef } from '@convex/shared/formDef'
 import type { Doc } from '@convex/_generated/dataModel'
 import type { ExportInput } from './exporters'
@@ -108,6 +108,66 @@ describe('toCsv', () => {
     expect(toCsv([['a,b', 'say "hi"', 'one\ntwo', 'plain']])).toBe(
       '"a,b","say ""hi""","one\ntwo",plain',
     )
+  })
+})
+
+// A CFP answer is written by an anonymous submitter, and the export is opened
+// in Excel/Sheets by an organizer — a cell starting with =, +, - or @ is code
+// there, so it must arrive as text on BOTH export paths.
+describe('formula injection', () => {
+  const attack = () =>
+    proposal({
+      answers: {
+        talkTitle: 'Signals at Scale',
+        firstName: '=HYPERLINK("http://evil","click")',
+        lastName: '@SUM(A1:A9)',
+        email: '+1 555 0100',
+        topics: ['-2+3'],
+      },
+    })
+
+  it('prefixes formula-looking cells and leaves ordinary ones alone', () => {
+    const sheet = buildSheet(input([{ proposal: attack(), speakerCount: 1 }]))
+    expect(sheet[1].slice(3)).toEqual([
+      'Signals at Scale',
+      "'=HYPERLINK(\"http://evil\",\"click\")",
+      "'@SUM(A1:A9)",
+      "'+1 555 0100",
+      "'-2+3",
+    ])
+  })
+
+  it('leaves plain numbers unquoted so they stay numbers', () => {
+    expect(sheetSafe('-4')).toBe('-4')
+    expect(sheetSafe('+1.5')).toBe('+1.5')
+    expect(sheetSafe('1e3')).toBe('1e3')
+    expect(sheetSafe('Ada Lovelace')).toBe('Ada Lovelace')
+    expect(sheetSafe('=1+1')).toBe("'=1+1")
+    // Excel skips leading whitespace before deciding a cell is a formula.
+    expect(sheetSafe('\t=1+1')).toBe("'\t=1+1")
+  })
+
+  it('neutralizes the same cells in the CSV text', () => {
+    const csv = toCsv(buildSheet(input([{ proposal: attack(), speakerCount: 1 }])))
+    expect(csv).not.toContain(',=HYPERLINK')
+    expect(csv).toContain('"\'=HYPERLINK(""http://evil"",""click"")"')
+  })
+
+  it('neutralizes the same cells in the workbook', async () => {
+    const rows = buildSheet(input([{ proposal: attack(), speakerCount: 1 }]))
+    const bytes = await xlsxBytes(rows)
+    const XLSX = await import('xlsx')
+    const book = XLSX.read(new Uint8Array(bytes), { type: 'array' })
+    const cells = XLSX.utils.sheet_to_json<Array<string>>(
+      book.Sheets.Proposals,
+      { header: 1, raw: false },
+    )
+    // No cell in the workbook may be a live formula, and the payload must be
+    // present as inert text.
+    for (const cell of Object.values(book.Sheets.Proposals)) {
+      expect((cell as { f?: string }).f).toBeUndefined()
+    }
+    expect(cells[1]).toContain("'=HYPERLINK(\"http://evil\",\"click\")")
   })
 })
 

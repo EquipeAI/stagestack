@@ -326,7 +326,13 @@ export async function runImportPlan(
   }
 
   await ensureFlue();
-  const agentKey = `import-${jobId}`;
+  // Per-RUN key, not per-job: two runs of the same job (a retry after the
+  // lease sweep, or a stale worker that hasn't noticed it lost the lease)
+  // would otherwise share one capture entry and clobber each other's records.
+  // Deliberately a locally-generated nonce rather than the job's claim token —
+  // this string is fed to the model and echoed back in every tool call, so it
+  // must not carry anything that authorizes writes.
+  const agentKey = `import-${jobId}-${crypto.randomUUID().slice(0, 8)}`;
   const capture: PlanCapture = { records: [], skipped: [], summary: null };
   captures.set(agentKey, capture);
   try {

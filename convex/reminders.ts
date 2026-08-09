@@ -6,6 +6,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { escapeHtml, sendLoggedEmail, siteUrl } from "./model/comms";
 import { renderTemplate } from "./model/templates";
 import { routeParticipant, type AudienceRecipient } from "./model/audiences";
+import { takeAll } from "./model/validation";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Scheduled reminders (M5). Hourly cron, driven by crons.ts.
@@ -42,10 +43,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * gets archived must not be chased forever. */
 export const POST_EVENT_GRACE_DAYS = 7;
 
-// v1 bounds. An hourly full scan of `events` is fine at this size and keeps the
-// dispatcher a single cheap transaction; the moment this deployment has more
-// than a few hundred events it wants an index on "has a cadence" instead.
-const EVENT_SCAN = 500;
+// Per-event read ceilings. Every one is enforced with `takeAll` (H5): a
+// truncated read here does not look like an error, it looks like a speaker who
+// stopped being chased — and nothing would ever notice, because the sweep is
+// idempotent and would simply never reach the dropped rows again. Refusing
+// aborts one event's sweep loudly (each event runs in its own mutation, see
+// below) instead of silently under-reminding forever.
 const REQUIREMENT_SCAN = 200;
 const INSTANCE_SCAN = 4000;
 const PARTICIPANT_SCAN = 5000;
@@ -127,18 +130,27 @@ async function loadGraph(
   event: Doc<"events">,
 ): Promise<EventGraph> {
   const [participants, contacts, sessions] = await Promise.all([
-    ctx.db
-      .query("sessionParticipants")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(PARTICIPANT_SCAN),
-    ctx.db
-      .query("eventContacts")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(CONTACT_SCAN),
-    ctx.db
-      .query("sessions")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(SESSION_SCAN),
+    takeAll(
+      ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      PARTICIPANT_SCAN,
+      "speaker participations",
+    ),
+    takeAll(
+      ctx.db
+        .query("eventContacts")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      CONTACT_SCAN,
+      "speaker profiles",
+    ),
+    takeAll(
+      ctx.db
+        .query("sessions")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      SESSION_SCAN,
+      "sessions",
+    ),
   ]);
   const managerIds = [
     ...new Set(
@@ -242,14 +254,20 @@ async function runEventSweep(
   }
 
   const [requirements, instances] = await Promise.all([
-    ctx.db
-      .query("requirements")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(REQUIREMENT_SCAN),
-    ctx.db
-      .query("taskInstances")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(INSTANCE_SCAN),
+    takeAll(
+      ctx.db
+        .query("requirements")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      REQUIREMENT_SCAN,
+      "requirements",
+    ),
+    takeAll(
+      ctx.db
+        .query("taskInstances")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      INSTANCE_SCAN,
+      "tasks",
+    ),
   ]);
   const requirementById = new Map(requirements.map((r) => [r._id, r]));
 
@@ -428,12 +446,25 @@ export const sweep = internalMutation({
   }),
   handler: async (ctx, args) => {
     const now = args.now ?? Date.now();
-    // v1: full bounded scan; only eligible events are dispatched at all. Each
-    // event sweeps in its OWN scheduled mutation, so a failure in one event's
-    // sweep (oversized graph, template render throw) cannot starve the rest.
-    const events = await ctx.db.query("events").take(EVENT_SCAN);
+    // SELECTS the events it needs instead of scanning the head of the table
+    // (H5). The old `take(500)` over an unindexed `events` scan meant the
+    // 501st event never got a reminder — invisibly, because a cron that
+    // dispatches 500 of 700 events looks exactly like a healthy one.
+    //
+    // `by_reminderCadenceDays` + `gte(0)` is "the field is present", i.e.
+    // exactly the events that opted into reminders (cadence is validated 1-90
+    // and absent means off, so no real row is excluded by the bound). There is
+    // deliberately NO cap left here: the range only contains opted-in events,
+    // each costs one read, and the work per event happens in its own
+    // scheduled mutation — so a failure in one event's sweep (oversized graph,
+    // template render throw, an `event_too_large` refusal) cannot starve the
+    // rest, and there is no truncation point for an event to fall off.
     let dispatched = 0;
-    for (const event of events) {
+    for await (const event of ctx.db
+      .query("events")
+      .withIndex("by_reminderCadenceDays", (q) =>
+        q.gte("reminderCadenceDays", 0),
+      )) {
       if (!sweepEligible(event, now)) continue;
       await ctx.scheduler.runAfter(0, internal.reminders.sweepEvent, {
         eventId: event._id,

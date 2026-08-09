@@ -780,9 +780,12 @@ export async function confirmParticipation(
     to: args.to,
   });
   // A decline revokes the speaker's public presence, so the served blob must
-  // follow immediately — the privacy exception to explicit-publish.
+  // follow — the privacy exception to explicit-publish. Scheduled, not inline:
+  // the rebuild reads the whole event graph and a speaker's click must not pay
+  // for it. It is queued unconditionally inside this transaction, so it runs as
+  // soon as the decline commits and cannot be skipped.
   if (args.to === "declined" && participant.state !== "declined") {
-    await Publish.republishIfPublished(ctx, event._id);
+    await Publish.requestRebuild(ctx, event._id);
   }
 }
 
@@ -855,7 +858,10 @@ export async function withdrawParticipation(
   });
   // The organizer email below promises "their name and profile are suppressed
   // from public output" — make it true now, not at the next explicit publish.
-  await Publish.republishIfPublished(ctx, event._id);
+  // Queued (not inline) so this portal click stays a handful of writes; the job
+  // runs the moment the withdrawal commits, and a rebuild recomputes from
+  // scratch, so the suppression cannot be lost.
+  await Publish.requestRebuild(ctx, event._id);
 
   const session = await ctx.db.get("sessions", participant.sessionId);
   const contact = await ctx.db.get(
@@ -1315,8 +1321,9 @@ export async function organizerSetParticipationState(
     to,
   });
   // Same privacy exception as the portal decline: a declined speaker's name
-  // must leave the served blob immediately, whoever recorded the decision.
+  // must leave the served blob, whoever recorded the decision — on the same
+  // scheduled path, so the organizer's click doesn't rebuild the program either.
   if (to === "declined" && participant.state !== "declined") {
-    await Publish.republishIfPublished(ctx, caller.event._id);
+    await Publish.requestRebuild(ctx, caller.event._id);
   }
 }

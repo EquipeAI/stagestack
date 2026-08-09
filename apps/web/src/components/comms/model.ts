@@ -1,5 +1,6 @@
 import type { FunctionReturnType } from 'convex/server'
 import type { api } from '@convex/_generated/api'
+import { siteOrigin } from '~/lib/origin'
 
 // Communications (M5) read model. Every type here is derived from the deployed
 // Convex surface, so a backend shape change shows up as a type error rather
@@ -289,8 +290,15 @@ export function variablesIn(text: string): Array<string> {
 }
 
 /** Believable stand-in values — the same shape as `sampleVars` on the server,
- * flattened to the dotted paths the substitution actually looks up. */
-export function sampleVars(eventName: string): Record<string, string> {
+ * flattened to the dotted paths the substitution actually looks up.
+ *
+ * The `link` sample is origin-derived: it is the one URL a self-hoster sees in
+ * the template preview, and a hardcoded stagestack.dev there reads as "this
+ * install emails links to someone else's site". */
+export function sampleVars(
+  eventName: string,
+  origin: string = siteOrigin(),
+): Record<string, string> {
   return {
     'event.name': eventName,
     'event.when': '2026-09-01 – 2026-09-03 (America/Los_Angeles)',
@@ -315,7 +323,7 @@ export function sampleVars(eventName: string): Record<string, string> {
     note: 'Sample note from the organizer.',
     intro: 'Thanks for submitting to',
     subjectLead: 'We received your proposal',
-    link: 'https://stagestack.dev/portal/sample-event',
+    link: `${origin}/portal/sample-event`,
     tasks:
       '<ul>\n<li><strong>Speaker headshot</strong> — Analytical engines in production (due 2026-08-20)</li>\n<li><strong>Final slides</strong> — Analytical engines in production (due 2026-08-25)</li>\n</ul>',
     body: '<ul>\n<li><strong>Analytical engines in production</strong></li>\n</ul>',

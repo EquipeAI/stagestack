@@ -147,8 +147,8 @@
         "message": "<PageHeader> doesn't accept that prop. Declared props: title, description, breadcrumbs, meta, actions."
       },
       {
-        "selector": "JSXOpeningElement[name.name='RadioGroup'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|options|value|onChange|row|className|key|ref|className|style|children)$/]",
-        "message": "<RadioGroup> doesn't accept that prop. Declared props: name, options, value, onChange, row, className."
+        "selector": "JSXOpeningElement[name.name='RadioGroup'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|options|value|onChange|row|className|id|tabIndex|role|aria-invalid|aria-describedby|aria-labelledby|key|ref|className|style|children)$/]",
+        "message": "<RadioGroup> doesn't accept that prop. Declared props: name, options, value, onChange, row, className, id, tabIndex, role, aria-invalid, aria-describedby, aria-labelledby."
       },
       {
         "selector": "JSXOpeningElement[name.name='ReadinessSegment'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|tone|label|key|ref|className|style|children)$/]",

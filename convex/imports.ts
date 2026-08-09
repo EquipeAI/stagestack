@@ -1,4 +1,6 @@
 import { ConvexError, v } from "convex/values";
+import { HOUR, RateLimiter } from "@convex-dev/rate-limiter";
+import { components } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { eventMutation, eventQuery, requireOrganizer } from "./lib/functions";
 import { enqueueJob } from "./model/jobs";
@@ -10,11 +12,32 @@ import { IMPORT_LIMITS, vPlannedRecord } from "./shared/importPlan";
 // The plan/execution runs on the worker VM; see apps/worker/src/import-agent.ts
 // and convex/model/imports.ts for the authority model.
 
+// Each plan job spends real OpenRouter credit on the worker (~$0.05–0.25 per
+// import session, see docs/ARCHITECTURE.md), so an unbounded queue is a
+// billing hole, not just load. Keyed per user rather than per event so one
+// account can't fan the same spend out across every event it organizes.
+// 10 plans/hour is far above a real organizer importing a few spreadsheets
+// (with retries), and 20 upload URLs/hour matches the CFP/portal mint caps.
+const importLimiter = new RateLimiter(components.rateLimiter, {
+  importPlanPerUser: { kind: "token bucket", rate: 10, period: HOUR },
+  importUploadPerUser: { kind: "token bucket", rate: 20, period: HOUR },
+});
+
+function rateLimited(message: string): never {
+  throw new ConvexError({ code: "rate_limited", message });
+}
+
 export const generateUploadUrl = eventMutation({
   args: {},
   returns: v.string(),
   handler: async (ctx) => {
     assertEventActive(ctx.caller.event);
+    const limit = await importLimiter.limit(ctx, "importUploadPerUser", {
+      key: ctx.caller.user._id,
+    });
+    if (!limit.ok) {
+      rateLimited("Too many import uploads — try again in a little while.");
+    }
     return await ctx.storage.generateUploadUrl();
   },
 });
@@ -28,6 +51,17 @@ export const start = eventMutation({
   returns: v.id("jobs"),
   handler: async (ctx, args) => {
     assertEventActive(ctx.caller.event);
+    // Queueing a plan job commissions LLM work on the worker, so cap the rate
+    // before anything is enqueued. Token consumption is transactional: if this
+    // mutation later fails, the organizer doesn't lose the token either.
+    const limit = await importLimiter.limit(ctx, "importPlanPerUser", {
+      key: ctx.caller.user._id,
+    });
+    if (!limit.ok) {
+      rateLimited(
+        "Too many imports queued — wait a little before starting another.",
+      );
+    }
     const jobId = await enqueueJob(
       ctx,
       "import-plan",
@@ -101,7 +135,11 @@ export const listJobs = eventQuery({
   },
 });
 
-// Poll/subscribe to an import job. Scoped to the caller's event.
+// Poll/subscribe to an import job. Scoped to the caller's event, and
+// organizer-only like the rest of the import surface: a done import-plan job's
+// `result` is the raw plan, i.e. speaker names, emails and phone numbers, and
+// reviewers must never see contact details (convex/model/reviews.ts projects
+// their view precisely to avoid this).
 export const getJob = eventQuery({
   args: { jobId: v.id("jobs") },
   returns: v.union(
@@ -115,6 +153,7 @@ export const getJob = eventQuery({
     v.null(),
   ),
   handler: async (ctx, args) => {
+    requireOrganizer(ctx.caller);
     const job = await ctx.db.get("jobs", args.jobId);
     if (
       job === null ||

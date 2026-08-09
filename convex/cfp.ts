@@ -98,12 +98,18 @@ export const publishForm = eventMutation({
 
 export const listProposals = eventQuery({
   args: { status: v.optional(vProposalStatus) },
-  returns: v.array(
-    v.object({
-      proposal: vv.doc("proposals"),
-      speakerCount: v.number(),
-    }),
-  ),
+  returns: v.object({
+    rows: v.array(
+      v.object({
+        proposal: vv.doc("proposals"),
+        speakerCount: v.number(),
+      }),
+    ),
+    /** True when the event has more proposals than one read returns, so the
+     * abstracts surface can say so instead of implying the page is the whole
+     * CFP (H5). */
+    capped: v.boolean(),
+  }),
   handler: async (ctx, args) => {
     return await Cfp.listProposals(ctx, ctx.caller, { status: args.status });
   },
@@ -170,11 +176,32 @@ export const reopenProposal = eventMutation({
 
 // ── Submitter: proposals ─────────────────────────────────────────────────
 
+// `maxSubmissionsPerUser` is unset by default, which leaves proposal creation
+// with no per-account cap at all — one script could fill an event's queue.
+// This is a floor *underneath* that setting (the model still enforces the
+// organizer's own cap, and enforces it first when configured): 10 new drafts
+// per hour is well past any real submitter, who starts one or two.
+const proposalLimiter = new RateLimiter(components.rateLimiter, {
+  cfpProposalPerUser: { kind: "token bucket", rate: 10, period: HOUR },
+});
+
 export const startProposal = authedMutation({
   args: { eventSlug: v.string() },
   returns: v.id("proposals"),
   handler: async (ctx, args) => {
-    return await Cfp.startProposal(ctx, ctx.user, args.eventSlug);
+    const proposalId = await Cfp.startProposal(ctx, ctx.user, args.eventSlug);
+    // After the model's checks so an organizer-configured refusal still reads
+    // as `submission_limit`; consumption rolls back with the mutation anyway.
+    const limit = await proposalLimiter.limit(ctx, "cfpProposalPerUser", {
+      key: ctx.user._id,
+    });
+    if (!limit.ok) {
+      throw new ConvexError({
+        code: "rate_limited",
+        message: "Too many proposals started — try again in a little while.",
+      });
+    }
+    return proposalId;
   },
 });
 

@@ -4,6 +4,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
+import { mailFromAddress } from "../emails";
 import { logAudit } from "./audit";
 import { routeParticipant } from "./audiences";
 import {
@@ -13,7 +14,7 @@ import {
   siteUrl,
 } from "./comms";
 import { renderTemplate } from "./templates";
-import { assertEventActive, assertText } from "./validation";
+import { assertEventActive, assertText, takeAll } from "./validation";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Agenda builder (M6).
@@ -37,6 +38,9 @@ import { assertEventActive, assertText } from "./validation";
 // readiness dashboard can never disagree about what collides.
 // ─────────────────────────────────────────────────────────────────────────
 
+// Read ceilings. Conflicts are derived from a WHOLE-event read, so every one
+// of these is enforced with `takeAll` (refuse) rather than a bare `.take`
+// (silently drop rows and report "no conflict") — H5.
 const SESSION_SCAN = 1000;
 const PARTICIPANT_SCAN = 5000;
 const CONTACT_SCAN = 2000;
@@ -57,10 +61,10 @@ const MAX_TITLE = 200;
 const MAX_DESCRIPTION = 2000;
 const MAX_URL = 500;
 
-/** The address the .ics ORGANIZER property carries. Matches
- * `MAIL_FROM` in model/comms.ts — an invite whose organizer differs from the
- * sending domain gets flagged by some clients. */
-const ORGANIZER_EMAIL = "hello@stagestack.dev";
+/** The address the .ics ORGANIZER property carries. Derived from `MAIL_FROM`
+ * (convex/emails.ts) rather than hardcoded: an invite whose organizer differs
+ * from the sending domain gets flagged by some clients, so a self-host that
+ * sends as its own domain must not advertise ours here. */
 
 export type Slot = {
   startsAt: number;
@@ -391,29 +395,49 @@ type EventSchedule = {
   conflicts: Map<string, Conflict[]>;
 };
 
-/** One bounded pass over everything the schedule depends on. Shared by the
- * board query and the release mutation so both see identical conflicts. */
+/**
+ * One bounded pass over everything the schedule depends on. Shared by the
+ * board query and the release mutation so both see identical conflicts.
+ *
+ * REFUSES (`event_too_large`) instead of truncating: conflict detection is a
+ * whole-graph answer, and a dropped session or participant turns "no conflict"
+ * into a real double-booking that the board draws green and the release gate
+ * waves through. An error an organizer can act on beats a wrong answer nobody
+ * can see (H5).
+ */
 export async function loadSchedule(
   ctx: QueryCtx,
   event: Doc<"events">,
 ): Promise<EventSchedule> {
   const [sessions, agendaItems, participants, contacts] = await Promise.all([
-    ctx.db
-      .query("sessions")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(SESSION_SCAN),
-    ctx.db
-      .query("agendaItems")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(ITEM_SCAN),
-    ctx.db
-      .query("sessionParticipants")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(PARTICIPANT_SCAN),
-    ctx.db
-      .query("eventContacts")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(CONTACT_SCAN),
+    takeAll(
+      ctx.db
+        .query("sessions")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      SESSION_SCAN,
+      "sessions",
+    ),
+    takeAll(
+      ctx.db
+        .query("agendaItems")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      ITEM_SCAN,
+      "agenda items",
+    ),
+    takeAll(
+      ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      PARTICIPANT_SCAN,
+      "speaker participations",
+    ),
+    takeAll(
+      ctx.db
+        .query("eventContacts")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      CONTACT_SCAN,
+      "speaker profiles",
+    ),
   ]);
   const participantsBySession = groupParticipants(participants);
   return {
@@ -457,14 +481,22 @@ export async function boardData(
   const event = caller.event;
   const [schedule, rooms, tracks] = await Promise.all([
     loadSchedule(ctx, event),
-    ctx.db
-      .query("rooms")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(LIBRARY_SCAN),
-    ctx.db
-      .query("tracks")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(LIBRARY_SCAN),
+    // Also refuse: a dropped room is a missing grid column, so placed sessions
+    // would silently vanish from the board they are placed on.
+    takeAll(
+      ctx.db
+        .query("rooms")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      LIBRARY_SCAN,
+      "rooms",
+    ),
+    takeAll(
+      ctx.db
+        .query("tracks")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      LIBRARY_SCAN,
+      "tracks",
+    ),
   ]);
 
   const sessions: BoardSession[] = schedule.sessions
@@ -949,7 +981,7 @@ async function queueSlotEmail(
       ...(location === undefined ? {} : { location }),
       url: link,
       organizerName: event.name,
-      organizerEmail: ORGANIZER_EMAIL,
+      organizerEmail: mailFromAddress(),
       attendeeName: fullName(args.contact),
       attendeeEmail: recipient.email,
     },
@@ -980,14 +1012,82 @@ async function loadManagers(
 
 /** The comms-log kinds queueSlotEmail sends under — nothing else writes them,
  * so they identify a session's invite trail among the event's messages. */
-const CALENDAR_KINDS: ReadonlySet<string> = new Set([
+const CALENDAR_KINDS = [
   "schedule.released",
   "schedule.updated",
   "schedule.cancelled",
-]);
-/** Newest-first comms-log rows examined per failed-invite check. A trail
- * buried deeper than this simply isn't resent — bounded read over recovery. */
+] as const;
+/** Newest-first comms-log rows examined PER KIND when building the calendar
+ * trail. A trail buried deeper than this simply isn't resent — bounded read
+ * over recovery. */
 const MESSAGE_SCAN = 2000;
+
+/** One participant's most recent calendar message. */
+type LastCalendarMessage = { kind: string; failed: boolean };
+
+/**
+ * Every participant's MOST RECENT calendar message on this event, keyed by
+ * session then participant.
+ *
+ * ONE read per calendar kind for the whole release wave (M5). This used to be
+ * a per-session pass over the event's entire `messages` trail, so a 100-session
+ * bulk re-release read ~100 × MESSAGE_SCAN docs — the same rows, a hundred
+ * times. `by_eventId_and_kind` narrows the read to the calendar trail itself
+ * (an event's log is mostly CFP/task/reminder mail) and hoisting it out of the
+ * loop makes the cost independent of how many sessions are being released.
+ *
+ * Deliberately NOT denormalized onto `sessionParticipants`: the delivery
+ * status this depends on is written by the Resend webhook
+ * (convex/emails.ts → handleEmailEvent patches `messages.deliveryStatus` by
+ * resendEmailId), so a copy on the participant would need a second writer in
+ * the webhook path and could disagree with the log it was copied from. The
+ * comms log stays the single source of truth; only the way we FIND rows in it
+ * changed.
+ */
+async function calendarTrail(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Map<Id<"sessions">, Map<string, LastCalendarMessage>>> {
+  const perKind = await Promise.all(
+    CALENDAR_KINDS.map((kind) =>
+      ctx.db
+        .query("messages")
+        .withIndex("by_eventId_and_kind", (q) =>
+          q.eq("eventId", eventId).eq("kind", kind),
+        )
+        .order("desc")
+        .take(MESSAGE_SCAN),
+    ),
+  );
+  // Newest first across kinds: the first row seen for a participant is their
+  // latest calendar message, so later (older) rows are skipped.
+  const messages = perKind
+    .flat()
+    .sort((a, b) => b._creationTime - a._creationTime);
+
+  const trail = new Map<Id<"sessions">, Map<string, LastCalendarMessage>>();
+  for (const message of messages) {
+    const context: unknown = message.context;
+    if (typeof context !== "object" || context === null) continue;
+    const { sessionId, participantId } = context as {
+      sessionId?: unknown;
+      participantId?: unknown;
+    };
+    if (typeof sessionId !== "string" || typeof participantId !== "string") {
+      continue;
+    }
+    const forSession =
+      trail.get(sessionId as Id<"sessions">) ??
+      new Map<string, LastCalendarMessage>();
+    trail.set(sessionId as Id<"sessions">, forSession);
+    if (forSession.has(participantId)) continue;
+    forSession.set(participantId, {
+      kind: message.kind,
+      failed: message.deliveryStatus === "failed",
+    });
+  }
+  return trail;
+}
 
 /**
  * Participants whose MOST RECENT calendar message failed to send, mapped to
@@ -998,42 +1098,19 @@ const MESSAGE_SCAN = 2000;
  * failed CANCEL is skipped because that participant no longer holds an
  * invitation (their ack was cleared when the cancellation went out).
  */
-async function failedLastInvites(
-  ctx: QueryCtx,
-  eventId: Id<"events">,
+function failedLastInvites(
+  trail: Map<Id<"sessions">, Map<string, LastCalendarMessage>>,
   sessionId: Id<"sessions">,
   participants: Array<Doc<"sessionParticipants">>,
-): Promise<Map<Id<"sessionParticipants">, string>> {
-  const pending = new Set<string>(participants.map((p) => p._id));
+): Map<Id<"sessionParticipants">, string> {
   const failed = new Map<Id<"sessionParticipants">, string>();
-  let scanned = 0;
-  const query = ctx.db
-    .query("messages")
-    .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-    .order("desc");
-  for await (const message of query) {
-    if (pending.size === 0 || scanned >= MESSAGE_SCAN) break;
-    scanned += 1;
-    if (!CALENDAR_KINDS.has(message.kind)) continue;
-    const context: unknown = message.context;
-    if (typeof context !== "object" || context === null) continue;
-    const { sessionId: forSession, participantId } = context as {
-      sessionId?: unknown;
-      participantId?: unknown;
-    };
-    if (forSession !== sessionId) continue;
-    if (typeof participantId !== "string" || !pending.has(participantId)) {
-      continue;
-    }
-    // First hit per participant is their latest calendar message; older rows
-    // no longer matter.
-    pending.delete(participantId);
-    if (
-      message.deliveryStatus === "failed" &&
-      message.kind !== "schedule.cancelled"
-    ) {
-      failed.set(participantId as Id<"sessionParticipants">, message.kind);
-    }
+  const forSession = trail.get(sessionId);
+  if (forSession === undefined) return failed;
+  for (const participant of participants) {
+    const last = forSession.get(participant._id);
+    if (last === undefined || !last.failed) continue;
+    if (last.kind === "schedule.cancelled") continue;
+    failed.set(participant._id, last.kind);
   }
   return failed;
 }
@@ -1042,10 +1119,15 @@ async function roomNames(
   ctx: QueryCtx,
   event: Doc<"events">,
 ): Promise<Map<Id<"rooms">, string>> {
-  const rooms = await ctx.db
-    .query("rooms")
-    .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-    .take(LIBRARY_SCAN);
+  // Refuse rather than truncate: a missing room name would send a speaker a
+  // calendar invite with no location on it.
+  const rooms = await takeAll(
+    ctx.db
+      .query("rooms")
+      .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+    LIBRARY_SCAN,
+    "rooms",
+  );
   return new Map(rooms.map((room) => [room._id, room.name]));
 }
 
@@ -1090,6 +1172,8 @@ export async function releaseSlots(
 
   const results: SlotResult[] = [];
   const now = Date.now();
+  // The event's calendar trail, read at most once per call (see calendarTrail).
+  let trail: Map<Id<"sessions">, Map<string, LastCalendarMessage>> | undefined;
   // Deduped: the rows below are read once up front, so releasing the same id
   // twice in one call would re-send against a stale `releasedSlot`.
   for (const sessionId of new Set(sessionIds)) {
@@ -1133,12 +1217,10 @@ export async function releaseSlots(
     ) {
       mode = "update";
     } else {
-      failedInvites = await failedLastInvites(
-        ctx,
-        event._id,
-        sessionId,
-        participants,
-      );
+      // Read the trail lazily and ONCE: only an unchanged slot needs it, and
+      // every unchanged session in this wave shares the same read.
+      trail ??= await calendarTrail(ctx, event._id);
+      failedInvites = failedLastInvites(trail, sessionId, participants);
       if (failedInvites.size === 0) {
         results.push({ sessionId, ok: false, error: "unchanged" });
         continue;
@@ -1248,10 +1330,15 @@ export async function cancelReleasedSlot(
   const released = args.session.releasedSlot;
   if (released === undefined) return 0;
 
-  const participants = await ctx.db
-    .query("sessionParticipants")
-    .withIndex("by_sessionId", (q) => q.eq("sessionId", args.session._id))
-    .take(PARTICIPANT_SCAN);
+  // Refuse rather than truncate: a participant dropped here keeps a cancelled
+  // session on their calendar forever, and nothing would ever retry them.
+  const participants = await takeAll(
+    ctx.db
+      .query("sessionParticipants")
+      .withIndex("by_sessionId", (q) => q.eq("sessionId", args.session._id)),
+    PARTICIPANT_SCAN,
+    "speakers on one session",
+  );
   const managers = await loadManagers(ctx, participants);
   const rooms = await roomNames(ctx, args.event);
   const sequence = nextIcsSequence(args.session);

@@ -21,8 +21,11 @@ M1–M7 schema work; update it when a milestone lands and reality diverges.
 - **proposals** — `{ eventId, formVersion, title (denormalized from answers),
   answers: Record<fieldId, value>, status: draft|pending|acceptQueue|declineQueue|
   accepted|declined|withdrawn, submitterUserId, submittedAt?, updatedAt,
-  lastDecisionAt?, withdrawnAt? }`. Index by_eventId_and_status, by_submitterUserId,
-  by_eventId. Draft = wizard in progress (pre- or post-account-link).
+  withdrawnAt?, reopenedUntil? (audited organizer edit window past cfpCloseAt) }`.
+  Index by_eventId_and_status, by_submitterUserId, by_eventId. Draft = wizard in
+  progress (pre- or post-account-link). No `lastDecisionAt`: when a decision was
+  taken is a fact about the *release*, so it lives in `auditLog` rather than as a
+  second copy on the row.
   cfpDrafts (anon) merges into this at the account step.
 - **proposalSpeakers** — participants entered in the wizard (no accounts needed):
   `{ proposalId, eventId, order, firstName, lastName, email?, tagline?, bio?,
@@ -33,8 +36,11 @@ M1–M7 schema work; update it when a milestone lands and reality diverges.
 
 - **reviews** — assignment + evaluation in one row: `{ eventId, proposalId,
   reviewerUserId, status: assigned|draft|submitted|locked, score?, recommendation?
-  (accept|decline|neutral), comments?, submittedAt?, versions: bounded history }`.
-  Index by_eventId_and_reviewerUserId, by_proposalId.
+  (accept|decline|neutral), comments?, submittedAt?, updatedAt }`. Index
+  by_eventId_and_reviewerUserId, by_proposalId, by_reviewerUserId. No `versions`
+  history was built: the review screen autosaves in place and the audit log
+  records who changed what, so a per-row revision list would be a second, weaker
+  source of the same truth.
 - **sessions** — created on acceptance or direct invitation: `{ eventId, title,
   description?, format?, trackId?, tagIds: Id[], proposalId?, source: cfp|direct,
   status: planned|cancelled, custom field values }`. Scheduling fields arrive

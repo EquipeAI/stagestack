@@ -1,16 +1,82 @@
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import {
   createEvent,
   createOrg,
   expectRejectedWith,
   setupTest,
   signIn,
+  type TestT,
 } from "./test.helpers";
-import { WORKER_LEASE_TTL_MS, WORKER_MAX_ATTEMPTS } from "./worker";
+import {
+  WORKER_HEARTBEAT_MS,
+  WORKER_LEASE_TTL_MS,
+  WORKER_MAX_ATTEMPTS,
+} from "./worker";
+import { IMPORT_LIMITS, type PlannedRecord } from "./shared/importPlan";
 
 // Mirrors `test.env.WORKER_SECRET` in vitest.config.ts.
 const SECRET = "test-worker-secret";
+
+/** Claim a job and return its fencing token, asserting the claim succeeded. */
+async function claim(t: TestT, jobId: Id<"jobs">): Promise<string> {
+  const token = await t.mutation(api.worker.claim, { secret: SECRET, jobId });
+  expect(token).not.toBeNull();
+  return token!;
+}
+
+/** Push a job's lease past the TTL by aging every sign of life on the row. */
+async function expireLease(t: TestT, jobId: Id<"jobs">): Promise<void> {
+  const stale = Date.now() - WORKER_LEASE_TTL_MS - 1000;
+  await t.run(async (ctx) => {
+    const job = await ctx.db.get("jobs", jobId);
+    await ctx.db.patch("jobs", jobId, {
+      claimedAt: stale,
+      heartbeatAt: job?.heartbeatAt === undefined ? undefined : stale,
+    });
+  });
+}
+
+function proposalRecord(i: number): PlannedRecord {
+  return {
+    id: `r${i}`,
+    record: {
+      kind: "proposal",
+      title: `Talk ${i}`,
+      speakers: [{ firstName: "Ada", lastName: `Lovelace ${i}` }],
+    },
+  };
+}
+
+/** An organizer-confirmed import-execute job, already claimed by a worker. */
+async function executeJob(
+  t: TestT,
+  records: PlannedRecord[],
+): Promise<{ jobId: Id<"jobs">; claimToken: string }> {
+  const alice = await signIn(t, "alice");
+  const orgSlug = await createOrg(alice, "Acme");
+  const eventSlug = await createEvent(alice, orgSlug, "DevConf");
+  const { eventId, userId } = await t.run(async (ctx) => {
+    const event = await ctx.db
+      .query("events")
+      .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+      .unique();
+    const user = await ctx.db.query("users").first();
+    return { eventId: event!._id, userId: user!._id };
+  });
+  const jobId = await t.run(async (ctx) =>
+    ctx.db.insert("jobs", {
+      type: "import-execute",
+      // `records` is what imports.confirm stores: the organizer's approved
+      // subset. importExecuteBatch slices THIS, never the worker's arguments.
+      payload: { eventId, records },
+      status: "queued",
+      initiatedBy: userId,
+    }),
+  );
+  return { jobId, claimToken: await claim(t, jobId) };
+}
 
 describe("worker queue", () => {
   test("enqueueTest queues a ping job that shows up in pending", async () => {
@@ -48,7 +114,18 @@ describe("worker queue", () => {
       t.mutation(api.worker.claim, { secret: "wrong", jobId }),
     ).rejects.toThrow("Unauthorized worker");
     await expect(
-      t.mutation(api.worker.finish, { secret: "wrong", jobId }),
+      t.mutation(api.worker.finish, {
+        secret: "wrong",
+        jobId,
+        claimToken: "whatever",
+      }),
+    ).rejects.toThrow("Unauthorized worker");
+    await expect(
+      t.mutation(api.worker.touch, {
+        secret: "wrong",
+        jobId,
+        claimToken: "whatever",
+      }),
     ).rejects.toThrow("Unauthorized worker");
 
     // Nothing was mutated by the rejected calls.
@@ -56,20 +133,21 @@ describe("worker queue", () => {
     expect(job?.status).toBe("queued");
   });
 
-  test("claim is compare-and-set: the second claim of a job returns false", async () => {
+  test("claim is compare-and-set and mints a fencing token", async () => {
     const t = setupTest();
     const jobId = await t.mutation(internal.worker.enqueueTest, {});
 
-    expect(await t.mutation(api.worker.claim, { secret: SECRET, jobId })).toBe(
-      true,
-    );
-    expect(await t.mutation(api.worker.claim, { secret: SECRET, jobId })).toBe(
-      false,
-    );
+    const token = await claim(t, jobId);
+    expect(token).toMatch(/^[0-9a-f]{32}$/);
+    // Second claim of the same job loses the race.
+    expect(
+      await t.mutation(api.worker.claim, { secret: SECRET, jobId }),
+    ).toBeNull();
 
     const claimed = await t.run(async (ctx) => ctx.db.query("jobs").first());
     expect(claimed?.status).toBe("claimed");
     expect(typeof claimed?.claimedAt).toBe("number");
+    expect(claimed?.claimToken).toBe(token);
     // A claimed job is no longer pending.
     expect(await t.query(api.worker.pending, { secret: SECRET })).toEqual([]);
   });
@@ -80,19 +158,25 @@ describe("worker queue", () => {
     const badId = await t.mutation(internal.worker.enqueueTest, {
       type: "hello-agent",
     });
-    await t.mutation(api.worker.claim, { secret: SECRET, jobId: okId });
-    await t.mutation(api.worker.claim, { secret: SECRET, jobId: badId });
+    const okToken = await claim(t, okId);
+    const badToken = await claim(t, badId);
 
-    await t.mutation(api.worker.finish, {
-      secret: SECRET,
-      jobId: okId,
-      result: { pong: true },
-    });
-    await t.mutation(api.worker.finish, {
-      secret: SECRET,
-      jobId: badId,
-      error: "boom",
-    });
+    expect(
+      await t.mutation(api.worker.finish, {
+        secret: SECRET,
+        jobId: okId,
+        claimToken: okToken,
+        result: { pong: true },
+      }),
+    ).toBe(true);
+    expect(
+      await t.mutation(api.worker.finish, {
+        secret: SECRET,
+        jobId: badId,
+        claimToken: badToken,
+        error: "boom",
+      }),
+    ).toBe(true);
 
     const jobs = await t.run(async (ctx) => ctx.db.query("jobs").collect());
     const ok = jobs.find((j) => j._id === okId);
@@ -104,42 +188,174 @@ describe("worker queue", () => {
     expect(bad?.error).toBe("boom");
   });
 
-  test("finish only flips claimed jobs", async () => {
+  test("finish only flips a job the caller still holds the claim on", async () => {
     const t = setupTest();
     const jobId = await t.mutation(internal.worker.enqueueTest, {});
 
-    // Not yet claimed: finish is a no-op.
-    await t.mutation(api.worker.finish, {
-      secret: SECRET,
-      jobId,
-      result: { pong: true },
-    });
+    // Not yet claimed: finish is a refused no-op.
+    expect(
+      await t.mutation(api.worker.finish, {
+        secret: SECRET,
+        jobId,
+        claimToken: "no-such-token",
+        result: { pong: true },
+      }),
+    ).toBe(false);
     let job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
     expect(job?.status).toBe("queued");
     expect(job?.result).toBeUndefined();
 
-    await t.mutation(api.worker.claim, { secret: SECRET, jobId });
+    const token = await claim(t, jobId);
+    // Claimed, but a token from nowhere is still refused.
+    expect(
+      await t.mutation(api.worker.finish, {
+        secret: SECRET,
+        jobId,
+        claimToken: "no-such-token",
+        result: { hijacked: true },
+      }),
+    ).toBe(false);
+    job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
+    expect(job?.status).toBe("claimed");
+    expect(job?.result).toBeUndefined();
+
     await t.mutation(api.worker.finish, {
       secret: SECRET,
       jobId,
+      claimToken: token,
       result: { pong: true },
     });
-    // A stale duplicate finish (old worker after a lease handover) is ignored.
-    await t.mutation(api.worker.finish, {
-      secret: SECRET,
-      jobId,
-      error: "late duplicate",
-    });
+    // A stale duplicate finish (same worker, job already closed) is ignored.
+    expect(
+      await t.mutation(api.worker.finish, {
+        secret: SECRET,
+        jobId,
+        claimToken: token,
+        error: "late duplicate",
+      }),
+    ).toBe(false);
     job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
     expect(job?.status).toBe("done");
     expect(job?.result).toEqual({ pong: true });
     expect(job?.error).toBeUndefined();
   });
 
+  test("a stale worker cannot finish a job that was re-claimed", async () => {
+    const t = setupTest();
+    const jobId = await t.mutation(internal.worker.enqueueTest, {});
+    const staleToken = await claim(t, jobId);
+
+    // Worker A hangs: its lease expires and the sweep requeues the job.
+    await expireLease(t, jobId);
+    await t.mutation(internal.worker.sweepExpiredLeases, {});
+    // Worker B picks it up and is now the owner.
+    const freshToken = await claim(t, jobId);
+    expect(freshToken).not.toBe(staleToken);
+
+    // Worker A wakes up and reports. The row is `claimed` again, so status
+    // alone would have let this through; the fencing token refuses it.
+    expect(
+      await t.mutation(api.worker.finish, {
+        secret: SECRET,
+        jobId,
+        claimToken: staleToken,
+        result: { from: "stale worker A" },
+      }),
+    ).toBe(false);
+    let job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
+    expect(job?.status).toBe("claimed");
+    expect(job?.result).toBeUndefined();
+    expect(job?.finishedAt).toBeUndefined();
+
+    // Worker B's own finish lands.
+    expect(
+      await t.mutation(api.worker.finish, {
+        secret: SECRET,
+        jobId,
+        claimToken: freshToken,
+        result: { from: "worker B" },
+      }),
+    ).toBe(true);
+    job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
+    expect(job?.status).toBe("done");
+    expect(job?.result).toEqual({ from: "worker B" });
+  });
+
+  test("a heartbeat keeps a long-running job from being swept", async () => {
+    // The renewal interval has to leave room for a couple of missed beats.
+    expect(WORKER_HEARTBEAT_MS).toBeLessThan(WORKER_LEASE_TTL_MS / 2);
+    const t = setupTest();
+    const jobId = await t.mutation(internal.worker.enqueueTest, {});
+    const token = await claim(t, jobId);
+
+    // The job has been running longer than the TTL, but the worker is alive
+    // and renewing — this is the import-plan case (~10 LLM exchanges).
+    await t.run(async (ctx) =>
+      ctx.db.patch("jobs", jobId, {
+        claimedAt: Date.now() - WORKER_LEASE_TTL_MS - 1000,
+      }),
+    );
+    expect(
+      await t.mutation(api.worker.touch, { secret: SECRET, jobId, claimToken: token }),
+    ).toBe(true);
+    await t.mutation(internal.worker.sweepExpiredLeases, {});
+    let job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
+    expect(job?.status).toBe("claimed");
+    expect(job?.attempts).toBeUndefined();
+    expect(typeof job?.heartbeatAt).toBe("number");
+
+    // Renewals stop (worker died): the lease expires from the last heartbeat.
+    await expireLease(t, jobId);
+    await t.mutation(internal.worker.sweepExpiredLeases, {});
+    job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
+    expect(job?.status).toBe("queued");
+    expect(job?.attempts).toBe(1);
+    expect(job?.claimToken).toBeUndefined();
+    expect(job?.heartbeatAt).toBeUndefined();
+  });
+
+  test("touch is fenced: it cannot renew a lost lease or revive a failed job", async () => {
+    const t = setupTest();
+    const jobId = await t.mutation(internal.worker.enqueueTest, {});
+    const staleToken = await claim(t, jobId);
+    await expireLease(t, jobId);
+    await t.mutation(internal.worker.sweepExpiredLeases, {});
+    const freshToken = await claim(t, jobId);
+
+    // The evicted worker's renewal is refused and writes nothing.
+    expect(
+      await t.mutation(api.worker.touch, {
+        secret: SECRET,
+        jobId,
+        claimToken: staleToken,
+      }),
+    ).toBe(false);
+    let job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
+    expect(job?.heartbeatAt).toBeUndefined();
+
+    // Once the job is finished, even the rightful holder cannot reopen it.
+    await t.mutation(api.worker.finish, {
+      secret: SECRET,
+      jobId,
+      claimToken: freshToken,
+      error: "boom",
+    });
+    expect(
+      await t.mutation(api.worker.touch, {
+        secret: SECRET,
+        jobId,
+        claimToken: freshToken,
+      }),
+    ).toBe(false);
+    job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
+    expect(job?.status).toBe("failed");
+    expect(job?.heartbeatAt).toBeUndefined();
+  });
+
   test("lease sweep requeues expired claims and increments attempts", async () => {
     const t = setupTest();
     const jobId = await t.mutation(internal.worker.enqueueTest, {});
-    await t.mutation(api.worker.claim, { secret: SECRET, jobId });
+    await claim(t, jobId);
 
     // Fresh claim: sweep leaves it alone.
     await t.mutation(internal.worker.sweepExpiredLeases, {});
@@ -148,11 +364,7 @@ describe("worker queue", () => {
     expect(job?.attempts).toBeUndefined();
 
     // Age the claim past the TTL.
-    await t.run(async (ctx) =>
-      ctx.db.patch("jobs", jobId, {
-        claimedAt: Date.now() - WORKER_LEASE_TTL_MS - 1000,
-      }),
-    );
+    await expireLease(t, jobId);
     await t.mutation(internal.worker.sweepExpiredLeases, {});
     job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
     expect(job?.status).toBe("queued");
@@ -162,9 +374,7 @@ describe("worker queue", () => {
     // The requeued job is claimable again (and back in pending).
     const pending = await t.query(api.worker.pending, { secret: SECRET });
     expect(pending.map((j) => j._id)).toContain(jobId);
-    expect(await t.mutation(api.worker.claim, { secret: SECRET, jobId })).toBe(
-      true,
-    );
+    await claim(t, jobId);
   });
 
   test("lease sweep fails a job once attempts reach the cap", async () => {
@@ -172,12 +382,8 @@ describe("worker queue", () => {
     const jobId = await t.mutation(internal.worker.enqueueTest, {});
 
     for (let i = 1; i <= WORKER_MAX_ATTEMPTS; i++) {
-      await t.mutation(api.worker.claim, { secret: SECRET, jobId });
-      await t.run(async (ctx) =>
-        ctx.db.patch("jobs", jobId, {
-          claimedAt: Date.now() - WORKER_LEASE_TTL_MS - 1000,
-        }),
-      );
+      await claim(t, jobId);
+      await expireLease(t, jobId);
       await t.mutation(internal.worker.sweepExpiredLeases, {});
     }
     const job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
@@ -186,85 +392,195 @@ describe("worker queue", () => {
     expect(job?.error).toContain("lease");
     expect(typeof job?.finishedAt).toBe("number");
     // A failed job cannot be claimed again.
-    expect(await t.mutation(api.worker.claim, { secret: SECRET, jobId })).toBe(
-      false,
+    expect(
+      await t.mutation(api.worker.claim, { secret: SECRET, jobId }),
+    ).toBeNull();
+  });
+
+  test("a malformed plan result fails the import-plan job", async () => {
+    const t = setupTest();
+    const badId = await t.run(async (ctx) =>
+      ctx.db.insert("jobs", {
+        type: "import-plan",
+        payload: { filename: "sheet.csv" },
+        status: "queued",
+      }),
+    );
+    const badToken = await claim(t, badId);
+    // `records` is not an array — assertPlanShape rejects it before any
+    // organizer sees the plan.
+    expect(
+      await t.mutation(api.worker.finish, {
+        secret: SECRET,
+        jobId: badId,
+        claimToken: badToken,
+        result: { summary: "ok", records: "not-an-array", skippedRows: [] },
+      }),
+    ).toBe(true);
+    const bad = await t.run(async (ctx) => ctx.db.get("jobs", badId));
+    expect(bad?.status).toBe("failed");
+    expect(bad?.error).toContain("unusable plan");
+    expect(bad?.result).toBeUndefined();
+
+    // A well-formed plan still finishes normally.
+    const okId = await t.run(async (ctx) =>
+      ctx.db.insert("jobs", {
+        type: "import-plan",
+        payload: { filename: "sheet.csv" },
+        status: "queued",
+      }),
+    );
+    const okToken = await claim(t, okId);
+    const plan = { summary: "Planned 1 record.", records: [], skippedRows: [] };
+    await t.mutation(api.worker.finish, {
+      secret: SECRET,
+      jobId: okId,
+      claimToken: okToken,
+      result: plan,
+    });
+    const ok = await t.run(async (ctx) => ctx.db.get("jobs", okId));
+    expect(ok?.status).toBe("done");
+    expect(ok?.result).toEqual(plan);
+  });
+
+  test("importExecuteBatch executes the approved payload, not caller records", async () => {
+    const t = setupTest();
+    const { jobId, claimToken } = await executeJob(t, [proposalRecord(0)]);
+
+    // The worker cannot even name records any more: the argument is gone, so
+    // a smuggled record is refused by argument validation.
+    await expect(
+      t.mutation(api.worker.importExecuteBatch, {
+        secret: SECRET,
+        jobId,
+        claimToken,
+        batchIndex: 0,
+        records: [proposalRecord(99)],
+      } as never),
+    ).rejects.toThrow();
+
+    const results = await t.mutation(api.worker.importExecuteBatch, {
+      secret: SECRET,
+      jobId,
+      claimToken,
+      batchIndex: 0,
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].ok).toBe(true);
+    const titles = await t.run(async (ctx) =>
+      (await ctx.db.query("proposals").collect()).map((p) => p.title),
+    );
+    expect(titles).toEqual(["Talk 0"]);
+  });
+
+  test("importExecuteBatch requires the current claim token", async () => {
+    const t = setupTest();
+    const { jobId, claimToken } = await executeJob(t, [proposalRecord(0)]);
+
+    await expectRejectedWith(
+      t.mutation(api.worker.importExecuteBatch, {
+        secret: SECRET,
+        jobId,
+        claimToken: "not-the-token",
+        batchIndex: 0,
+      }),
+      "invalid_status",
+    );
+    // A stale worker whose lease was swept and re-claimed is refused too.
+    await expireLease(t, jobId);
+    await t.mutation(internal.worker.sweepExpiredLeases, {});
+    await claim(t, jobId);
+    await expectRejectedWith(
+      t.mutation(api.worker.importExecuteBatch, {
+        secret: SECRET,
+        jobId,
+        claimToken,
+        batchIndex: 0,
+      }),
+      "invalid_status",
+    );
+    // Neither refusal executed anything or recorded a batch.
+    const job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
+    expect(job?.completedBatches).toBeUndefined();
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("proposals").collect()).length,
+      ),
+    ).toBe(0);
+  });
+
+  test("importExecuteBatch slices the approved plan server-side by batchIndex", async () => {
+    const t = setupTest();
+    const size = IMPORT_LIMITS.executeBatch;
+    const records = Array.from({ length: size + 2 }, (_, i) =>
+      proposalRecord(i),
+    );
+    const { jobId, claimToken } = await executeJob(t, records);
+
+    const first = await t.mutation(api.worker.importExecuteBatch, {
+      secret: SECRET,
+      jobId,
+      claimToken,
+      batchIndex: 0,
+    });
+    expect(first).toHaveLength(size);
+    expect(first[0].id).toBe("r0");
+    expect(first[size - 1].id).toBe(`r${size - 1}`);
+
+    const second = await t.mutation(api.worker.importExecuteBatch, {
+      secret: SECRET,
+      jobId,
+      claimToken,
+      batchIndex: 1,
+    });
+    expect(second.map((r) => r.id)).toEqual([`r${size}`, `r${size + 1}`]);
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("proposals").collect()).length,
+      ),
+    ).toBe(size + 2);
+
+    // Past the end of the approved plan there is nothing to execute.
+    await expectRejectedWith(
+      t.mutation(api.worker.importExecuteBatch, {
+        secret: SECRET,
+        jobId,
+        claimToken,
+        batchIndex: 2,
+      }),
+      "invalid_batch",
     );
   });
 
   test("importExecuteBatch is idempotent per batchIndex", async () => {
     const t = setupTest();
-    const alice = await signIn(t, "alice");
-    const orgSlug = await createOrg(alice, "Acme");
-    const eventSlug = await createEvent(alice, orgSlug, "DevConf");
-    const { eventId, userId } = await t.run(async (ctx) => {
-      const event = await ctx.db
-        .query("events")
-        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
-        .unique();
-      const user = await ctx.db.query("users").first();
-      return { eventId: event!._id, userId: user!._id };
-    });
-    const jobId = await t.run(async (ctx) =>
-      ctx.db.insert("jobs", {
-        type: "import-execute",
-        payload: { eventId },
-        status: "claimed",
-        claimedAt: Date.now(),
-        initiatedBy: userId,
-      }),
-    );
+    const { jobId, claimToken } = await executeJob(t, [
+      proposalRecord(0),
+      proposalRecord(1),
+    ]);
 
-    const records = [
-      {
-        id: "r0",
-        record: {
-          kind: "proposal" as const,
-          title: "Talk A",
-          speakers: [{ firstName: "Ada", lastName: "Lovelace" }],
-        },
-      },
-    ];
     const first = await t.mutation(api.worker.importExecuteBatch, {
       secret: SECRET,
       jobId,
+      claimToken,
       batchIndex: 0,
-      records,
     });
-    expect(first).toHaveLength(1);
-    expect(first[0].ok).toBe(true);
+    expect(first).toHaveLength(2);
+    expect(first.every((r) => r.ok)).toBe(true);
 
     // Replaying the same batch (committed, response lost) returns the
     // recorded results and writes nothing new.
     const replay = await t.mutation(api.worker.importExecuteBatch, {
       secret: SECRET,
       jobId,
+      claimToken,
       batchIndex: 0,
-      records,
     });
     expect(replay).toEqual(first);
     expect(
-      await t.run(async (ctx) => (await ctx.db.query("proposals").collect()).length),
-    ).toBe(1);
-
-    // A new batch index executes normally.
-    const second = await t.mutation(api.worker.importExecuteBatch, {
-      secret: SECRET,
-      jobId,
-      batchIndex: 1,
-      records: [
-        {
-          id: "r1",
-          record: {
-            kind: "proposal" as const,
-            title: "Talk B",
-            speakers: [{ firstName: "Grace", lastName: "Hopper" }],
-          },
-        },
-      ],
-    });
-    expect(second[0].ok).toBe(true);
-    expect(
-      await t.run(async (ctx) => (await ctx.db.query("proposals").collect()).length),
+      await t.run(async (ctx) =>
+        (await ctx.db.query("proposals").collect()).length,
+      ),
     ).toBe(2);
   });
 });

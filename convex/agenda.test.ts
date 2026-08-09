@@ -1000,6 +1000,150 @@ describe("ics sequence", () => {
       }),
     ).toEqual([{ sessionId, ok: false, error: "unchanged" }]);
   });
+
+  test("the calendar trail is read once per wave and stays per session (M5)", async () => {
+    const { t, alice, eventSlug, mainStage, sideRoom } = await setup();
+    // Two released sessions in one wave. The trail behind them is now ONE
+    // indexed read for the whole call instead of a full comms-log scan per
+    // session, so this pins the thing that could break: rows must still be
+    // attributed to the right (session, participant) pair.
+    const first = await directSession(alice, eventSlug, "First", {
+      firstName: "Bob",
+      lastName: "Speaker",
+      email: "bob@example.com",
+    });
+    const second = await directSession(alice, eventSlug, "Second", {
+      firstName: "Carol",
+      lastName: "Speaker",
+      email: "carol@example.com",
+    });
+    await place(alice, eventSlug, first, {
+      startsAt: T10,
+      endsAt: T11,
+      roomId: mainStage,
+    });
+    await place(alice, eventSlug, second, {
+      startsAt: T10,
+      endsAt: T11,
+      roomId: sideRoom,
+    });
+    await alice.mutation(api.agenda.release, {
+      eventSlug,
+      sessionIds: [first, second],
+    });
+
+    // Log what convex/emails.ts would have written: carol's send failed, bob's
+    // went out. Plus an unrelated event message of another kind, which the
+    // (eventId, kind) index must not even read.
+    await t.run(async (ctx) => {
+      const session = (await ctx.db.get("sessions", first))!;
+      const orgId = (await ctx.db.get("events", session.eventId))!.orgId;
+      for (const [sessionId, email] of [
+        [first, "bob@example.com"],
+        [second, "carol@example.com"],
+      ] as const) {
+        const participant = (
+          await ctx.db
+            .query("sessionParticipants")
+            .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+            .collect()
+        )[0];
+        await ctx.db.insert("messages", {
+          orgId,
+          eventId: session.eventId,
+          toEmail: email,
+          kind: "schedule.released",
+          subject: "Your slot",
+          deliveryStatus: email === "carol@example.com" ? "failed" : "sent",
+          context: { sessionId, participantId: participant._id, sequence: 0 },
+        });
+      }
+      await ctx.db.insert("messages", {
+        orgId,
+        eventId: session.eventId,
+        toEmail: "bob@example.com",
+        kind: "reminder.tasks",
+        subject: "Your outstanding tasks",
+        deliveryStatus: "failed",
+        context: { sessionId: first },
+      });
+    });
+
+    const before = (await calendarJobs(t)).length;
+    // One wave, both ids: only the session whose invite failed is resent, and
+    // the unchanged one is still refused as unchanged.
+    expect(
+      await alice.mutation(api.agenda.release, {
+        eventSlug,
+        sessionIds: [first, second],
+      }),
+    ).toEqual([
+      { sessionId: first, ok: false, error: "unchanged" },
+      { sessionId: second, ok: true },
+    ]);
+    const jobs = (await calendarJobs(t)).slice(before);
+    expect(jobs.map((job) => job.toEmail)).toEqual(["carol@example.com"]);
+    expect(jobs[0].context?.sessionId).toBe(second);
+    expect(jobs[0].context?.mode).toBe("resend");
+  });
+});
+
+describe("event-graph read caps (H5)", () => {
+  test("a schedule past a read cap refuses instead of green-lighting what it never read", async () => {
+    const { t, alice, eventSlug, mainStage } = await setup();
+    const sessionId = await directSession(alice, eventSlug, "Keynote", {
+      firstName: "Bob",
+      lastName: "Speaker",
+      email: "bob@example.com",
+    });
+    await place(alice, eventSlug, sessionId, {
+      startsAt: T10,
+      endsAt: T11,
+      roomId: mainStage,
+    });
+
+    const eventId = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      return event._id;
+    });
+    const addItems = async (count: number) => {
+      await t.run(async (ctx) => {
+        for (let i = 0; i < count; i += 1) {
+          // Placed nowhere near the session, so nothing here is a conflict:
+          // the refusal is about the READ, not about what it found.
+          await ctx.db.insert("agendaItems", {
+            eventId,
+            title: `Coffee ${i}`,
+            startsAt: T12,
+            endsAt: T12 + 60_000,
+          });
+        }
+      });
+    };
+
+    // Exactly at the cap the board still draws and the gate still opens.
+    await addItems(1000);
+    expect(
+      (await alice.query(api.agenda.board, { eventSlug })).agendaItems,
+    ).toHaveLength(1000);
+
+    // One row past it, a conflict-derived answer would be a guess: the board
+    // AND the release gate refuse, rather than reporting an all-clear over
+    // rows they never looked at.
+    await addItems(1);
+    await expectRejectedWith(
+      alice.query(api.agenda.board, { eventSlug }),
+      "event_too_large",
+    );
+    await expectRejectedWith(
+      alice.mutation(api.agenda.release, { eventSlug, sessionIds: [sessionId] }),
+      "event_too_large",
+    );
+  });
 });
 
 // ── Acknowledgement ──────────────────────────────────────────────────────
