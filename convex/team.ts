@@ -27,25 +27,28 @@ const vTeamMembers = v.array(
   }),
 );
 
+// `now` is an argument on every team read: invitation expiry is time-derived
+// and a Convex query is not re-run because time advanced, so the client feeds
+// the clock (see readiness.dashboard, comms.audienceCounts).
 export const listForEvent = eventQuery({
-  args: {},
+  args: { now: v.number() },
   returns: v.object({
     members: vTeamMembers,
     invitations: v.array(vv.doc("invitations")),
   }),
-  handler: async (ctx) => {
-    return await Team.listEventTeam(ctx, ctx.caller);
+  handler: async (ctx, args) => {
+    return await Team.listEventTeam(ctx, ctx.caller, args.now);
   },
 });
 
 export const listForOrg = orgQuery({
-  args: {},
+  args: { now: v.number() },
   returns: v.object({
     members: vTeamMembers,
     invitations: v.array(vv.doc("invitations")),
   }),
-  handler: async (ctx) => {
-    return await Team.listOrgTeam(ctx, ctx.caller);
+  handler: async (ctx, args) => {
+    return await Team.listOrgTeam(ctx, ctx.caller, args.now);
   },
 });
 
@@ -83,7 +86,7 @@ export const inviteOrgAdmin = orgMutation({
 // Public: the /invite/<token> landing page previews before sign-in. The token
 // itself is the credential; this reveals only org/event names + role.
 export const previewInvitation = query({
-  args: { token: v.string() },
+  args: { token: v.string(), now: v.number() },
   returns: v.union(
     v.object({
       orgName: v.string(),
@@ -99,7 +102,7 @@ export const previewInvitation = query({
     v.null(),
   ),
   handler: async (ctx, args) => {
-    return await Team.previewInvitation(ctx, args.token);
+    return await Team.previewInvitation(ctx, args.token, args.now);
   },
 });
 

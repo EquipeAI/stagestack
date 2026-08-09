@@ -25,6 +25,7 @@ import { EventCard, EventGrid } from '~/components/EventCard'
 import { QueryBoundary } from '~/components/QueryBoundary'
 import { pushToast } from '~/components/toast'
 import { usePending } from '~/lib/usePending'
+import { useLastLoaded, useNow } from '~/components/tasks/useNow'
 import { errorMessage } from '~/lib/errors'
 import {
   browserTimezone,
@@ -523,6 +524,11 @@ function ContactDialog({
 
 // ── Team ──────────────────────────────────────────────────────────────────
 
+// One @, no spaces, a dotted domain — the same shape the event's reply-to is
+// held to. Delivery is the real validator; this only catches the typo before
+// an invitation is sent to nobody.
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 type OrgTeamMember = {
   userId: Doc<'users'>['_id']
   name: string | null
@@ -538,7 +544,10 @@ function OrgTeamTab({
   orgSlug: string
   canGrantOwner: boolean
 }) {
-  const team = useQuery(api.team.listForOrg, { orgSlug })
+  // Team reads take `now` (invitation expiry is time-derived); hold the last
+  // result across the once-a-minute re-subscribe so the tab doesn't blink.
+  const now = useNow()
+  const team = useLastLoaded(useQuery(api.team.listForOrg, { orgSlug, now }))
   const revoke = useMutation(api.team.revokeOrgInvitation)
   const revokeState = usePending()
   const invite = useMutation(api.team.inviteOrgAdmin)
@@ -547,14 +556,18 @@ function OrgTeamTab({
   const [role, setRole] = useState('admin')
 
   const submit = () => {
-    if (email.trim() === '') return setError('Enter the email to invite.')
+    const address = email.trim()
+    if (address === '') return setError('Enter the email to invite.')
+    if (!EMAIL_SHAPE.test(address)) {
+      return setError('That does not look like an email address.')
+    }
     void run(async () => {
       await invite({
         orgSlug,
-        email: email.trim(),
+        email: address,
         role: role === 'owner' && canGrantOwner ? 'owner' : 'admin',
       })
-      pushToast('Invitation sent', `${email.trim()} was invited as ${role}.`, 'mail')
+      pushToast('Invitation sent', `${address} was invited as ${role}.`, 'mail')
       setEmail('')
     })
   }

@@ -6,6 +6,9 @@
 
 import * as vb from "valibot";
 import { defineTool, init, useModel, useTool } from "@flue/runtime";
+// SheetJS ships off the npm registry since 0.19; both package.jsons pin the
+// vendor tarball (cdn.sheetjs.com) because the last registry build, 0.18.5,
+// carries the prototype-pollution and ReDoS advisories.
 import * as XLSX from "xlsx";
 import { ensureFlue } from "./flue";
 import type { Id } from "../../../convex/_generated/dataModel";
@@ -18,6 +21,30 @@ import {
 
 const MODEL = "openrouter/openai/gpt-5.6-luna";
 const CHUNK_SIZE = 40;
+// Per-exchange cap. A hung LLM stream must not hold the job past the queue's
+// lease TTL — better to fail this job than strand the worker slot.
+const EXCHANGE_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** dispatch+read with a wall-clock cap. `signal` only cancels the read (the
+ * submission keeps running server-side), so on timeout we also durably
+ * abort() the instance before failing the job. */
+async function exchange(
+  agent: ReturnType<typeof init>,
+  message: string,
+): Promise<void> {
+  const signal = AbortSignal.timeout(EXCHANGE_TIMEOUT_MS);
+  try {
+    await agent.read(await agent.dispatch(message), { signal });
+  } catch (err) {
+    if (signal.aborted) {
+      await agent.abort().catch(() => undefined);
+      throw new Error(
+        `Import planner timed out after ${EXCHANGE_TIMEOUT_MS / 1000}s`,
+      );
+    }
+    throw err;
+  }
+}
 
 // ── File parsing (Node side; the model only ever sees bounded text) ──────
 
@@ -325,7 +352,7 @@ export async function runImportPlan(
       }`,
       "Row batches follow. Wait for them before planning records.",
     ].join("\n");
-    await agent.read(await agent.dispatch(contextMsg));
+    await exchange(agent, contextMsg);
 
     const batches = chunk(table.rows, CHUNK_SIZE);
     let rowCursor = 1;
@@ -333,13 +360,12 @@ export async function runImportPlan(
       const msg = `Rows ${rowCursor}-${rowCursor + batch.length - 1} of ${
         table.rows.length
       } (tab-separated):\n${tsv(table.headers, batch, rowCursor)}\n\nCall add_records (and skip_rows if needed) for THESE rows now. agentKey: ${agentKey}`;
-      await agent.read(await agent.dispatch(msg));
+      await exchange(agent, msg);
       rowCursor += batch.length;
     }
-    await agent.read(
-      await agent.dispatch(
-        `All ${table.rows.length} rows delivered. Call submit_plan now. agentKey: ${agentKey}`,
-      ),
+    await exchange(
+      agent,
+      `All ${table.rows.length} rows delivered. Call submit_plan now. agentKey: ${agentKey}`,
     );
 
     const skipped = [...capture.skipped];

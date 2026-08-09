@@ -1,5 +1,6 @@
 import { ConvexError, v } from "convex/values";
-import { eventMutation, eventQuery } from "./lib/functions";
+import type { Id } from "./_generated/dataModel";
+import { eventMutation, eventQuery, requireOrganizer } from "./lib/functions";
 import { enqueueJob } from "./model/jobs";
 import { logAudit } from "./model/audit";
 import { assertEventActive } from "./model/validation";
@@ -38,6 +39,9 @@ export const start = eventMutation({
       },
       ctx.caller.user._id,
     );
+    // Denormalized queue metadata: payload is v.any() and can't be indexed,
+    // so listJobs needs eventId on the row itself.
+    await ctx.db.patch("jobs", jobId, { eventId: ctx.caller.event._id });
     await logAudit(ctx, {
       orgId: ctx.caller.org._id,
       eventId: ctx.caller.event._id,
@@ -48,6 +52,52 @@ export const start = eventMutation({
       meta: { filename: args.filename },
     });
     return jobId;
+  },
+});
+
+// Recent import jobs for this event, newest first — the import page resumes
+// from this instead of holding job ids only in client state (an in-flight
+// plan must survive navigating away). Organizer-only, matching the rest of
+// the import surface.
+export const listJobs = eventQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      _id: v.id("jobs"),
+      _creationTime: v.number(),
+      type: v.string(),
+      status: v.string(),
+      error: v.optional(v.string()),
+      // From the import-plan payload, for display.
+      filename: v.optional(v.string()),
+      // From the import-execute payload, linking back to its plan.
+      planJobId: v.optional(v.id("jobs")),
+    }),
+  ),
+  handler: async (ctx) => {
+    requireOrganizer(ctx.caller);
+    const jobs = await ctx.db
+      .query("jobs")
+      .withIndex("by_eventId", (q) => q.eq("eventId", ctx.caller.event._id))
+      .order("desc")
+      .take(10);
+    return jobs
+      .filter((j) => j.type === "import-plan" || j.type === "import-execute")
+      .map((j) => {
+        const payload = j.payload as { filename?: string; planJobId?: string };
+        return {
+          _id: j._id,
+          _creationTime: j._creationTime,
+          type: j.type,
+          status: j.status,
+          error: j.error,
+          filename: j.type === "import-plan" ? payload.filename : undefined,
+          planJobId:
+            j.type === "import-execute"
+              ? (payload.planJobId as Id<"jobs"> | undefined)
+              : undefined,
+        };
+      });
   },
 });
 
@@ -129,6 +179,7 @@ export const confirm = eventMutation({
       },
       ctx.caller.user._id,
     );
+    await ctx.db.patch("jobs", jobId, { eventId: ctx.caller.event._id });
     await logAudit(ctx, {
       orgId: ctx.caller.org._id,
       eventId: ctx.caller.event._id,

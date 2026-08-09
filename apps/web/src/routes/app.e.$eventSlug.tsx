@@ -27,6 +27,7 @@ const TAB_PATHS = {
   reviews: '/app/e/$eventSlug/reviews',
   sessions: '/app/e/$eventSlug/sessions',
   agenda: '/app/e/$eventSlug/agenda',
+  import: '/app/e/$eventSlug/import',
   publish: '/app/e/$eventSlug/publish',
   settings: '/app/e/$eventSlug/settings',
   tasks: '/app/e/$eventSlug/tasks',
@@ -82,6 +83,14 @@ const NAV_GROUPS: Array<{ items: Array<NavItem> }> = [
         id: 'comms',
         label: 'Communications',
         icon: 'mail',
+        requires: 'organizer',
+      },
+      // Import writes records with the organizer's authority, so the entry is
+      // organizer-gated like the backend surface it fronts.
+      {
+        id: 'import',
+        label: 'Import',
+        icon: 'upload',
         requires: 'organizer',
       },
       {

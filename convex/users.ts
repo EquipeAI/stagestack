@@ -23,6 +23,10 @@ export const ensure = mutation({
       .unique();
     const profile = {
       clerkSubject: identity.subject,
+      // Display/delivery data only, stored regardless of verification —
+      // NEVER an authorization key. Anything that authorizes by address
+      // (portal claiming, handoff completion) must re-read the live token
+      // and require `identity.emailVerified` (see model/portal.enterPortal).
       email: identity.email?.toLowerCase(),
       name: identity.name ?? identity.email ?? undefined,
       imageUrl: identity.pictureUrl,

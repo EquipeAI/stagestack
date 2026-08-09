@@ -8,6 +8,7 @@ import { logAudit } from "./audit";
 import { sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
 import { proposalAbstract, proposalLink } from "./cfp";
+import { republishIfPublished } from "./publish";
 import { assertEventActive } from "./reviews";
 import { instantiateForSession } from "./tasks";
 import { assertText, normalizeEmail } from "./validation";
@@ -153,12 +154,34 @@ async function upsertOrgContact(
  * Find-or-create the event-scoped publishable snapshot. Existing snapshots are
  * never rewritten (M0: "existing event snapshots never change automatically")
  * — only a missing directory link is backfilled.
+ *
+ * Identity: the source proposal speaker first (stable even when the speaker
+ * has no email — a decline→accept correction must restore, never duplicate),
+ * then email. Direct/imported speakers have no source row and match by email
+ * alone.
  */
 async function ensureEventContact(
   ctx: MutationCtx,
   event: Doc<"events">,
   profile: SpeakerProfile,
+  proposalSpeakerId?: Id<"proposalSpeakers">,
 ): Promise<Id<"eventContacts">> {
+  if (proposalSpeakerId !== undefined) {
+    const bySpeaker = await ctx.db
+      .query("eventContacts")
+      .withIndex("by_proposalSpeakerId", (q) =>
+        q.eq("proposalSpeakerId", proposalSpeakerId),
+      )
+      .first();
+    if (bySpeaker !== null) {
+      if (bySpeaker.contactId === undefined) {
+        await ctx.db.patch("eventContacts", bySpeaker._id, {
+          contactId: await upsertOrgContact(ctx, event.orgId, profile),
+        });
+      }
+      return bySpeaker._id;
+    }
+  }
   if (profile.email !== undefined) {
     const existing = await ctx.db
       .query("eventContacts")
@@ -180,6 +203,7 @@ async function ensureEventContact(
     eventId: event._id,
     orgId: event.orgId,
     contactId,
+    proposalSpeakerId,
     ...profile,
   });
 }
@@ -255,6 +279,7 @@ async function materializeSession(
       ctx,
       event,
       profileOf(speaker),
+      speaker._id,
     );
     await ensureParticipant(ctx, {
       sessionId,
@@ -461,6 +486,7 @@ export async function correctDecision(
   const now = Date.now();
   await ctx.db.patch("proposals", proposalId, { status: to, updatedAt: now });
 
+  let withdrawnKept = 0;
   if (to === "declined") {
     // Cancel, never delete: "retain it as restorable history, remove it from
     // active scheduling and public views ... and send calendar cancellations if
@@ -479,6 +505,9 @@ export async function correctDecision(
           reason: "sessionCancelled",
         });
       }
+      // A published program must not keep serving the cancelled session:
+      // rewrite the served blob now if one exists (model/publish.ts).
+      await republishIfPublished(ctx, event._id);
     }
     // Participants are intentionally left in place so a later correction back
     // to accepted restores the line-up.
@@ -497,6 +526,12 @@ export async function correctDecision(
         .withIndex("by_sessionId", (q) => q.eq("sessionId", session._id))
         .take(MAX_PARTICIPANTS_PER_SESSION);
       for (const participant of participants) {
+        // Withdrawn is terminal everywhere (setParticipationState); a restore
+        // must not quietly resurrect someone who pulled out.
+        if (participant.state === "withdrawn") {
+          withdrawnKept += 1;
+          continue;
+        }
         await ctx.db.patch("sessionParticipants", participant._id, {
           state: "awaiting",
           stateSetBy: caller.user._id,
@@ -527,7 +562,13 @@ export async function correctDecision(
     action: "decision.correct",
     targetType: "proposal",
     targetId: proposalId,
-    meta: { from, to, note: reason },
+    meta: {
+      from,
+      to,
+      note: reason,
+      // Visible in the trail when a restore left withdrawn speakers out.
+      ...(withdrawnKept > 0 ? { withdrawnExcluded: withdrawnKept } : {}),
+    },
   });
 }
 

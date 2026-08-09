@@ -13,6 +13,7 @@ import {
 } from "./comms";
 import { renderTemplate } from "./templates";
 import { slugify } from "./slugs";
+import { optionalHttpUrl } from "../lib/urls";
 import {
   assertEventActive,
   assertText,
@@ -846,7 +847,11 @@ function invalidAnswer(message: string): never {
   throw new ConvexError({ code: "invalid_answer", message });
 }
 
-function assertAnswerShape(field: FieldDef, value: AnswerValue): void {
+function assertAnswerShape(
+  ctx: QueryCtx,
+  field: FieldDef,
+  value: AnswerValue,
+): void {
   // null is the canonical "cleared" value; drafts save partial answers.
   if (value === null) return;
   if (field.kind === "multiselect") {
@@ -865,6 +870,17 @@ function assertAnswerShape(field: FieldDef, value: AnswerValue): void {
   }
   if (typeof value !== "string") {
     invalidAnswer(`"${field.label}" expects text.`);
+  }
+  // A file answer is dereferenced with ctx.storage.getUrl later (organizer and
+  // reviewer views); anything that isn't a real storage id is refused here so
+  // a malformed value can never take those reads down. Empty string stays
+  // allowed as "cleared" — consumers already skip it.
+  if (
+    field.kind === "file" &&
+    value.length > 0 &&
+    ctx.db.system.normalizeId("_storage", value) === null
+  ) {
+    invalidAnswer(`"${field.label}" expects an uploaded file.`);
   }
   const max = LONG_TEXT_KINDS.includes(field.kind)
     ? LONG_TEXT_MAX
@@ -914,7 +930,7 @@ export async function saveAnswers(
   for (const [key, value] of Object.entries(answers)) {
     const field = byId.get(key);
     if (field === undefined) continue;
-    assertAnswerShape(field, value);
+    assertAnswerShape(ctx, field, value);
     kept[key] = value;
   }
 
@@ -974,6 +990,20 @@ export async function setSpeakers(
         rawEmail !== undefined && rawEmail.length > 0
           ? normalizeEmail(rawEmail)
           : undefined,
+      // Speaker links end up as hrefs on the public program (M7), so they get
+      // the same http(s)-only gate as portal profile links (lib/urls.ts).
+      links:
+        s.links === undefined
+          ? undefined
+          : {
+              website: optionalHttpUrl(s.links.website, "Speaker website link"),
+              twitter: optionalHttpUrl(s.links.twitter, "Speaker Twitter link"),
+              linkedin: optionalHttpUrl(
+                s.links.linkedin,
+                "Speaker LinkedIn link",
+              ),
+              github: optionalHttpUrl(s.links.github, "Speaker GitHub link"),
+            },
     };
   });
 
@@ -1208,32 +1238,38 @@ export async function listProposals(
   const eventId = caller.event._id;
   const status = filters?.status;
   const [proposals, speakerRows] = await Promise.all([
-    ctx.db
-      .query("proposals")
-      .withIndex("by_eventId_and_status", (q) =>
-        status === undefined
-          ? q.eq("eventId", eventId)
-          : q.eq("eventId", eventId).eq("status", status),
-      )
-      .order("desc")
-      .take(500),
+    // Unfiltered lists use the plain by-event index: the status-first index
+    // ordered desc would keep a status-skewed slice once past the cap.
+    status === undefined
+      ? ctx.db
+          .query("proposals")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+          .order("desc")
+          .take(500)
+      : ctx.db
+          .query("proposals")
+          .withIndex("by_eventId_and_status", (q) =>
+            q.eq("eventId", eventId).eq("status", status),
+          )
+          .order("desc")
+          .take(500),
     // One event-wide read instead of a speaker query per proposal. 500
-    // proposals × 10 speakers is the hard ceiling, so 2000 is generous.
+    // proposals × 10 speakers is the hard ceiling, so 5000 covers it.
     ctx.db
       .query("proposalSpeakers")
       .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(2000),
+      .take(5000),
   ]);
   const counts = new Map<Id<"proposals">, number>();
   for (const row of speakerRows) {
     counts.set(row.proposalId, (counts.get(row.proposalId) ?? 0) + 1);
   }
-  const out: ProposalRow[] = proposals.map((proposal) => ({
+  // Both index reads are newest-first already (creation time is the trailing
+  // index column in each case).
+  return proposals.map((proposal) => ({
     proposal,
     speakerCount: counts.get(proposal._id) ?? 0,
   }));
-  // by_eventId_and_status orders by status first; present newest-first overall.
-  return out.sort((a, b) => b.proposal._creationTime - a.proposal._creationTime);
 }
 
 export type ProposalDetail = {
@@ -1272,9 +1308,11 @@ export async function getProposalDetail(
       fileFields.map(async (f) => {
         const answer = proposal.answers[f.id];
         if (typeof answer === "string" && answer.length > 0) {
-          fileUrls[answer] = await ctx.storage.getUrl(
-            answer as Id<"_storage">,
-          );
+          // Never hand a raw answer to storage: a malformed value would throw
+          // and take the whole detail view down. Malformed → null URL.
+          const storageId = ctx.db.system.normalizeId("_storage", answer);
+          fileUrls[answer] =
+            storageId === null ? null : await ctx.storage.getUrl(storageId);
         }
       }),
     );
@@ -1389,7 +1427,8 @@ export async function listFileAnswers(
   if (fileFields.length === 0) return [];
   const proposals = await ctx.db
     .query("proposals")
-    .withIndex("by_eventId_and_status", (q) => q.eq("eventId", caller.event._id))
+    .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+    .order("desc")
     .take(500);
   const rows: FileAnswerRow[] = [];
   await Promise.all(
@@ -1397,12 +1436,15 @@ export async function listFileAnswers(
       fileFields.map(async (f) => {
         const answer = p.answers[f.id];
         if (typeof answer === "string" && answer.length > 0) {
+          // Malformed values must not throw the whole bundle away (see
+          // getProposalDetail): they surface as a null URL instead.
+          const storageId = ctx.db.system.normalizeId("_storage", answer);
           rows.push({
             proposalId: p._id,
             proposalTitle: p.title,
             fieldLabel: f.label,
             storageId: answer,
-            url: await ctx.storage.getUrl(answer as Id<"_storage">),
+            url: storageId === null ? null : await ctx.storage.getUrl(storageId),
           });
         }
       }),

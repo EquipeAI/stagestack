@@ -206,6 +206,45 @@ describe("events.updateSettings", () => {
     );
   });
 
+  test("website must be a full http(s) URL — it renders as a public href", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+
+    // A javascript: scheme would become a clickable XSS vector on the public
+    // event page (M7), and a bare host would render as a relative link.
+    await expectRejectedWith(
+      alice.mutation(api.events.updateSettings, {
+        eventSlug,
+        patch: { website: "javascript:alert(1)" },
+      }),
+      "invalid_link",
+    );
+    await expectRejectedWith(
+      alice.mutation(api.events.updateSettings, {
+        eventSlug,
+        patch: { website: "acme.example" },
+      }),
+      "invalid_link",
+    );
+
+    await alice.mutation(api.events.updateSettings, {
+      eventSlug,
+      patch: { website: "https://acme.example" },
+    });
+    let { event } = await alice.query(api.events.get, { eventSlug });
+    expect(event.website).toBe("https://acme.example");
+
+    // Blank clears, exactly like null.
+    await alice.mutation(api.events.updateSettings, {
+      eventSlug,
+      patch: { website: "   " },
+    });
+    ({ event } = await alice.query(api.events.get, { eventSlug }));
+    expect(event.website).toBeUndefined();
+  });
+
   test("NEGATIVE: a reviewer cannot update settings (eventMutation requires organizer)", async () => {
     const t = setupTest();
     const alice = await signIn(t, "alice");

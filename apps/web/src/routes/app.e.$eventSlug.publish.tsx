@@ -15,6 +15,7 @@ import {
   Switch,
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
+import { copyToClipboard } from '~/lib/clipboard'
 import { pushToast } from '~/components/toast'
 import { formatDateTime } from '~/lib/datetime'
 import {
@@ -33,15 +34,6 @@ import {
 export const Route = createFileRoute('/app/e/$eventSlug/publish')({
   component: PublishConsole,
 })
-
-function copyToClipboard(text: string, toast: string) {
-  if (
-    typeof navigator !== 'undefined' &&
-    typeof navigator.clipboard !== 'undefined'
-  ) {
-    void navigator.clipboard.writeText(text).then(() => pushToast(toast))
-  }
-}
 
 function PublishConsole() {
   const { eventSlug } = Route.useParams()
@@ -325,7 +317,7 @@ function LinkRow({
         variant="secondary"
         size="sm"
         iconLeft="copy"
-        onClick={() => copyToClipboard(value, toast)}
+        onClick={() => void copyToClipboard(value, toast)}
         disabled={value === ''}
       >
         Copy
@@ -350,7 +342,9 @@ function EmbedRow({
           variant="ghost"
           size="sm"
           iconLeft="copy"
-          onClick={() => copyToClipboard(snippet, `${section} embed copied`)}
+          onClick={() =>
+            void copyToClipboard(snippet, `${section} embed copied`)
+          }
         >
           Copy snippet
         </Button>

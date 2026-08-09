@@ -4,6 +4,10 @@
    Unlayered, so it wins over Tailwind's layered preflight. */
 @import '../ds/styles.css';
 
+/* Marketing / landing page styles (media queries the DS inline styles
+   can't express). Scoped under .mkt-*. */
+@import './marketing.css';
+
 @layer base {
   .using-mouse * {
     outline: none !important;

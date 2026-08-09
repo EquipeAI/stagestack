@@ -1,6 +1,7 @@
 {
   "name": "@stagestack/web",
   "private": true,
+  "license": "MIT",
   "sideEffects": false,
   "type": "module",
   "scripts": {
@@ -8,6 +9,7 @@
     "typecheck": "node scripts/typecheck.mjs --noEmit",
     "build": "npm run typecheck && vite build",
     "start": "node .output/server/index.mjs",
+    "test": "vitest run",
     "format": "prettier --write .",
     "lint": "npm run typecheck && eslint .  --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "lint:ds": "eslint src --no-warn-ignored"
@@ -28,7 +30,7 @@
     "nitro": "^3.0.260610-beta",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
-    "xlsx": "0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@convex-dev/eslint-plugin": "^2.0.0",
@@ -36,6 +38,8 @@
     "@convex-dev/resend": "0.2.6",
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/eslint-config": "0.4.0",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/react": "16.3.2",
     "@types/luxon": "3.7.1",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.14",
@@ -43,10 +47,12 @@
     "@typescript/native": "npm:typescript@^7.0.2",
     "@vitejs/plugin-react": "^6.0.2",
     "convex-helpers": "0.1.122",
+    "jsdom": "30.0.1",
     "prettier": "^3.8.3",
     "tailwindcss": "^4.2.2",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vite": "^8.2.0",
-    "vite-tsconfig-paths": "^6.1.1"
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "4.1.10"
   }
 }

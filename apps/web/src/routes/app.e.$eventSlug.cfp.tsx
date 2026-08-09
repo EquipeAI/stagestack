@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useCallback, useState } from 'react'
+import { createFileRoute, useBlocker, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Doc } from '@convex/_generated/dataModel'
@@ -126,24 +126,43 @@ function Builder({
   const publishing = usePending()
 
   const [draft, setDraft] = useState<FormDef>(form.working)
+  // The working copy this draft was seeded from. `form.working` moves when a
+  // colleague saves; the baseline stays put, which is how "you edited" is told
+  // apart from "the server moved" — dirty against the live copy would blame
+  // their save on you (or silently rebase your save over theirs).
+  const [baseline, setBaseline] = useState<FormDef>(form.working)
+  // Last copy the subscription delivered. Re-seeding keys off a *new delivery*
+  // rather than off disagreement with the baseline, so the stale copy still on
+  // the wire right after our own save never overwrites the just-saved draft.
+  const [lastServer, setLastServer] = useState<FormDef>(form.working)
   const [openFieldId, setOpenFieldId] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
 
-  const dirty = !sameForm(draft, form.working)
+  const dirty = !sameForm(draft, baseline)
+  // A new working copy arrived (a colleague saved, or our save round-tripped).
+  // Follow it while this screen is clean; when dirty, keep the draft and let
+  // the conflict notice make the choice explicit. (State adjusted during
+  // render, so the stale draft is never painted.)
+  if (!sameForm(lastServer, form.working)) {
+    setLastServer(form.working)
+    if (!dirty) {
+      setDraft(form.working)
+      setBaseline(form.working)
+    }
+  }
+  const conflicted = dirty && !sameForm(baseline, form.working)
   const diverged = !sameForm(form.working, form.published)
   const publishable = !dirty && diverged
 
-  // Unsaved structure is easy to lose to a stray tab close — the builder never
-  // autosaves, so the browser has to ask.
-  useEffect(() => {
-    if (!dirty) return undefined
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault()
-    }
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [dirty])
+  // Unsaved structure is easy to lose — the builder never autosaves. The
+  // blocker covers in-app navigation with a dialog and (via its built-in
+  // beforeunload registration) the tab close.
+  const blocker = useBlocker({
+    shouldBlockFn: useCallback(() => true, []),
+    disabled: !dirty,
+    withResolver: true,
+  })
 
   const ctl: Ctl = {
     def: draft,
@@ -165,6 +184,9 @@ function Builder({
     moveSection: (si, delta) =>
       setDraft((d) => ({ sections: moved(d.sections, si, delta) })),
     addField: (si, kind) => {
+      // Id uniqueness reads the rendered snapshot (updaters must stay pure and
+      // the id is needed for setOpenFieldId); the append itself is functional
+      // like its siblings, so a batched sibling edit is never lost.
       const field = newField(kind, collectIds(draft))
       setDraft((d) => ({
         sections: d.sections.map((s, i) =>
@@ -207,6 +229,9 @@ function Builder({
       const def = normalizeFormDef(draft)
       await saveForm({ eventSlug, def })
       setDraft(def)
+      // The saved copy is the new baseline — this also clears a conflict,
+      // because overwriting via Save is the explicit choice the notice offers.
+      setBaseline(def)
       pushToast('Form saved', 'The working copy is stored. Publish to make it live.')
     })
   }
@@ -293,6 +318,26 @@ function Builder({
           {publishing.error}
         </Callout>
       ) : null}
+      {conflicted ? (
+        <Callout
+          tone="blocked"
+          title="Someone else saved this form while you were editing"
+          actions={
+            <Button
+              size="sm"
+              onClick={() => {
+                setDraft(form.working)
+                setBaseline(form.working)
+              }}
+            >
+              Discard my changes and load theirs
+            </Button>
+          }
+        >
+          The working copy on the server is no longer the one you started from.
+          Saving now replaces their version with yours.
+        </Callout>
+      ) : null}
       {!event.cfpPublished ? (
         <Callout
           tone="attention"
@@ -368,6 +413,27 @@ function Builder({
           }
         >
           <FormPreview def={normalizeFormDef(draft)} />
+        </Dialog>
+      ) : null}
+
+      {blocker.status === 'blocked' ? (
+        <Dialog
+          title="Leave without saving?"
+          description="This form has unsaved changes. They are lost if you leave now."
+          onClose={blocker.reset}
+          footer={
+            <>
+              <Button onClick={blocker.reset}>Keep editing</Button>
+              <Button variant="danger" onClick={blocker.proceed}>
+                Discard changes
+              </Button>
+            </>
+          }
+        >
+          <p style={{ color: 'var(--text-secondary)' }}>
+            Save first if you want to keep them — the builder never saves on
+            its own.
+          </p>
         </Dialog>
       ) : null}
 

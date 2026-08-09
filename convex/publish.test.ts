@@ -185,6 +185,522 @@ describe("publish — agenda independence", () => {
   });
 });
 
+describe("publish — staleness (stored blob)", () => {
+  test("editorial edits serve the OLD blob until an explicit republish", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, sessionId } = await seedProgram(t);
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId: sessionId as Id<"sessions">,
+      published: true,
+    });
+    const versionBefore = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("publishedPrograms").collect();
+      return rows[0].version;
+    });
+
+    // A title edit and a new confirmation are EDITORIAL changes: they land in
+    // the working state but must not reach the served blob on their own
+    // (decision log #12 — the public path serves the stored blob verbatim).
+    await t.run(async (ctx) => {
+      await ctx.db.patch("sessions", sessionId as Id<"sessions">, {
+        title: "Agents in Production, v2",
+      });
+      const participants = await ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_sessionId", (q) =>
+          q.eq("sessionId", sessionId as Id<"sessions">),
+        )
+        .collect();
+      const alan = participants.find((p) => p.state === "awaiting");
+      if (alan === undefined) throw new Error("no awaiting participant");
+      await ctx.db.patch("sessionParticipants", alan._id, {
+        state: "confirmed",
+      });
+    });
+
+    let program = (await t.query(api.publish.publicProgram, {
+      slug: eventSlug,
+    }))!;
+    expect(program.lineup[0].title).toBe("Agents in Production");
+    expect(program.lineup[0].speakers.map((s: { name: string }) => s.name)).toEqual(
+      ["Grace Hopper"],
+    );
+    expect(program.lineup[0].toBeAnnounced).toBe(true);
+    expect(
+      await t.run(async (ctx) => {
+        const rows = await ctx.db.query("publishedPrograms").collect();
+        return rows[0].version;
+      }),
+    ).toBe(versionBefore);
+
+    // Only the organizer's explicit republish moves the served projection.
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId: sessionId as Id<"sessions">,
+      published: true,
+    });
+    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    expect(program.lineup[0].title).toBe("Agents in Production, v2");
+    expect(program.lineup[0].speakers.map((s: { name: string }) => s.name)).toEqual(
+      ["Grace Hopper", "Alan Turing"],
+    );
+    expect(program.lineup[0].toBeAnnounced).toBe(false);
+  });
+});
+
+describe("publish — agenda items", () => {
+  const ITEM_START = Date.parse("2026-09-01T12:00:00Z");
+  const ITEM_END = Date.parse("2026-09-01T13:00:00Z");
+
+  test("an item appears only when the agenda AND the item are both published", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await seedProgram(t);
+    const roomId = await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "rooms",
+      item: { name: "Atrium" },
+    });
+    const itemId = await alice.mutation(api.agenda.createAgendaItem, {
+      eventSlug,
+      title: "Lunch",
+      startsAt: ITEM_START,
+      endsAt: ITEM_END,
+      roomId: roomId as Id<"rooms">,
+      description: "Buffet",
+    });
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setAgenda, { eventSlug, enabled: true });
+
+    // The per-item flag defaults to false: nothing leaks by accident.
+    let program = (await t.query(api.publish.publicProgram, {
+      slug: eventSlug,
+    }))!;
+    expect(program.agenda).toEqual([]);
+
+    await alice.mutation(api.publish.setAgendaItem, {
+      eventSlug,
+      itemId,
+      published: true,
+    });
+    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    expect(program.agenda).toEqual([
+      {
+        kind: "item",
+        itemId,
+        title: "Lunch",
+        startsAt: ITEM_START,
+        endsAt: ITEM_END,
+        roomName: "Atrium",
+        description: "Buffet",
+      },
+    ]);
+
+    // Unpublishing the item removes it from the grid...
+    await alice.mutation(api.publish.setAgendaItem, {
+      eventSlug,
+      itemId,
+      published: false,
+    });
+    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    expect(program.agenda).toEqual([]);
+
+    // ...and a published item stays out while the agenda itself is off.
+    await alice.mutation(api.publish.setAgendaItem, {
+      eventSlug,
+      itemId,
+      published: true,
+    });
+    await alice.mutation(api.publish.setAgenda, { eventSlug, enabled: false });
+    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    expect(program.agendaPublished).toBe(false);
+    expect(program.agenda).toEqual([]);
+  });
+
+  test("cross-event session and item ids are refused as not_found", async () => {
+    const t = setupTest();
+    const { alice, orgSlug, eventSlug } = await seedProgram(t);
+    const otherSlug = await createEvent(alice, orgSlug, "Other Summit");
+    const otherItemId = await alice.mutation(api.agenda.createAgendaItem, {
+      eventSlug: otherSlug,
+      title: "Break",
+      startsAt: ITEM_START,
+      endsAt: ITEM_END,
+    });
+    const otherSessionId = await t.run(async (ctx) => {
+      const other = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", otherSlug))
+        .unique();
+      if (other === null) throw new Error("no other event");
+      return await ctx.db.insert("sessions", {
+        eventId: other._id,
+        title: "Foreign session",
+        source: "direct",
+        status: "planned",
+      });
+    });
+
+    await expectRejectedWith(
+      alice.mutation(api.publish.setAgendaItem, {
+        eventSlug,
+        itemId: otherItemId,
+        published: true,
+      }),
+      "not_found",
+    );
+    await expectRejectedWith(
+      alice.mutation(api.publish.setSession, {
+        eventSlug,
+        sessionId: otherSessionId,
+        published: true,
+      }),
+      "not_found",
+    );
+    // The failed flips rolled back whole: nothing was published for the event.
+    expect(
+      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+    ).toBeNull();
+  });
+});
+
+describe("publish — HTTP read API", () => {
+  test("GET serves the published blob with CORS and cache headers", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, sessionId } = await seedProgram(t);
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId: sessionId as Id<"sessions">,
+      published: true,
+    });
+
+    const res = await t.fetch(`/api/events/${eventSlug}/program`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    // The projection only changes on an explicit publish → short public cache.
+    expect(res.headers.get("Cache-Control")).toBe("public, max-age=60");
+    const body = (await res.json()) as {
+      event: { slug: string };
+      lineup: Array<{ title: string }>;
+    };
+    expect(body.event.slug).toBe(eventSlug);
+    expect(body.lineup.map((s) => s.title)).toEqual(["Agents in Production"]);
+    // Same privacy filter as the query path: no unconfirmed names.
+    expect(JSON.stringify(body)).not.toContain("Turing");
+  });
+
+  test("an unpublished event 404s as not_published; a malformed path as not_found", async () => {
+    const t = setupTest();
+    const { eventSlug } = await seedProgram(t);
+
+    const res = await t.fetch(`/api/events/${eventSlug}/program`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "not_published" });
+    // Even errors are CORS-readable, so an embed can show a clean message.
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Cache-Control")).toBeNull();
+
+    const bad = await t.fetch(`/api/events/${eventSlug}/nope`);
+    expect(bad.status).toBe(404);
+    expect(await bad.json()).toEqual({ error: "not_found" });
+  });
+
+  test("OPTIONS preflight answers 204 with the CORS grant", async () => {
+    const t = setupTest();
+    const res = await t.fetch("/api/events/whatever/program", {
+      method: "OPTIONS",
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Methods")).toContain("GET");
+  });
+});
+
+describe("publish — archived events", () => {
+  test("archiving stops the serve and refuses publish writes; un-archiving restores the stored blob", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, sessionId } = await seedProgram(t);
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId: sessionId as Id<"sessions">,
+      published: true,
+    });
+
+    await alice.mutation(api.events.setArchived, { eventSlug, archived: true });
+
+    // The read path serves nothing for an archived event (query AND http)...
+    expect(
+      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+    ).toBeNull();
+    expect((await t.fetch(`/api/events/${eventSlug}/program`)).status).toBe(404);
+
+    // ...and every publish control is an M2+ write, so it is refused.
+    for (const call of [
+      alice.mutation(api.publish.setLineup, { eventSlug, enabled: false }),
+      alice.mutation(api.publish.setAgenda, { eventSlug, enabled: true }),
+      alice.mutation(api.publish.setSession, {
+        eventSlug,
+        sessionId: sessionId as Id<"sessions">,
+        published: false,
+      }),
+    ]) {
+      await expectRejectedWith(call, "event_archived");
+    }
+
+    // Un-archiving serves the stored blob again, untouched.
+    await alice.mutation(api.events.setArchived, { eventSlug, archived: false });
+    const program = (await t.query(api.publish.publicProgram, {
+      slug: eventSlug,
+    }))!;
+    expect(program.lineup).toHaveLength(1);
+  });
+});
+
+describe("publish — production-path projection", () => {
+  const T10 = Date.parse("2026-09-01T10:00:00Z");
+  const T11 = Date.parse("2026-09-01T11:00:00Z");
+
+  test("a session driven through accept → release → agenda release publishes with the real shapes", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+
+    // The whole production path, no raw inserts: CFP submit → accept queue →
+    // decision release → confirmation → board placement → slot release. If
+    // computeProgram ever drifts from what these writers actually store, this
+    // is the test that breaks.
+    await alice.mutation(api.cfp.publishForm, { eventSlug });
+    await alice.mutation(api.events.updateSettings, {
+      eventSlug,
+      patch: { cfpPublished: true },
+    });
+    const bob = await signIn(t, "bob");
+    const proposalId = await bob.mutation(api.cfp.startProposal, { eventSlug });
+    await bob.mutation(api.cfp.saveAnswers, {
+      proposalId,
+      answers: {
+        firstName: "Carol",
+        lastName: "Speaker",
+        email: "carol@example.com",
+        talkTitle: "Convex in anger",
+        abstract: "Everything we learned shipping a reactive backend.",
+      },
+    });
+    await bob.mutation(api.cfp.setSpeakers, {
+      proposalId,
+      speakers: [
+        {
+          firstName: "Carol",
+          lastName: "Speaker",
+          email: "carol@example.com",
+          tagline: "CTO, Acme",
+          isPrimary: true,
+        },
+      ],
+    });
+    await bob.mutation(api.cfp.submitProposal, { proposalId });
+    await alice.mutation(api.sessions.setStatus, {
+      eventSlug,
+      proposalIds: [proposalId],
+      to: "acceptQueue",
+    });
+    await alice.mutation(api.sessions.release, {
+      eventSlug,
+      proposalIds: [proposalId],
+    });
+    const { sessionId, participantId } = await t.run(async (ctx) => {
+      const session = await ctx.db
+        .query("sessions")
+        .withIndex("by_proposalId", (q) => q.eq("proposalId", proposalId))
+        .unique();
+      if (session === null) throw new Error("no session");
+      const participant = await ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_sessionId", (q) => q.eq("sessionId", session._id))
+        .unique();
+      if (participant === null) throw new Error("no participant");
+      return { sessionId: session._id, participantId: participant._id };
+    });
+    await alice.mutation(api.sessions.setParticipationState, {
+      eventSlug,
+      participantId,
+      to: "confirmed",
+    });
+    const roomId = await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "rooms",
+      item: { name: "Main Stage" },
+    });
+    await alice.mutation(api.agenda.scheduleSession, {
+      eventSlug,
+      sessionId,
+      slot: { startsAt: T10, endsAt: T11, roomId: roomId as Id<"rooms"> },
+    });
+    expect(
+      await alice.mutation(api.agenda.release, {
+        eventSlug,
+        sessionIds: [sessionId],
+      }),
+    ).toEqual([{ sessionId, ok: true }]);
+
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId,
+      published: true,
+    });
+    await alice.mutation(api.publish.setAgenda, { eventSlug, enabled: true });
+
+    const program = (await t.query(api.publish.publicProgram, {
+      slug: eventSlug,
+    }))!;
+    expect(program.lineup).toHaveLength(1);
+    expect(program.lineup[0]).toMatchObject({
+      sessionId,
+      title: "Convex in anger",
+      description: "Everything we learned shipping a reactive backend.",
+      startsAt: T10,
+      endsAt: T11,
+      roomName: "Main Stage",
+      toBeAnnounced: false,
+    });
+    expect(program.lineup[0].speakers).toEqual([
+      { name: "Carol Speaker", tagline: "CTO, Acme" },
+    ]);
+    expect(program.agenda).toHaveLength(1);
+    expect(program.agenda[0]).toMatchObject({
+      kind: "session",
+      sessionId,
+      startsAt: T10,
+    });
+    // Contact details and manager identity never cross the wire.
+    const wire = JSON.stringify(program);
+    expect(wire).not.toContain("carol@example.com");
+    expect(wire).not.toContain("bob@example.com");
+  });
+});
+
+describe("publish — event identity", () => {
+  test("a slug/name rename rewrites the served blob immediately", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, sessionId } = await seedProgram(t);
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId: sessionId as Id<"sessions">,
+      published: true,
+    });
+
+    await alice.mutation(api.events.updateSettings, {
+      eventSlug,
+      patch: { name: "Acme Summit Redux", slug: "acme-redux" },
+    });
+
+    // The blob now carries the new identity at the new slug...
+    const program = (await t.query(api.publish.publicProgram, {
+      slug: "acme-redux",
+    }))!;
+    expect(program.event.name).toBe("Acme Summit Redux");
+    expect(program.event.slug).toBe("acme-redux");
+    expect(program.lineup).toHaveLength(1);
+    // ...and the old slug no longer resolves.
+    expect(
+      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+    ).toBeNull();
+  });
+
+  test("a rename before any publish stays unpublished", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await seedProgram(t);
+    await alice.mutation(api.events.updateSettings, {
+      eventSlug,
+      patch: { name: "Quiet Rename" },
+    });
+    expect(
+      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+    ).toBeNull();
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("publishedPrograms").collect(),
+    );
+    expect(rows).toEqual([]);
+  });
+});
+
+describe("publish — size guard", () => {
+  test("an oversized program is refused naming the largest sessions; unpublishing shrinks it back under", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await seedProgram(t);
+
+    // Ten ~100KB sessions push the blob past the ~900KB guard (the document
+    // itself caps at 1MiB). Inserted directly: the guard is about the blob,
+    // not about how the content got in.
+    const bigIds = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      const ids: Array<Id<"sessions">> = [];
+      for (let i = 0; i < 10; i += 1) {
+        const id = await ctx.db.insert("sessions", {
+          eventId: event._id,
+          title: `Big session ${i}`,
+          description: "x".repeat(95_000 + i * 1_000),
+          source: "direct",
+          status: "planned",
+        });
+        await ctx.db.insert("publicationFlags", {
+          eventId: event._id,
+          targetType: "session",
+          targetId: id,
+          published: true,
+          updatedAt: Date.now(),
+        });
+        ids.push(id);
+      }
+      return ids;
+    });
+
+    let thrown: unknown;
+    try {
+      await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    } catch (error) {
+      thrown = error;
+    }
+    const data = (thrown as { data?: { code?: string; message?: string } })
+      .data;
+    expect(data?.code).toBe("program_too_large");
+    // The message names the largest sessions so the fix is actionable.
+    expect(data?.message).toContain("Big session 9");
+    // The whole mutation rolled back: nothing got published.
+    expect(
+      await t.query(api.publish.publicProgram, { slug: eventSlug }),
+    ).toBeNull();
+
+    // Unpublishing big sessions removes their content from the recompute in
+    // the same transaction, so the flag flip always lands.
+    for (const sessionId of bigIds.slice(1)) {
+      await alice.mutation(api.publish.setSession, {
+        eventSlug,
+        sessionId,
+        published: false,
+      });
+    }
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    const program = (await t.query(api.publish.publicProgram, {
+      slug: eventSlug,
+    }))!;
+    expect(program.lineup.map((s: { title: string }) => s.title)).toEqual([
+      "Big session 0",
+    ]);
+  });
+});
+
 describe("publish — authorization", () => {
   test("reviewers cannot read state or publish", async () => {
     const t = setupTest();

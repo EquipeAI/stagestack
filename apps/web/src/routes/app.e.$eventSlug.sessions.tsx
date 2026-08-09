@@ -18,6 +18,7 @@ import {
   Toolbar,
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
+import { PARTICIPANT_STATE_LABEL } from '~/lib/labels'
 import { pushToast } from '~/components/toast'
 import { SessionPortalDialog } from '~/components/portal/SessionPortalDialog'
 
@@ -31,15 +32,7 @@ export const Route = createFileRoute('/app/e/$eventSlug/sessions')({
 })
 
 type SessionRow = FunctionReturnType<typeof api.sessions.list>[number]
-type Participant = SessionRow['participants'][number]
 type Row = SessionRow & { id: string }
-
-const PARTICIPANT_STATE_LABEL: Record<Participant['state'], string> = {
-  awaiting: 'Awaiting Response',
-  confirmed: 'Confirmed',
-  declined: 'Declined',
-  withdrawn: 'Withdrawn',
-}
 
 function Sessions() {
   const { eventSlug } = Route.useParams()

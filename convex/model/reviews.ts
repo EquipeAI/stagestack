@@ -320,7 +320,11 @@ export async function myAssignments(
         typeof value === "string" &&
         value.length > 0
       ) {
-        fileUrls[value] = await ctx.storage.getUrl(value as Id<"_storage">);
+        // One malformed stored value must not throw and blank the reviewer's
+        // whole assignment list — it degrades to a null URL instead.
+        const storageId = ctx.db.system.normalizeId("_storage", value);
+        fileUrls[value] =
+          storageId === null ? null : await ctx.storage.getUrl(storageId);
       }
     }
     rows.push({

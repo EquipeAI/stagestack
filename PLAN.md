@@ -2,7 +2,7 @@
 
 Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) · [docs/CHALLENGE.md](docs/CHALLENGE.md) · milestones: [docs/MILESTONES.md](docs/MILESTONES.md)
 
-## STATUS: SUBMISSION-READY
+## STATUS: SUBMISSION-READY — M8 (code-review hardening) IN PROGRESS
 
 All 8 milestones (M0-M7) built, tested (220 convex-test, incl. negative authz),
 browser-verified as a signed-in user, prod-verified on https://stagestack.dev,
@@ -31,6 +31,103 @@ production instance. See "Must-do by hand" below.
    repoint `VITE_CONVEX_URL` + the worker's `CONVEX_URL`.
 3. Nothing else. Vercel git auto-deploy, the worker VM, Resend, and the domain
    are all wired and working.
+
+## M8 — Code-review hardening — Aug 9 (in progress)
+
+Source: 5-agent comprehensive review (backend correctness, security/authz,
+frontend, email/scheduling/worker, tests). Grouped into workstreams matching
+the fix orchestration; severity in brackets.
+
+### W-A Publish & portal (privacy/staleness)
+
+- [x] [HIGH] Withdrawn speakers / cancelled sessions stay in the served public blob despite code+email claiming suppression (model/publish.ts:439, model/portal.ts:841, model/sessions.ts:464) — auto-republish on privacy-relevant events (withdraw/decline/decision-correction) when the event has a published program; keep explicit publish for editorial changes; make the withdrawal email wording truthful
+- [x] [HIGH] Portal claim trusts unverified email: enforce email_verified from the Clerk JWT in enterPortal/completeHandoffs (model/portal.ts:530,565; users.ts:24) + document Clerk template requirement
+- [ ] [MED] publishedPrograms.program single blob nears 1MiB cap and bricks unpublish when republish throws (schema.ts:528, model/publish.ts:269) — dedupe lineup/agenda session duplication + size guard with actionable error (M8 note: 900KiB size guard with largest-sessions error landed, and unpublish now always passes the guard; the lineup/agenda dedupe itself was skipped — agenda entries still embed full session copies)
+- [x] [MED] Manager backstage link not gated on speaker confirmation (model/portal.ts:401)
+- [x] [LOW] event.website stored/rendered unvalidated → javascript: href on public page (model/events.ts:160, ProgramView.tsx:179)
+- [ ] [NIT] Slug rename leaves stale identity in served blob + old URL 404s (model/events.ts:142) (M8 note: rename now rewrites identity into the served blob immediately; no old-slug redirect was built — the old URL still 404s)
+
+### W-B Reminders & email pipeline
+
+- [x] [MED] Hourly sweep is one all-or-nothing transaction across all events (reminders.ts:354) — batch per-event via scheduler continuation; one bad event must not kill all reminders
+- [x] [HIGH] Calendar invites fire-once, no retry, no failure record; "unchanged" guard blocks resend (model/agenda.ts:917, emails.ts:191) — record comms-log row at schedule time, patch on success/failure, allow forced resend
+- [x] [LOW] Webhook race on .ics path drops delivery status forever (emails.ts:43) — fixed by pre-insert above
+- [x] [LOW] Reminder due dates render UTC not event tz (reminders.ts:51); sweeps never stop after event end (only archive); >200-recipient cap silently drops (reminders.ts:75); counters double-count consolidated emails (reminders.ts:346)
+- [x] [NIT] audienceCounts 4x read amplification (model/audiences.ts:360)
+
+### W-C Worker queue & import
+
+- [x] [HIGH] No lease/expiry/requeue — claimed jobs stranded forever on worker death (worker.ts:38); claimedAt-based lease sweep + attempts counter with max→failed
+- [x] [HIGH] SIGTERM abandons in-flight jobs on every deploy (apps/worker/src/index.ts:113) — drain inFlight before exit
+- [x] [MED] Transport errors escape claimAndRun as unhandled rejections → crash loop (index.ts:73)
+- [x] [MED] import-execute not idempotent for proposals/sessions — duplicates on re-run (model/imports.ts:160)
+- [x] [MED] Worker fns: constant-time secret compare + finish status guard (worker.ts:12,55)
+- [x] [HIGH] Import UI unreachable (no nav link) and plan unrecoverable on navigation (import.tsx:90,255) — nav entry + latest-jobs query + resume from server state
+- [x] [NIT] Dead "running" job status (schema.ts:203)
+
+### W-D Sessions & CFP backend
+
+- [x] [HIGH] Decline→accept correction duplicates email-less participants + their tasks (model/sessions.ts:157,233,485)
+- [x] [LOW] Correction resurrects withdrawn participants (model/sessions.ts:495)
+- [x] [MED] File answers hit storage.getUrl unvalidated — one bad proposal breaks reviewer lists (model/cfp.ts:849,1269,1395; model/reviews.ts:315) — normalizeId gate
+- [x] [MED] CFP speaker links skip scheme validation → javascript: URLs reach public program JSON (model/cfp.ts:964)
+- [x] [LOW] listProposals >500 truncation keeps wrong rows (status-skewed index order) + speakerCount under-count (model/cfp.ts:1210)
+- [x] [NIT] vAnswerValue admits numbers that assertAnswerShape always rejects (shared/formDef.ts:73)
+
+### W-E Agenda .ics sequencing
+
+- [x] [MED] SEQUENCE goes backwards after cancel→re-release (Outlook drops invite) + per-participant cancel doesn't persist bump (model/agenda.ts:1041,1188,1261) — persist monotonic per-UID sequence that survives cancellation
+
+### W-F Backend misc
+
+- [x] [LOW] Date.now() in queries (model/team.ts:198,384,411) — inject now
+- [x] [LOW] Room/track delete leaves dangling refs in sessions/releasedSlots (model/library.ts:183) — in-use guard; + assertEventActive on library writes
+- [x] [NIT] Dead contacts.userId field + by_userId index; auth.viewer skeleton query removal (check no frontend refs)
+
+### W-G Frontend data-loss & correctness
+
+- [x] [HIGH] Form builder loses unsaved work on in-app navigation — useBlocker (app.e.$eventSlug.cfp.tsx:139)
+- [x] [MED] Resubmit-mode edits silently discarded when window expires mid-edit (cfp.$eventSlug.proposal.$proposalId.tsx:142)
+- [x] [MED] Locale-dependent SSR on public pages → hydration mismatch (lib/datetime.ts:73) — pin luxon locale
+- [x] [MED] Settings/builder last-write-wins with no conflict signal (settings.tsx:60, cfp.tsx:128) — dirty-aware re-seed + conflict notice
+- [x] [NIT] Builder addField reads draft from closure (cfp.tsx:167); CfpWindowBanner Date.now in render (CfpChrome.tsx:86)
+
+### W-H Frontend a11y & polish
+
+- [x] [MED] DS Dialog: focus trap/restore, Escape, aria-labelledby (ds/components/feedback/Dialog.jsx)
+- [x] [MED] Agenda DnD keyboard access (KeyboardSensor + Enter on GridBlock) + DataTable clickable rows keyboard (TimeGrid.tsx:330, DataTable.jsx:20)
+- [x] [MED] Agenda drops surface mutation errors (AgendaBoard.tsx:141)
+- [x] [LOW] Unify clipboard helper w/ fallback+feedback (proposals/team/publish); room capacity integer≥1 validation (settings.tsx:850); org invite email validation; review timestamps in event tz (ProposalDetailDialog.tsx:451); decision-panel catches surface backend message (ProposalDetailDialog.tsx:165); PARTICIPANT_STATE_LABEL + useNow dedupe; per-row pending + delete confirm in library sections (settings.tsx:546); shift-select stale anchor (proposals.tsx:203); publicLinks hardcoded origin (ProgramView.tsx:33); import reviewer-gate flash (import.tsx:93)
+
+### W-T Tests & deps
+
+- [x] Publish: staleness semantics (edit w/o republish serves old blob), setAgendaItem, http.ts via t.fetch (404/CORS/cache), archived gating, production-path seeding (drive accept/release instead of raw inserts)
+- [x] Calendar-invite action body executes in a test (finishAllScheduledFunctions + mocked fetch): attachment/idempotency-key/failure recording
+- [x] Reminder sweep: >cap overflow behavior, stop-on-cancel/withdraw
+- [x] New M8 behaviors: dup-participant fix, sequence monotonicity, lease requeue, import idempotency, email_verified gate
+- [x] Frontend test infra (vitest+testing-library in apps/web) + 3 priority tests: CFP wizard validation/conditional logic, agenda placement math, portal confirm dialog fields
+- [x] xlsx@0.18.5 advisory: swap to a patched/alternative lib or document bounded-exposure decision (swapped both apps to SheetJS CDN xlsx@0.20.3)
+
+### M8 verification (Aug 9)
+
+Integration pass: convex codegen + tsc clean, web/worker typecheck clean,
+267 convex tests + 41 web tests green, lint:ds 0 errors. Frontend wired to
+the new team.ts `now` args (team/org/invite/BulkBar via useNow+useLastLoaded).
+
+**M8 manual steps (Alvaro):**
+
+- **Clerk JWT template**: add the `email_verified` claim
+  (`{{user.email_verified}}`) to the `convex` JWT template in the Clerk
+  dashboard. Portal entry now REQUIRES it — an absent claim reads as
+  unverified and every portal claim is refused with `email_unverified`.
+- **Redeploy the worker VM** (`scripts/deploy-worker.sh`) after this lands:
+  SIGTERM drain, batchIndex idempotency, and the xlsx 0.20.3 swap all live
+  in apps/worker.
+- **Schema push check**: the schema now drops `contacts.userId` (+ its
+  `by_userId` index) and the jobs `"running"` status. If any existing rows
+  on the deployment still carry those values the push is refused — clear
+  them first (none expected: portal claims live on eventContacts.userId and
+  no job ever reached "running").
 
 ## Done: M7 — Public content out — Aug 9
 

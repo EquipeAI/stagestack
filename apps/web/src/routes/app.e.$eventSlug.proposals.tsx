@@ -12,6 +12,7 @@ import type {
   ViewDef,
 } from '~/components/abstracts/model'
 import { Button, Callout, Card, EmptyState, SearchInput, Toolbar } from '~/ds'
+import { copyToClipboard } from '~/lib/clipboard'
 import { AbstractsTable } from '~/components/abstracts/AbstractsTable'
 import { AddProposalDialog } from '~/components/abstracts/AddProposalDialog'
 import { BulkBar } from '~/components/abstracts/BulkBar'
@@ -128,7 +129,10 @@ function Abstracts({
   const [openId, setOpenId] = useState<ProposalId | null>(null)
   const [adding, setAdding] = useState(false)
   const [copied, setCopied] = useState(false)
-  const lastIndex = useRef<number | null>(null)
+  // The shift-select anchor is a row, not a position: filtering and sorting
+  // move rows around between clicks, and a remembered index would then select
+  // a range nobody pointed at.
+  const anchorId = useRef<ProposalId | null>(null)
 
   const ids = useMemo(
     () => systemFieldIds(form === undefined ? null : (form.published ?? form.working)),
@@ -202,10 +206,14 @@ function Abstracts({
 
   const onToggleRow = (id: ProposalId, shiftKey: boolean) => {
     const position = visible.findIndex((r) => r.proposal._id === id)
+    const anchor =
+      anchorId.current === null
+        ? -1
+        : visible.findIndex((r) => r.proposal._id === anchorId.current)
     setSelected((prev) => {
       const next = new Set(prev)
-      if (shiftKey && lastIndex.current !== null && position >= 0) {
-        const [from, to] = [lastIndex.current, position].sort((a, b) => a - b)
+      if (shiftKey && anchor >= 0 && position >= 0) {
+        const [from, to] = [anchor, position].sort((a, b) => a - b)
         for (const row of visible.slice(from, to + 1)) next.add(row.proposal._id)
       } else if (next.has(id)) {
         next.delete(id)
@@ -214,7 +222,7 @@ function Abstracts({
       }
       return next
     })
-    lastIndex.current = position
+    anchorId.current = id
   }
 
   const onToggleAll = () => {
@@ -226,17 +234,19 @@ function Abstracts({
 
   const clearSelection = () => {
     setSelected(new Set())
-    lastIndex.current = null
+    anchorId.current = null
   }
 
   const copyLink = () => {
     if (typeof window === 'undefined') return
-    void navigator.clipboard
-      .writeText(`${window.location.origin}/cfp/${eventSlug}`)
-      .then(() => {
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), 2000)
-      })
+    void copyToClipboard(
+      `${window.location.origin}/cfp/${eventSlug}`,
+      'CFP link copied',
+    ).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    })
   }
 
   if (rows === undefined) {

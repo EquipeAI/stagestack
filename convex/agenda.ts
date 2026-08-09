@@ -218,6 +218,8 @@ export const setVirtualLinks = eventMutation({
  * The explicit external step: tell the speakers, individually or in a batch.
  * Per-id results — one blocked session must not lose the whole wave. Speaker
  * and room collisions are non-overridable, so there is no `force` flag.
+ * Re-releasing an unchanged slot resends only to participants whose last
+ * invite failed to send; otherwise it comes back "unchanged".
  */
 export const release = eventMutation({
   args: { sessionIds: v.array(v.id("sessions")) },

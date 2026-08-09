@@ -84,36 +84,70 @@ function recordDetail(r: PlannedRecord): string {
   return ''
 }
 
+type ViewSelection = {
+  planJobId: Id<'jobs'> | null
+  executeJobId: Id<'jobs'> | null
+}
+
 function ImportPage() {
   const { eventSlug } = Route.useParams()
   const event = useQuery(api.events.get, { eventSlug })
-  const [planJobId, setPlanJobId] = useState<Id<'jobs'> | null>(null)
-  const [executeJobId, setExecuteJobId] = useState<Id<'jobs'> | null>(null)
+  const isOrganizer = event?.role === 'organizer'
+  // Server state is the resume source ("the plan will be waiting on your
+  // return"); local state only overrides it after an explicit action here
+  // (started an upload, confirmed a plan, chose "start over").
+  const jobs = useQuery(api.imports.listJobs, isOrganizer ? { eventSlug } : 'skip')
+  const [override, setOverride] = useState<ViewSelection | null>(null)
 
-  if (event !== undefined && event.role !== 'organizer') {
+  // Hold the gate until the role is known, so reviewers never see the
+  // organizer-only UI flash during load.
+  if (event === undefined) {
+    return <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>
+  }
+  if (event.role !== 'organizer') {
     return (
       <Callout tone="blocked" title="Organizers only">
         Importing creates records in this event.
       </Callout>
     )
   }
+  if (jobs === undefined && override === null) {
+    return <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>
+  }
+
+  let selection: ViewSelection = { planJobId: null, executeJobId: null }
+  if (override !== null) {
+    selection = override
+  } else {
+    // Resume the most recent import: an execution (finished or not) wins over
+    // its plan; an unconfirmed plan (even failed — the error is actionable)
+    // comes back for review.
+    const latest = jobs?.[0]
+    if (latest?.type === 'import-execute') {
+      selection = { planJobId: null, executeJobId: latest._id }
+    } else if (latest?.type === 'import-plan') {
+      selection = { planJobId: latest._id, executeJobId: null }
+    }
+  }
+  const { planJobId, executeJobId } = selection
+  const restart = () => setOverride({ planJobId: null, executeJobId: null })
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
       {executeJobId !== null ? (
-        <ExecutionView eventSlug={eventSlug} jobId={executeJobId} onRestart={() => {
-          setPlanJobId(null)
-          setExecuteJobId(null)
-        }} />
+        <ExecutionView eventSlug={eventSlug} jobId={executeJobId} onRestart={restart} />
       ) : planJobId !== null ? (
         <PlanView
           eventSlug={eventSlug}
           jobId={planJobId}
-          onConfirmed={(id) => setExecuteJobId(id)}
-          onRestart={() => setPlanJobId(null)}
+          onConfirmed={(id) => setOverride({ planJobId, executeJobId: id })}
+          onRestart={restart}
         />
       ) : (
-        <UploadView eventSlug={eventSlug} onStarted={(id) => setPlanJobId(id)} />
+        <UploadView
+          eventSlug={eventSlug}
+          onStarted={(id) => setOverride({ planJobId: id, executeJobId: null })}
+        />
       )}
     </div>
   )
@@ -387,9 +421,14 @@ function ExecutionView({
   }
   if (job === null || job.status === 'failed') {
     return (
-      <Callout tone="blocked" title="Import failed">
-        {job?.error ?? 'The import job disappeared.'}
-      </Callout>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <Callout tone="blocked" title="Import failed">
+          {job?.error ?? 'The import job disappeared.'}
+        </Callout>
+        <div>
+          <Button onClick={onRestart}>Start a new import</Button>
+        </div>
+      </div>
     )
   }
   if (report === null) {

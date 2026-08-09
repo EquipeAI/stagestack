@@ -359,11 +359,13 @@ describe("cfp.saveAnswers", () => {
     const afterDrop = await bob.query(api.cfp.getMyProposal, { proposalId });
     expect(afterDrop.proposal.answers).not.toHaveProperty("nonsense");
     expect(afterDrop.proposal.answers.talkTitle).toBe("Kept");
-    // A number where the form wants text.
+    // A number: no field kind is numeric. vAnswerValue no longer admits
+    // numbers (a deployment rejects them at the arg validator); convex-test
+    // doesn't enforce record value validators, so the handler check fires.
     await expectRejectedWith(
       bob.mutation(api.cfp.saveAnswers, {
         proposalId,
-        answers: { talkTitle: 42 },
+        answers: { talkTitle: 42 as unknown as string },
       }),
       "invalid_answer",
     );
@@ -757,6 +759,32 @@ describe("cfp.listProposals", () => {
       "forbidden",
     );
   });
+
+  test("the unfiltered list is newest-first across mixed statuses", async () => {
+    const t = setupTest();
+    const { alice, bob, eventSlug, proposalId } = await readyProposal(t);
+    await bob.mutation(api.cfp.submitProposal, { proposalId });
+    const second = await bob.mutation(api.cfp.startProposal, { eventSlug });
+    await bob.mutation(api.cfp.saveAnswers, {
+      proposalId: second,
+      answers: { ...FULL_ANSWERS, talkTitle: "Second talk" },
+    });
+    await bob.mutation(api.cfp.setSpeakers, {
+      proposalId: second,
+      speakers: [{ firstName: "Bob", lastName: "Speaker", isPrimary: true }],
+    });
+    await bob.mutation(api.cfp.submitProposal, { proposalId: second });
+    // Different statuses on purpose: the creation-ordered by-event index must
+    // not group by status the way the status-first index would.
+    await alice.mutation(api.sessions.setStatus, {
+      eventSlug,
+      proposalIds: [second],
+      to: "acceptQueue",
+    });
+
+    const rows = await alice.query(api.cfp.listProposals, { eventSlug });
+    expect(rows.map((r) => r.proposal._id)).toEqual([second, proposalId]);
+  });
 });
 
 describe("cfp.reopenProposal", () => {
@@ -878,5 +906,100 @@ describe("cfp.setSpeakers", () => {
     expect(
       (await bob.query(api.cfp.getMyProposal, { proposalId })).speakers,
     ).toHaveLength(2);
+  });
+
+  test("speaker links must be http(s) — javascript: never reaches storage", async () => {
+    const t = setupTest();
+    const { bob, proposalId } = await readyProposal(t);
+
+    await expectRejectedWith(
+      bob.mutation(api.cfp.setSpeakers, {
+        proposalId,
+        speakers: [
+          {
+            firstName: "Bob",
+            lastName: "Speaker",
+            isPrimary: true,
+            links: { website: "javascript:alert(1)" },
+          },
+        ],
+      }),
+      "invalid_link",
+    );
+
+    // Valid links pass; blank fields collapse to absent instead of storing "".
+    await bob.mutation(api.cfp.setSpeakers, {
+      proposalId,
+      speakers: [
+        {
+          firstName: "Bob",
+          lastName: "Speaker",
+          isPrimary: true,
+          links: { website: "https://example.com/bob", twitter: "   " },
+        },
+      ],
+    });
+    const { speakers } = await bob.query(api.cfp.getMyProposal, { proposalId });
+    expect(speakers[0].links).toEqual({ website: "https://example.com/bob" });
+  });
+});
+
+describe("cfp file answers", () => {
+  test("file answers must be storage ids; malformed stored values degrade to null URLs", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const bob = await signIn(t, "bob");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+    const def: FormDef = starterFormDef();
+    def.sections[1].fields.push({
+      id: "slides",
+      kind: "file",
+      label: "Slides",
+      required: false,
+    });
+    await alice.mutation(api.cfp.updateWorkingForm, { eventSlug, def });
+    await openCfp(alice, eventSlug);
+    const proposalId = await bob.mutation(api.cfp.startProposal, { eventSlug });
+
+    // Anything that isn't a storage id is refused at write time.
+    await expectRejectedWith(
+      bob.mutation(api.cfp.saveAnswers, {
+        proposalId,
+        answers: { ...FULL_ANSWERS, slides: "https://evil.example/x" },
+      }),
+      "invalid_answer",
+    );
+
+    // A real storage id is accepted and resolves for the organizer views.
+    const storageId = await t.run(
+      async (ctx) => await ctx.storage.store(new Blob(["deck"])),
+    );
+    await bob.mutation(api.cfp.saveAnswers, {
+      proposalId,
+      answers: { ...FULL_ANSWERS, slides: storageId },
+    });
+    const detail = await alice.query(api.cfp.getProposalDetail, {
+      eventSlug,
+      proposalId,
+    });
+    expect(detail.fileUrls[storageId]).toBeTruthy();
+
+    // A malformed value that predates the write-time gate (planted directly)
+    // must not take the organizer reads down — it degrades to a null URL.
+    await t.run(async (ctx) => {
+      const proposal = await ctx.db.get("proposals", proposalId);
+      await ctx.db.patch("proposals", proposalId, {
+        answers: { ...proposal!.answers, slides: "not-a-storage-id" },
+      });
+    });
+    const degraded = await alice.query(api.cfp.getProposalDetail, {
+      eventSlug,
+      proposalId,
+    });
+    expect(degraded.fileUrls["not-a-storage-id"]).toBeNull();
+    const bundle = await alice.query(api.cfp.listFileAnswers, { eventSlug });
+    expect(bundle).toHaveLength(1);
+    expect(bundle[0].url).toBeNull();
   });
 });

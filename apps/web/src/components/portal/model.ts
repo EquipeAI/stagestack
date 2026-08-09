@@ -13,13 +13,9 @@ export type ManagedParticipant = ManagingItem['participants'][number]
 export type PortalProfile = SpeakingItem['eventContact']
 export type ParticipantState = SpeakingItem['state']
 
-/** The product's fixed vocabulary — StatusPill maps these to tones. */
-export const PARTICIPANT_STATE_LABEL: Record<ParticipantState, string> = {
-  awaiting: 'Awaiting Response',
-  confirmed: 'Confirmed',
-  declined: 'Declined',
-  withdrawn: 'Withdrawn',
-}
+// State labels live in ~/lib/labels — re-exported here so portal views keep
+// importing their vocabulary from the portal model.
+export { PARTICIPANT_STATE_LABEL } from '~/lib/labels'
 
 export function personName(person: {
   firstName: string

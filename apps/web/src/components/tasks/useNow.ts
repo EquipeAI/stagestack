@@ -1,22 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef } from 'react'
+import { useNow as useTick } from '~/lib/useNow'
 
 /**
- * A clock that ticks. Overdue state is derived from `now` on the server
- * (convex/model/readiness.ts takes it as an argument on purpose), so the
- * dashboard has to keep feeding it a current value or "overdue" quietly goes
- * stale. One minute is the resolution a due date deserves.
+ * Overdue state is derived from `now` on the server (convex/model/readiness.ts
+ * takes it as an argument on purpose), so the dashboard has to keep feeding it
+ * a current value or "overdue" quietly goes stale. One minute is the
+ * resolution a due date deserves.
  */
 export function useNow(intervalMs = 60_000): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setNow(Date.now())
-    }, intervalMs)
-    return () => {
-      window.clearInterval(id)
-    }
-  }, [intervalMs])
-  return now
+  return useTick(intervalMs)
 }
 
 /**

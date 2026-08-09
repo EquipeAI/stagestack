@@ -19,7 +19,9 @@ import { formatDateTime } from '~/lib/datetime'
 // Export is client-side on purpose: the table is already bounded (≤500 rows)
 // and in memory, so CSV and XLSX are instant and cost the backend nothing.
 // `xlsx` and `jszip` are dynamically imported so they never enter the bundle
-// an organizer downloads just to look at the table.
+// an organizer downloads just to look at the table. `xlsx` resolves to the
+// vendor tarball pinned in package.json — SheetJS left the npm registry after
+// 0.18.5, the version the prototype-pollution and ReDoS advisories name.
 
 export type ExportInput = {
   rows: ReadonlyArray<AbstractRow>
@@ -128,9 +130,12 @@ export function exportCsv(input: ExportInput, filename: string) {
   downloadBlob(blob, `${filename}.csv`)
 }
 
-export async function exportXlsx(input: ExportInput, filename: string) {
+/** Split out from `exportXlsx` so the workbook can be round-tripped in a test
+ * without a DOM download. */
+export async function xlsxBytes(
+  rows: Array<Array<string>>,
+): Promise<ArrayBuffer> {
   const XLSX = await import('xlsx')
-  const rows = buildSheet(input)
   const sheet = XLSX.utils.aoa_to_sheet(rows)
   sheet['!cols'] = rows[0].map((_, index) => ({
     wch: Math.min(
@@ -140,7 +145,11 @@ export async function exportXlsx(input: ExportInput, filename: string) {
   }))
   const book = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(book, sheet, 'Proposals')
-  const data = XLSX.write(book, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
+  return XLSX.write(book, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
+}
+
+export async function exportXlsx(input: ExportInput, filename: string) {
+  const data = await xlsxBytes(buildSheet(input))
   downloadBlob(
     new Blob([data], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

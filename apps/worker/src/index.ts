@@ -45,9 +45,16 @@ const handlers: { [K in JobType]: (job: PendingJob) => Promise<unknown> } = {
     const results: RecordResult[] = [];
     for (let i = 0; i < records.length; i += IMPORT_LIMITS.executeBatch) {
       const batch = records.slice(i, i + IMPORT_LIMITS.executeBatch);
+      // batchIndex is the idempotency key: a re-run after a lost response
+      // replays the recorded results instead of duplicating writes.
       const batchResults = await client.mutation(
         api.worker.importExecuteBatch,
-        { secret, jobId: job._id, records: batch },
+        {
+          secret,
+          jobId: job._id,
+          batchIndex: i / IMPORT_LIMITS.executeBatch,
+          records: batch,
+        },
       );
       results.push(...batchResults);
       console.log(
@@ -70,9 +77,15 @@ async function runJob(job: PendingJob): Promise<unknown> {
   return await handlers[job.type](job);
 }
 
+// Set while shutting down: no new claims, in-flight jobs get to finish.
+let draining = false;
+
 async function claimAndRun(job: PendingJob) {
-  if (inFlight.has(job._id)) return;
+  if (draining || inFlight.has(job._id)) return;
   inFlight.add(job._id);
+  // Everything below stays inside this try: claim/finish are network calls,
+  // and an escaped rejection here would crash the process (systemd
+  // Restart=always would then crash-loop against the same job).
   try {
     const claimed = await client.mutation(api.worker.claim, {
       secret,
@@ -89,6 +102,8 @@ async function claimAndRun(job: PendingJob) {
       });
       console.log(`[worker] done ${job._id}`);
     } catch (err) {
+      // Job failure: report it. If this finish itself throws, the outer
+      // catch logs and the lease sweep requeues the job.
       await client.mutation(api.worker.finish, {
         secret,
         jobId: job._id,
@@ -96,6 +111,13 @@ async function claimAndRun(job: PendingJob) {
       });
       console.error(`[worker] failed ${job._id}`, err);
     }
+  } catch (err) {
+    // Claim or finish never reached the deployment. Don't rethrow: the lease
+    // sweep recovers the job once the claim (if any) expires.
+    console.error(
+      `[worker] transport error on ${job._id} — lease sweep will recover`,
+      err,
+    );
   } finally {
     inFlight.delete(job._id);
   }
@@ -109,10 +131,28 @@ client.onUpdate(api.worker.pending, { secret }, (jobs) => {
 });
 console.log("[worker] subscribed to jobs queue");
 
-// Graceful shutdown under systemd restarts.
-for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.on(sig, () => {
-    console.log(`[worker] ${sig} — closing`);
+// Graceful shutdown under systemd restarts: stop claiming, drain in-flight
+// jobs (bounded — systemd's default TimeoutStopSec is 90s, then SIGKILL),
+// then close. Jobs still running at the deadline are left to the lease sweep.
+const DRAIN_TIMEOUT_MS = 60_000;
+
+function shutdown(sig: string) {
+  if (draining) return; // second signal: drain already in progress
+  draining = true;
+  console.log(`[worker] ${sig} — draining ${inFlight.size} in-flight job(s)`);
+  const deadline = Date.now() + DRAIN_TIMEOUT_MS;
+  const poll = setInterval(() => {
+    if (inFlight.size > 0 && Date.now() < deadline) return;
+    clearInterval(poll);
+    if (inFlight.size > 0) {
+      console.warn(
+        `[worker] drain timeout — abandoning ${inFlight.size} job(s) to the lease sweep`,
+      );
+    }
     void client.close().finally(() => process.exit(0));
-  });
+  }, 250);
+}
+
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => shutdown(sig));
 }

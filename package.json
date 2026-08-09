@@ -1,6 +1,7 @@
 {
   "name": "stagestack",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "workspaces": [
     "apps/*"

@@ -12,7 +12,7 @@ import {
   draggableId,
   slotDroppableId,
 } from './model'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, KeyboardEvent } from 'react'
 import type { BoardRoom, BoardTrack, HourRange, PlacedBlock } from './model'
 
 // The shared time-axis grid behind the Room, Track, Day and Week views. Columns
@@ -329,11 +329,29 @@ function GridBlock({
   const id = draggableId(block)
   const { setNodeRef, listeners, attributes } = useDraggable({ id })
   const isSource = activeId === id
+
+  // dnd-kit already makes the block a focusable role="button"; space is its
+  // pick-up key (see keyboardDrag.ts), so Enter is what opens the block. While
+  // any drag is running both keys belong to the sensor, which ends the drag.
+  // The sensor's own handler has to run first — spreading `listeners` after
+  // this one would drop it.
+  const startDrag = listeners?.onKeyDown as
+    | ((event: KeyboardEvent<HTMLDivElement>) => void)
+    | undefined
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    startDrag?.(e)
+    if (e.defaultPrevented || activeId !== null) return
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    onOpenBlock(block)
+  }
+
   return (
     <div
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      onKeyDown={onKeyDown}
       onClick={() => {
         onOpenBlock(block)
       }}

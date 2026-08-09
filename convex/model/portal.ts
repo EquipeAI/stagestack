@@ -14,9 +14,11 @@ import {
 } from "./comms";
 import { renderTemplate } from "./templates";
 import { publicProposalStatus } from "./cfp";
+import * as Publish from "./publish";
 import * as Sessions from "./sessions";
 import * as Tasks from "./tasks";
 import { assertEventActive, assertText, normalizeEmail } from "./validation";
+import { optionalHttpUrl } from "../lib/urls";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Speaker portal (M3).
@@ -117,23 +119,15 @@ function optionalText(
 }
 
 /**
- * A profile link, bounded and lightly validated: these become clickable on
- * public pages in M7, so a non-empty value must be a real http(s) URL —
- * `javascript:`/`data:` and other schemes are refused rather than rendered.
+ * A profile link: these become clickable on public pages in M7, so a
+ * non-empty value must be a real http(s) URL — `javascript:`/`data:` and
+ * other schemes are refused rather than rendered (lib/urls.ts).
  */
 function optionalLink(
   value: string | undefined,
   label: string,
 ): string | undefined {
-  const trimmed = optionalText(value, label, 300);
-  if (trimmed === undefined) return undefined;
-  if (!/^https?:\/\//i.test(trimmed)) {
-    throw new ConvexError({
-      code: "invalid_link",
-      message: `${label} must be a full URL starting with http:// or https://.`,
-    });
-  }
-  return trimmed;
+  return optionalHttpUrl(value, label);
 }
 
 function validateProfile(input: PortalProfileInput): PortalProfileInput {
@@ -398,7 +392,13 @@ async function buildContext(
         viaProposalId: session.proposalId,
         participants: rows,
         releasedSlot: await slotOf(session),
-        backstageUrl: session.virtualLinks?.backstage,
+        // Same audience rule as the speaking view: "Confirmed participants
+        // and their primary managers can access backstage links" — until
+        // someone on the session has confirmed, the manager has no one to
+        // manage backstage and must not see the link.
+        backstageUrl: rows.some((r) => r.state === "confirmed")
+          ? session.virtualLinks?.backstage
+          : undefined,
       });
     }
   }
@@ -533,8 +533,25 @@ export async function enterPortal(
   eventSlug: string,
 ): Promise<null> {
   const event = await eventBySlug(ctx, eventSlug);
-  const email = user.email?.trim().toLowerCase();
-  if (email === undefined || email.length === 0) return null;
+  // Matching the address IS the authorization step, so it must come from the
+  // live token, not the users row: Convex surfaces Clerk's `email_verified`
+  // claim as `identity.emailVerified` only when the JWT template carries it,
+  // and an absent claim reads as unverified. Without this check anyone could
+  // add someone else's address to their Clerk account (unverified) and claim
+  // that speaker's snapshots and pending handoffs.
+  const identity = await ctx.auth.getUserIdentity();
+  const email = identity?.email?.trim().toLowerCase();
+  if (identity === null || email === undefined || email.length === 0) {
+    // No address at all: nothing can match — same empty portal as a stranger.
+    return null;
+  }
+  if (identity.emailVerified !== true) {
+    throw new ConvexError({
+      code: "email_unverified",
+      message:
+        "Verify your email address to enter the speaker portal.",
+    });
+  }
 
   const snapshots = await ctx.db
     .query("eventContacts")
@@ -562,6 +579,8 @@ export async function enterPortal(
   return null;
 }
 
+/** Only reachable through `enterPortal`'s verified-email gate: `email` is the
+ * caller's Clerk-verified address, never a self-reported one. */
 async function completeHandoffs(
   ctx: MutationCtx,
   user: Doc<"users">,
@@ -760,6 +779,11 @@ export async function confirmParticipation(
     actorUserId: user._id,
     to: args.to,
   });
+  // A decline revokes the speaker's public presence, so the served blob must
+  // follow immediately — the privacy exception to explicit-publish.
+  if (args.to === "declined" && participant.state !== "declined") {
+    await Publish.republishIfPublished(ctx, event._id);
+  }
 }
 
 /**
@@ -829,6 +853,9 @@ export async function withdrawParticipation(
     actorUserId: user._id,
     reason: "withdrawn",
   });
+  // The organizer email below promises "their name and profile are suppressed
+  // from public output" — make it true now, not at the next explicit publish.
+  await Publish.republishIfPublished(ctx, event._id);
 
   const session = await ctx.db.get("sessions", participant.sessionId);
   const contact = await ctx.db.get(
@@ -1287,4 +1314,9 @@ export async function organizerSetParticipationState(
     actorUserId: caller.user._id,
     to,
   });
+  // Same privacy exception as the portal decline: a declined speaker's name
+  // must leave the served blob immediately, whoever recorded the decision.
+  if (to === "declined" && participant.state !== "declined") {
+    await Publish.republishIfPublished(ctx, caller.event._id);
+  }
 }

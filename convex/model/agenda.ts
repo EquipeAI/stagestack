@@ -27,8 +27,10 @@ import { assertEventActive, assertText } from "./validation";
 //
 // Two placements per session, deliberately:
 //   • draft  — sessions.startsAt / endsAt / roomId. What the board shows.
-//   • released — sessions.releasedSlot. What the speakers were TOLD, plus the
-//     .ics SEQUENCE that makes a calendar update replace rather than duplicate.
+//   • released — sessions.releasedSlot. What the speakers were TOLD. The .ics
+//     SEQUENCE that makes a calendar update replace rather than duplicate
+//     comes from sessions.icsSequence, a per-session counter that only ever
+//     increments (see nextIcsSequence) — never from releasedSlot alone.
 //
 // Conflicts are DERIVED, never stored (same posture as readiness): a pure
 // function over the scheduled rows, so the board, the release gate and the
@@ -824,6 +826,19 @@ export function slotUid(
   return `session-${sessionId}-${participantId}@stagestack.dev`;
 }
 
+/**
+ * Next .ics SEQUENCE for this session's UIDs. RFC 5546 requires SEQUENCE to be
+ * monotonic per UID: Outlook/Exchange keep a cancelled UID as a tombstone and
+ * silently drop any later REQUEST that doesn't exceed the CANCEL's number, so
+ * every send — REQUEST or CANCEL, session-wide or per-participant — must draw
+ * from (and persist) `sessions.icsSequence`. Gaps are fine; going backwards is
+ * not. Rows that predate the counter fall back to releasedSlot.sequence.
+ */
+function nextIcsSequence(session: Doc<"sessions">): number {
+  const last = session.icsSequence ?? session.releasedSlot?.sequence;
+  return last === undefined ? 0 : last + 1;
+}
+
 function formatMoment(ms: number, timezone: string): string {
   try {
     return new Intl.DateTimeFormat("en-US", {
@@ -857,7 +872,7 @@ export type SlotResult = {
   error?: string;
 };
 
-type ReleaseMode = "first" | "reset" | "update";
+type ReleaseMode = "first" | "reset" | "update" | "resend";
 
 type InviteArgs = {
   event: Doc<"events">;
@@ -963,6 +978,66 @@ async function loadManagers(
   return new Map(ids.map((id, i) => [id, docs[i]]));
 }
 
+/** The comms-log kinds queueSlotEmail sends under — nothing else writes them,
+ * so they identify a session's invite trail among the event's messages. */
+const CALENDAR_KINDS: ReadonlySet<string> = new Set([
+  "schedule.released",
+  "schedule.updated",
+  "schedule.cancelled",
+]);
+/** Newest-first comms-log rows examined per failed-invite check. A trail
+ * buried deeper than this simply isn't resent — bounded read over recovery. */
+const MESSAGE_SCAN = 2000;
+
+/**
+ * Participants whose MOST RECENT calendar message failed to send, mapped to
+ * the kind they missed. convex/emails.ts logs every calendar send and patches
+ * the row `failed` when the Resend call dies; that row is what lets an
+ * unchanged release resend the invite instead of demanding cancel +
+ * re-release. Only send failures count — a bounce is a bad address, and a
+ * failed CANCEL is skipped because that participant no longer holds an
+ * invitation (their ack was cleared when the cancellation went out).
+ */
+async function failedLastInvites(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+  sessionId: Id<"sessions">,
+  participants: Array<Doc<"sessionParticipants">>,
+): Promise<Map<Id<"sessionParticipants">, string>> {
+  const pending = new Set<string>(participants.map((p) => p._id));
+  const failed = new Map<Id<"sessionParticipants">, string>();
+  let scanned = 0;
+  const query = ctx.db
+    .query("messages")
+    .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+    .order("desc");
+  for await (const message of query) {
+    if (pending.size === 0 || scanned >= MESSAGE_SCAN) break;
+    scanned += 1;
+    if (!CALENDAR_KINDS.has(message.kind)) continue;
+    const context: unknown = message.context;
+    if (typeof context !== "object" || context === null) continue;
+    const { sessionId: forSession, participantId } = context as {
+      sessionId?: unknown;
+      participantId?: unknown;
+    };
+    if (forSession !== sessionId) continue;
+    if (typeof participantId !== "string" || !pending.has(participantId)) {
+      continue;
+    }
+    // First hit per participant is their latest calendar message; older rows
+    // no longer matter.
+    pending.delete(participantId);
+    if (
+      message.deliveryStatus === "failed" &&
+      message.kind !== "schedule.cancelled"
+    ) {
+      failed.set(participantId as Id<"sessionParticipants">, message.kind);
+    }
+  }
+  return failed;
+}
+
 async function roomNames(
   ctx: QueryCtx,
   event: Doc<"events">,
@@ -987,6 +1062,11 @@ async function roomNames(
  * any change to its DATE OR START TIME reset every speaker to Awaiting
  * Acknowledgement; a room or end-time change notifies and updates the calendar
  * entry without resetting it.
+ *
+ * An unchanged slot is normally refused ("unchanged") — EXCEPT for
+ * participants whose most recent calendar message failed to send (comms log,
+ * convex/emails.ts): those get their missed invite resent at a fresh
+ * SEQUENCE, so a failed send doesn't force cancel + re-release.
  *
  * Speaker/room collisions are NON-OVERRIDABLE here — there is deliberately no
  * `force` argument.
@@ -1036,8 +1116,13 @@ export async function releaseSlots(
       endsAt: session.endsAt,
       roomId: session.roomId,
     };
+    const participants = (
+      schedule.participantsBySession.get(sessionId) ?? []
+    ).filter(counts);
     const released = session.releasedSlot;
     let mode: ReleaseMode;
+    // participant → the kind they missed; only consulted for mode "resend".
+    let failedInvites = new Map<Id<"sessionParticipants">, string>();
     if (released === undefined) {
       mode = "first";
     } else if (released.startsAt !== slot.startsAt) {
@@ -1048,26 +1133,47 @@ export async function releaseSlots(
     ) {
       mode = "update";
     } else {
-      results.push({ sessionId, ok: false, error: "unchanged" });
-      continue;
+      failedInvites = await failedLastInvites(
+        ctx,
+        event._id,
+        sessionId,
+        participants,
+      );
+      if (failedInvites.size === 0) {
+        results.push({ sessionId, ok: false, error: "unchanged" });
+        continue;
+      }
+      mode = "resend";
     }
 
-    const sequence = released === undefined ? 0 : released.sequence + 1;
-    await ctx.db.patch("sessions", sessionId, {
-      releasedSlot: { ...slot, releasedAt: now, sequence },
-    });
+    const sequence = nextIcsSequence(session);
+    if (mode === "resend") {
+      // The released placement stands; only the counter moves, so the resent
+      // REQUEST can't fall behind a CANCEL already out under this session.
+      await ctx.db.patch("sessions", sessionId, { icsSequence: sequence });
+    } else {
+      await ctx.db.patch("sessions", sessionId, {
+        releasedSlot: { ...slot, releasedAt: now, sequence },
+        icsSequence: sequence,
+      });
+    }
 
     const templateKey =
       mode === "first" ? "schedule.released" : "schedule.updated";
     let notified = 0;
     let unreachable = 0;
-    const participants = (
-      schedule.participantsBySession.get(sessionId) ?? []
-    ).filter(counts);
     for (const participant of participants) {
-      // Room/end-only changes do NOT reset an existing acknowledgement; a
-      // participant who has never seen a slot still starts at awaitingAck.
-      if (mode !== "update" || participant.ack === undefined) {
+      // A resend only reaches the participants whose last invite failed.
+      if (mode === "resend" && !failedInvites.has(participant._id)) continue;
+      // Room/end-only changes and resends do NOT reset an existing
+      // acknowledgement (the speaker may have acknowledged via the portal
+      // despite the failed email); a participant who has never seen a slot
+      // still starts at awaitingAck.
+      if (
+        mode === "first" ||
+        mode === "reset" ||
+        participant.ack === undefined
+      ) {
         await ctx.db.patch("sessionParticipants", participant._id, {
           ack: "awaitingAck",
           ackSetBy: caller.user._id,
@@ -1087,7 +1193,8 @@ export async function releaseSlots(
         roomName: slot.roomId === undefined ? undefined : rooms.get(slot.roomId),
         sequence,
         method: "REQUEST",
-        templateKey,
+        // A resend re-delivers the exact notice that failed to send.
+        templateKey: failedInvites.get(participant._id) ?? templateKey,
         context: { mode },
       });
       if (sent) notified += 1;
@@ -1107,7 +1214,7 @@ export async function releaseSlots(
         startsAt: slot.startsAt,
         endsAt: slot.endsAt,
         roomId: slot.roomId,
-        ackReset: mode !== "update",
+        ackReset: mode === "first" || mode === "reset",
         notified,
         unreachable,
       },
@@ -1147,7 +1254,7 @@ export async function cancelReleasedSlot(
     .take(PARTICIPANT_SCAN);
   const managers = await loadManagers(ctx, participants);
   const rooms = await roomNames(ctx, args.event);
-  const sequence = released.sequence + 1;
+  const sequence = nextIcsSequence(args.session);
 
   let notified = 0;
   for (const participant of participants) {
@@ -1186,11 +1293,13 @@ export async function cancelReleasedSlot(
   }
 
   // Clearing releasedSlot is what makes the board honest again ("not
-  // released"). A later re-release therefore restarts SEQUENCE at 0 — safe,
-  // because a cancelled UID is gone from the attendee's calendar and the new
-  // REQUEST creates it fresh.
+  // released") — but icsSequence stays and keeps counting: Outlook/Exchange
+  // keep the cancelled UID as a tombstone at this CANCEL's SEQUENCE and
+  // silently drop any later REQUEST that doesn't exceed it (RFC 5546), so a
+  // re-release must continue ABOVE the CANCEL, never restart at 0.
   await ctx.db.patch("sessions", args.session._id, {
     releasedSlot: undefined,
+    icsSequence: sequence,
   });
   await logAudit(ctx, {
     orgId: args.event.orgId,
@@ -1258,6 +1367,11 @@ export async function cancelParticipantSlot(
     roomNames(ctx, args.event),
   ]);
   const released = session.releasedSlot;
+  const sequence = nextIcsSequence(session);
+  // Persisted: without this the next session-wide release would reuse this
+  // exact number, and the resent REQUEST would tie the CANCEL instead of
+  // exceeding it — Outlook/Exchange would silently drop it.
+  await ctx.db.patch("sessions", session._id, { icsSequence: sequence });
   const sent = await queueSlotEmail(ctx, {
     event: args.event,
     session,
@@ -1267,7 +1381,7 @@ export async function cancelParticipantSlot(
     slot: released,
     roomName:
       released.roomId === undefined ? undefined : rooms.get(released.roomId),
-    sequence: released.sequence + 1,
+    sequence,
     method: "CANCEL",
     templateKey: "schedule.cancelled",
     context: { reason: args.reason, participantOnly: true },
@@ -1287,7 +1401,7 @@ export async function cancelParticipantSlot(
     meta: {
       reason: args.reason,
       sessionId: session._id,
-      sequence: released.sequence + 1,
+      sequence,
       notified: sent,
     },
   });

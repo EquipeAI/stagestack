@@ -69,13 +69,10 @@ export type SectionDef = Infer<typeof vSectionDef>;
 export type FormDef = Infer<typeof vFormDef>;
 
 // Answer values keyed by field id. File fields store a storage id string;
-// multiselect stores string[].
-export const vAnswerValue = v.union(
-  v.string(),
-  v.number(),
-  v.array(v.string()),
-  v.null(),
-);
+// multiselect stores string[]. There is no numeric field kind, and
+// assertAnswerShape (model/cfp.ts) has always rejected numbers, so none are
+// stored — the validator matches what the write path admits.
+export const vAnswerValue = v.union(v.string(), v.array(v.string()), v.null());
 export type AnswerValue = Infer<typeof vAnswerValue>;
 
 export function allFields(def: FormDef): FieldDef[] {

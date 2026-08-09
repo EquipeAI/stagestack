@@ -263,9 +263,33 @@ export async function computeProgram(
   };
 }
 
-/** Recompute and persist the published projection. This is the ONLY writer of
- * publishedPrograms; every publish/unpublish action ends by calling it so the
- * served blob always matches the current flags. */
+/** The program is one document (schema: publishedPrograms.program), so it must
+ * stay under Convex's 1MiB document cap. Guard well below it: past this, an
+ * explicit publish is refused with the largest sessions named, so the fix
+ * (unpublish some of them) is obvious. Unpublishing always passes the guard —
+ * the flag flip lands before the recompute in the same transaction, so the
+ * recomputed blob no longer contains the unpublished content. */
+const MAX_PROGRAM_BYTES = 900 * 1024;
+
+function assertProgramFits(program: PublicProgram): void {
+  const bytes = new TextEncoder().encode(JSON.stringify(program)).length;
+  if (bytes <= MAX_PROGRAM_BYTES) return;
+  const largest = [...program.lineup]
+    .map((s) => ({ title: s.title, bytes: JSON.stringify(s).length }))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 3)
+    .map((s) => `"${s.title}" (~${Math.round(s.bytes / 1024)}KB)`);
+  throw new ConvexError({
+    code: "program_too_large",
+    message:
+      `The published program is too large to serve (${Math.round(bytes / 1024)}KB). ` +
+      `Unpublish some sessions and try again — the largest are ${largest.join(", ")}.`,
+  });
+}
+
+/** Recompute and persist the published projection. This is the primary writer
+ * of publishedPrograms; every publish/unpublish action ends by calling it so
+ * the served blob always matches the current flags. */
 export async function republish(
   ctx: MutationCtx,
   caller: EventCaller,
@@ -275,6 +299,7 @@ export async function republish(
   // (publicPageEnabled), and caller.event is the pre-mutation snapshot.
   const event = (await ctx.db.get("events", caller.event._id)) ?? caller.event;
   const program = await computeProgram(ctx, event);
+  assertProgramFits(program);
   const existing = await ctx.db
     .query("publishedPrograms")
     .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
@@ -293,6 +318,43 @@ export async function republish(
     await ctx.db.replace("publishedPrograms", existing._id, doc);
   }
   return version;
+}
+
+/**
+ * Rewrite the served blob IF one exists — the deliberate exception to the
+ * "stored blob, explicit publish" design (decision log #12). Editorial changes
+ * wait for the organizer's explicit republish, but a transition that revokes a
+ * person's public presence (withdraw/decline) or the event's identity (slug/
+ * name rename) must propagate immediately: the stale blob would keep serving a
+ * name whose owner withdrew, or an identity that no longer exists. A never-
+ * published event stays unpublished.
+ *
+ * No requireOrganizer — the actor may be a portal speaker withdrawing; the
+ * caller has already authorized the underlying transition. No size guard —
+ * suppressions only shrink the blob, and a rename's growth is bounded far
+ * below the guard's headroom; a privacy transition must never be blocked.
+ */
+export async function republishIfPublished(
+  ctx: MutationCtx,
+  eventId: Id<"events">,
+): Promise<void> {
+  const existing = await ctx.db
+    .query("publishedPrograms")
+    .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+    .unique();
+  if (existing === null) return;
+  const event = await ctx.db.get("events", eventId);
+  if (event === null) return;
+  const program = await computeProgram(ctx, event);
+  await ctx.db.replace("publishedPrograms", existing._id, {
+    eventId,
+    version: existing.version + 1,
+    publishedAt: Date.now(),
+    // The last explicit publisher stays on record: this rewrite is a forced
+    // privacy propagation, not a new editorial decision.
+    publishedBy: existing.publishedBy,
+    program,
+  });
 }
 
 async function setFlag(

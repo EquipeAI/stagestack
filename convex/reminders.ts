@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -7,7 +8,12 @@ import { renderTemplate } from "./model/templates";
 import { routeParticipant, type AudienceRecipient } from "./model/audiences";
 
 // ─────────────────────────────────────────────────────────────────────────
-// Scheduled reminders (M5). One hourly sweep, driven by crons.ts.
+// Scheduled reminders (M5). Hourly cron, driven by crons.ts.
+//
+// Shape (M8): the cron entry (`sweep`) is a cheap dispatcher — it scans the
+// bounded event list and schedules ONE independent `sweepEvent` mutation per
+// eligible event. Each event sweeps in its own transaction, so one oversized
+// event or one failing render aborts only that event, never the whole sweep.
 //
 // The rules this file exists to enforce (MILESTONES M4/M5):
 //  • Unconfirmed speakers get PARTICIPATION reminders, never task chasing.
@@ -31,9 +37,14 @@ import { routeParticipant, type AudienceRecipient } from "./model/audiences";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** How long past `endsAt` the sweep keeps chasing. A week covers post-event
+ * collection (slides, recordings); after that, silence — an event that never
+ * gets archived must not be chased forever. */
+export const POST_EVENT_GRACE_DAYS = 7;
+
 // v1 bounds. An hourly full scan of `events` is fine at this size and keeps the
-// sweep a single transaction; the moment this deployment has more than a few
-// hundred events it wants an index on "has a cadence" instead.
+// dispatcher a single cheap transaction; the moment this deployment has more
+// than a few hundred events it wants an index on "has a cadence" instead.
 const EVENT_SCAN = 500;
 const REQUIREMENT_SCAN = 200;
 const INSTANCE_SCAN = 4000;
@@ -48,8 +59,21 @@ function isActionable(status: Doc<"taskInstances">["status"]): boolean {
   return status === "pending" || status === "changesRequested";
 }
 
-function due(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
+/** Date-only, in the event's timezone — every outbound date is event time
+ * (M6 rule; matches describeSlot in model/agenda.ts). */
+function due(ms: number, timezone: string): string {
+  try {
+    // en-CA renders YYYY-MM-DD, the format these digests always used.
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(ms));
+  } catch {
+    // A bad IANA zone must degrade the wording, never break a send.
+    return new Date(ms).toISOString().slice(0, 10);
+  }
 }
 
 /**
@@ -191,15 +215,30 @@ function taskParticipant(
 
 // ── The per-event sweep ────────────────────────────────────────────────────
 
-async function sweepEvent(
+type EventSweepResult = {
+  taskEmails: number;
+  participationEmails: number;
+  /** Distinct recipients dropped by MAX_RECIPIENTS_PER_EVENT this run —
+   * visible in the result instead of silently truncated (M8). They are not
+   * stamped, so the next sweep picks them up. */
+  deferredRecipients: number;
+};
+
+const EMPTY_SWEEP: EventSweepResult = {
+  taskEmails: 0,
+  participationEmails: 0,
+  deferredRecipients: 0,
+};
+
+async function runEventSweep(
   ctx: MutationCtx,
   event: Doc<"events">,
   graph: EventGraph,
   now: number,
-): Promise<{ taskEmails: number; participationEmails: number }> {
+): Promise<EventSweepResult> {
   const eventCadence = event.reminderCadenceDays;
   if (eventCadence === undefined) {
-    return { taskEmails: 0, participationEmails: 0 };
+    return EMPTY_SWEEP;
   }
 
   const [requirements, instances] = await Promise.all([
@@ -215,6 +254,7 @@ async function sweepEvent(
   const requirementById = new Map(requirements.map((r) => [r._id, r]));
 
   const buckets = new Map<string, Bucket>();
+  const deferred = new Set<string>();
 
   // ── (a) Task sections ──
   for (const instance of instances) {
@@ -237,13 +277,18 @@ async function sweepEvent(
     const recipient = routeFor(graph, participant, "task");
     if (recipient === null) continue;
     const bucket = bucketFor(buckets, recipient);
-    if (bucket === null) continue;
+    if (bucket === null) {
+      deferred.add(recipient.email);
+      continue;
+    }
     bucket.taskInstanceIds.push(instance._id);
     const who = speakerLabel(graph, participant);
     bucket.taskLines.push(
       `<strong>${escapeHtml(requirement.title)}</strong>${
         who ? ` for ${escapeHtml(who)}` : ""
-      } — ${escapeHtml(session.title)} (due ${escapeHtml(due(instance.dueAt))})`,
+      } — ${escapeHtml(session.title)} (due ${escapeHtml(
+        due(instance.dueAt, event.timezone),
+      )})`,
     );
   }
 
@@ -259,7 +304,10 @@ async function sweepEvent(
       const recipient = routeFor(graph, participant, "personal");
       if (recipient === null) continue;
       const bucket = bucketFor(buckets, recipient);
-      if (bucket === null) continue;
+      if (bucket === null) {
+        deferred.add(recipient.email);
+        continue;
+      }
       bucket.participantIds.push(participant._id);
       bucket.participationLines.push(
         `<strong>${escapeHtml(session.title)}</strong>`,
@@ -268,6 +316,9 @@ async function sweepEvent(
   }
 
   // ── One combined email per recipient, then stamp everything it covered ──
+  // Counters count EMAILS, not sections: a combined send (tasks template with
+  // a folded-in participation section) is one taskEmail, so the two counters
+  // always sum to the number of messages actually sent (M8).
   let taskEmails = 0;
   let participationEmails = 0;
   for (const bucket of buckets.values()) {
@@ -344,12 +395,27 @@ async function sweepEvent(
       });
     }
     if (hasTasks) taskEmails += 1;
-    if (hasParticipation) participationEmails += 1;
+    else participationEmails += 1;
   }
-  return { taskEmails, participationEmails };
+  if (deferred.size > 0) {
+    console.warn(
+      `reminders: event ${event._id} deferred ${deferred.size} recipients past MAX_RECIPIENTS_PER_EVENT=${MAX_RECIPIENTS_PER_EVENT}`,
+    );
+  }
+  return { taskEmails, participationEmails, deferredRecipients: deferred.size };
 }
 
-// ── The sweep ────────────────────────────────────────────────────────────
+// ── The sweep: cheap dispatcher + one independent mutation per event ──────
+
+/** Archived events stop automations entirely (MILESTONES M0); no cadence
+ * means reminders are off; and the sweep stops chasing POST_EVENT_GRACE_DAYS
+ * after the event ends, whether or not anyone remembered to archive it. */
+function sweepEligible(event: Doc<"events">, now: number): boolean {
+  if (event.archivedAt !== undefined) return false;
+  if (event.reminderCadenceDays === undefined) return false;
+  if (now > event.endsAt + POST_EVENT_GRACE_DAYS * DAY_MS) return false;
+  return true;
+}
 
 export const sweep = internalMutation({
   args: {
@@ -357,28 +423,47 @@ export const sweep = internalMutation({
     now: v.optional(v.number()),
   },
   returns: v.object({
+    /** Eligible events dispatched, each as its own scheduled mutation. */
     events: v.number(),
-    taskEmails: v.number(),
-    participationEmails: v.number(),
   }),
   handler: async (ctx, args) => {
     const now = args.now ?? Date.now();
-    // v1: full bounded scan. Only events with a cadence configured do any work,
-    // and archived events stop automations entirely (MILESTONES M0).
+    // v1: full bounded scan; only eligible events are dispatched at all. Each
+    // event sweeps in its OWN scheduled mutation, so a failure in one event's
+    // sweep (oversized graph, template render throw) cannot starve the rest.
     const events = await ctx.db.query("events").take(EVENT_SCAN);
-
-    let swept = 0;
-    let taskEmails = 0;
-    let participationEmails = 0;
+    let dispatched = 0;
     for (const event of events) {
-      if (event.archivedAt !== undefined) continue;
-      if (event.reminderCadenceDays === undefined) continue;
-      const graph = await loadGraph(ctx, event);
-      swept += 1;
-      const result = await sweepEvent(ctx, event, graph, now);
-      taskEmails += result.taskEmails;
-      participationEmails += result.participationEmails;
+      if (!sweepEligible(event, now)) continue;
+      await ctx.scheduler.runAfter(0, internal.reminders.sweepEvent, {
+        eventId: event._id,
+        now,
+      });
+      dispatched += 1;
     }
-    return { events: swept, taskEmails, participationEmails };
+    return { events: dispatched };
+  },
+});
+
+export const sweepEvent = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    /** The dispatcher's clock, so one sweep is a single consistent instant. */
+    now: v.number(),
+  },
+  returns: v.object({
+    taskEmails: v.number(),
+    participationEmails: v.number(),
+    deferredRecipients: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const event = await ctx.db.get("events", args.eventId);
+    // Re-check eligibility: the event may have been archived or deleted
+    // between dispatch and this run.
+    if (event === null || !sweepEligible(event, args.now)) {
+      return EMPTY_SWEEP;
+    }
+    const graph = await loadGraph(ctx, event);
+    return await runEventSweep(ctx, event, graph, args.now);
   },
 });

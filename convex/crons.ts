@@ -15,11 +15,22 @@ crons.interval(
 // Scheduled reminders (M5). Hourly is the sweep frequency, NOT the send
 // frequency: each event's configured cadence (and each requirement's override)
 // decides who is actually due, and `lastRemindedAt` keeps a re-run inside the
-// same window a no-op.
+// same window a no-op. `sweep` only dispatches — it schedules one independent
+// per-event mutation per eligible event (M8), so a failing event cannot
+// starve the others.
 crons.interval(
   "reminder sweep",
   { hours: 1 },
   internal.reminders.sweep,
+  {},
+);
+
+// Worker-queue lease sweep: requeues jobs whose claim outlived the lease TTL
+// (see convex/worker.ts sweepExpiredLeases).
+crons.interval(
+  "requeue expired job leases",
+  { minutes: 5 },
+  internal.worker.sweepExpiredLeases,
   {},
 );
 

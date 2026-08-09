@@ -6,7 +6,9 @@ import { requireOrgAdmin } from "../lib/functions";
 import { assertSlugFree, assertValidSlug, uniqueSlug } from "./slugs";
 import { logAudit } from "./audit";
 import { ensureForm } from "./cfp";
+import { republishIfPublished } from "./publish";
 import { assertText, normalizeEmail } from "./validation";
+import { optionalHttpUrl } from "../lib/urls";
 
 const IANA_ZONE = /^[A-Za-z_]+\/[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)?$|^UTC$/;
 
@@ -159,7 +161,6 @@ export async function updateEventSettings(
   for (const key of [
     "type",
     "location",
-    "website",
     "description",
     "logoId",
     "bannerId",
@@ -169,6 +170,14 @@ export async function updateEventSettings(
     if (patch[key] !== undefined) {
       update[key] = patch[key] === null ? undefined : patch[key];
     }
+  }
+  // The website renders as an href on the public event page, so it goes
+  // through the shared http(s)-only gate (lib/urls.ts). Null or blank clears.
+  if (patch.website !== undefined) {
+    update.website =
+      patch.website === null
+        ? undefined
+        : optionalHttpUrl(patch.website, "Website");
   }
   if (patch.cfpPublished !== undefined) update.cfpPublished = patch.cfpPublished;
 
@@ -186,6 +195,13 @@ export async function updateEventSettings(
   }
 
   await ctx.db.patch("events", event._id, update);
+  // A slug/name rename changes the event's public identity, which the served
+  // blob embeds — stale identity there is the privacy-style exception that
+  // rewrites immediately (model/publish.ts). Other fields (description,
+  // website, ...) stay editorial and wait for an explicit republish.
+  if (update.slug !== undefined || update.name !== undefined) {
+    await republishIfPublished(ctx, event._id);
+  }
   await logAudit(ctx, {
     orgId: caller.org._id,
     eventId: event._id,

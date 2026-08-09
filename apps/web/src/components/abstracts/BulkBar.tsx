@@ -9,6 +9,7 @@ import type { AbstractRow, BulkResult, ProposalId } from './model'
 import { Button, Field, Select } from '~/ds'
 import { pushToast } from '~/components/toast'
 import { usePending } from '~/lib/usePending'
+import { useLastLoaded, useNow } from '~/components/tasks/useNow'
 import { ROLE_LABEL } from '~/lib/roles'
 
 // The bar that appears the moment a row is selected. Every action here is a
@@ -243,7 +244,10 @@ function AssignPanel({
   proposalIds: Array<ProposalId>
   onDone: () => void
 }) {
-  const team = useQuery(api.team.listForEvent, { eventSlug })
+  // Team reads take `now` (invitation expiry is time-derived); hold the last
+  // result across the once-a-minute re-subscribe so options don't blink away.
+  const now = useNow()
+  const team = useLastLoaded(useQuery(api.team.listForEvent, { eventSlug, now }))
   const assign = useMutation(api.reviews.assign)
   const { pending, error, setError, run } = usePending()
   const [userId, setUserId] = useState('')

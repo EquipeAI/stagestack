@@ -1,6 +1,7 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
+import { DEFAULT_TEMPLATES } from "./model/templates";
 import {
   createEvent,
   createOrg,
@@ -84,12 +85,50 @@ async function elapseReminders(t: TestT): Promise<void> {
   });
 }
 
+// ── Driving the sweep ────────────────────────────────────────────────────
+// M8 shape: the cron entry (`reminders.sweep`) is a dispatcher that schedules
+// one independent `reminders.sweepEvent` mutation per eligible event.
+
+async function eventIdOf(t: TestT, eventSlug: string): Promise<Id<"events">> {
+  return await t.run(async (ctx) => {
+    const event = await ctx.db
+      .query("events")
+      .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+      .unique();
+    if (event === null) throw new Error(`no event ${eventSlug}`);
+    return event._id;
+  });
+}
+
+/** The full cron path: dispatch, then drain the runAfter(0) per-event jobs
+ * (their real-timer setTimeouts need event-loop turns to fire). */
+async function runSweep(t: TestT, now: number): Promise<{ events: number }> {
+  const result = await t.mutation(internal.reminders.sweep, { now });
+  for (let i = 0; i < 3; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+  return result;
+}
+
+/** One event's sweep called directly — exactly the mutation the dispatcher
+ * schedules — so a test can assert on its counters. */
+async function sweepEventNow(t: TestT, eventSlug: string, now: number) {
+  return await t.mutation(internal.reminders.sweepEvent, {
+    eventId: await eventIdOf(t, eventSlug),
+    now,
+  });
+}
+
 // ── Fixtures ─────────────────────────────────────────────────────────────
 
-async function organizerEvent(t: TestT) {
+async function organizerEvent(
+  t: TestT,
+  extra: { startsAt?: number; endsAt?: number } = {},
+) {
   const alice = await signIn(t, "alice");
   const orgSlug = await createOrg(alice, "Acme Conf Co");
-  const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+  const eventSlug = await createEvent(alice, orgSlug, "Acme Summit", extra);
   return { alice, orgSlug, eventSlug };
 }
 
@@ -342,7 +381,7 @@ describe("comms.listAudiences", () => {
     await manualRequirement(alice, eventSlug, "Sign the speaker release");
 
     // Carol signs in and enters the portal: the snapshot is now claimed.
-    const carol = await signIn(t, "carol", { email: "carol@example.com" });
+    const carol = await signIn(t, "carol", { email: "carol@example.com", emailVerified: true });
     await carol.mutation(api.portal.enter, { eventSlug });
 
     await clearMessages(t);
@@ -528,6 +567,30 @@ describe("comms.sendOneOff", () => {
       "forbidden",
     );
   });
+
+  test("an archived event refuses one-off sends", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { eventContactId } = await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+      "Opening keynote",
+    );
+    await alice.mutation(api.events.setArchived, { eventSlug, archived: true });
+    await clearMessages(t);
+    await expectRejectedWith(
+      alice.mutation(api.comms.sendOneOff, {
+        eventSlug,
+        to: { kind: "contact", eventContactId },
+        subject: "x",
+        html: "<p>x</p>",
+        now: NOW,
+      }),
+      "event_archived",
+    );
+    expect(await messageRows(t)).toHaveLength(0);
+  });
 });
 
 // ── Per-contact comms log ────────────────────────────────────────────────
@@ -596,8 +659,9 @@ describe("reminders.sweep", () => {
     await manualRequirement(alice, eventSlug, "Sign the speaker release");
     await clearMessages(t);
 
-    const result = await t.mutation(internal.reminders.sweep, { now: NOW });
-    expect(result).toMatchObject({ events: 0, taskEmails: 0 });
+    // No cadence → the dispatcher never even schedules a per-event job.
+    const result = await runSweep(t, NOW);
+    expect(result).toMatchObject({ events: 0 });
     expect(await messageRows(t)).toHaveLength(0);
   });
 
@@ -613,8 +677,12 @@ describe("reminders.sweep", () => {
     await clearMessages(t);
     await elapseReminders(t);
 
-    const result = await t.mutation(internal.reminders.sweep, { now: NOW });
-    expect(result).toMatchObject({ taskEmails: 1, participationEmails: 0 });
+    const result = await sweepEventNow(t, eventSlug, NOW);
+    expect(result).toEqual({
+      taskEmails: 1,
+      participationEmails: 0,
+      deferredRecipients: 0,
+    });
 
     // Both speakers are represented by bob, so all four obligations arrive in
     // one message — never one email per task.
@@ -645,22 +713,22 @@ describe("reminders.sweep", () => {
     await clearMessages(t);
     await elapseReminders(t);
 
-    expect(
-      await t.mutation(internal.reminders.sweep, { now: NOW }),
-    ).toMatchObject({ taskEmails: 1 });
+    expect(await sweepEventNow(t, eventSlug, NOW)).toMatchObject({
+      taskEmails: 1,
+    });
     // An hour later (the real cron interval) and a day later: still silent.
     expect(
-      await t.mutation(internal.reminders.sweep, { now: NOW + 3600 * 1000 }),
+      await sweepEventNow(t, eventSlug, NOW + 3600 * 1000),
     ).toMatchObject({ taskEmails: 0 });
-    expect(
-      await t.mutation(internal.reminders.sweep, { now: NOW + 2 * DAY }),
-    ).toMatchObject({ taskEmails: 0 });
+    expect(await sweepEventNow(t, eventSlug, NOW + 2 * DAY)).toMatchObject({
+      taskEmails: 0,
+    });
     expect(await messagesOfKind(t, "reminder.tasks")).toHaveLength(1);
 
     // Past the cadence, it fires again — and being overdue never shortened it.
-    expect(
-      await t.mutation(internal.reminders.sweep, { now: NOW + 3 * DAY }),
-    ).toMatchObject({ taskEmails: 1 });
+    expect(await sweepEventNow(t, eventSlug, NOW + 3 * DAY)).toMatchObject({
+      taskEmails: 1,
+    });
     expect(await messagesOfKind(t, "reminder.tasks")).toHaveLength(2);
   });
 
@@ -674,7 +742,7 @@ describe("reminders.sweep", () => {
     await clearMessages(t);
     await elapseReminders(t);
 
-    const result = await t.mutation(internal.reminders.sweep, { now: NOW });
+    const result = await sweepEventNow(t, eventSlug, NOW);
     expect(result).toMatchObject({ taskEmails: 1, participationEmails: 1 });
 
     // Dave has not confirmed: he is asked to confirm, personally.
@@ -695,9 +763,9 @@ describe("reminders.sweep", () => {
       (p) => p.lastRemindedAt === NOW,
     );
     expect(dave).toBeDefined();
-    expect(
-      await t.mutation(internal.reminders.sweep, { now: NOW + DAY }),
-    ).toMatchObject({ participationEmails: 0 });
+    expect(await sweepEventNow(t, eventSlug, NOW + DAY)).toMatchObject({
+      participationEmails: 0,
+    });
   });
 
   test("per-requirement remindersDisabled and cadence overrides are honored", async () => {
@@ -723,7 +791,7 @@ describe("reminders.sweep", () => {
     await clearMessages(t);
     await elapseReminders(t);
 
-    await t.mutation(internal.reminders.sweep, { now: NOW });
+    await runSweep(t, NOW);
     const [send] = await messagesOfKind(t, "reminder.tasks");
     // Only the two "Speaker release" instances (Carol + Dave) are in there.
     expect(
@@ -738,9 +806,9 @@ describe("reminders.sweep", () => {
     expect(untouched.every((i) => i.lastRemindedAt === LONG_AGO)).toBe(true);
 
     // Two days later the event default would fire, but the override says 7.
-    await t.mutation(internal.reminders.sweep, { now: NOW + 2 * DAY });
+    await runSweep(t, NOW + 2 * DAY);
     expect(await messagesOfKind(t, "reminder.tasks")).toHaveLength(1);
-    await t.mutation(internal.reminders.sweep, { now: NOW + 8 * DAY });
+    await runSweep(t, NOW + 8 * DAY);
     expect(await messagesOfKind(t, "reminder.tasks")).toHaveLength(2);
   });
 
@@ -770,18 +838,74 @@ describe("reminders.sweep", () => {
     await clearMessages(t);
     await elapseReminders(t);
 
-    await t.mutation(internal.reminders.sweep, { now: NOW });
+    await runSweep(t, NOW);
     const [send] = await messagesOfKind(t, "reminder.tasks");
     expect(
       (send.context as { instanceIds: string[] }).instanceIds,
     ).toHaveLength(1);
 
-    // Archiving stops automations entirely (MILESTONES M0).
+    // Archiving stops automations entirely (MILESTONES M0): the dispatcher
+    // never schedules the event, and a direct per-event run refuses too.
     await alice.mutation(api.events.setArchived, { eventSlug, archived: true });
     await clearMessages(t);
-    expect(
-      await t.mutation(internal.reminders.sweep, { now: NOW + 30 * DAY }),
-    ).toMatchObject({ events: 0, taskEmails: 0, participationEmails: 0 });
+    expect(await runSweep(t, NOW + 30 * DAY)).toMatchObject({ events: 0 });
+    expect(await sweepEventNow(t, eventSlug, NOW + 30 * DAY)).toEqual({
+      taskEmails: 0,
+      participationEmails: 0,
+      deferredRecipients: 0,
+    });
+    expect(await messageRows(t)).toHaveLength(0);
+  });
+
+  test("a withdrawn participant and a cancelled session stop the chasing", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { bob, sessionId } = await acceptedWithManager(t, eventSlug);
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    await manualRequirement(alice, eventSlug, "Speaker release");
+    await setCadence(alice, eventSlug, 1);
+    await clearMessages(t);
+    await elapseReminders(t);
+
+    // Baseline: Carol confirmed → her task chases bob (the manager); Dave
+    // still awaiting → participation chasing to Dave himself.
+    expect(await sweepEventNow(t, eventSlug, NOW)).toEqual({
+      taskEmails: 1,
+      participationEmails: 1,
+      deferredRecipients: 0,
+    });
+
+    // Dave withdraws (his manager records it): participation chasing stops
+    // for him at the very next sweep.
+    await bob.mutation(api.portal.withdrawParticipation, {
+      eventSlug,
+      participantId: await participantFor(t, sessionId, "Dave"),
+    });
+    expect(await sweepEventNow(t, eventSlug, NOW + 2 * DAY)).toEqual({
+      taskEmails: 1,
+      participationEmails: 0,
+      deferredRecipients: 0,
+    });
+
+    // A decision correction cancels the session → ALL chasing goes quiet,
+    // task chasing included (the sweep only chases planned sessions).
+    const proposalId = await t.run(async (ctx) => {
+      const session = await ctx.db.get("sessions", sessionId);
+      if (session?.proposalId === undefined) throw new Error("no proposal");
+      return session.proposalId;
+    });
+    await alice.mutation(api.sessions.correct, {
+      eventSlug,
+      proposalId,
+      to: "declined",
+      note: "Pulled from the program.",
+    });
+    await clearMessages(t);
+    expect(await sweepEventNow(t, eventSlug, NOW + 4 * DAY)).toEqual({
+      taskEmails: 0,
+      participationEmails: 0,
+      deferredRecipients: 0,
+    });
     expect(await messageRows(t)).toHaveLength(0);
   });
 
@@ -793,12 +917,12 @@ describe("reminders.sweep", () => {
     await manualRequirement(alice, eventSlug, "Speaker release");
     await setCadence(alice, eventSlug, 2);
 
-    const carol = await signIn(t, "carol", { email: "carol@example.com" });
+    const carol = await signIn(t, "carol", { email: "carol@example.com", emailVerified: true });
     await carol.mutation(api.portal.enter, { eventSlug });
     await clearMessages(t);
     await elapseReminders(t);
 
-    await t.mutation(internal.reminders.sweep, { now: NOW });
+    await runSweep(t, NOW);
     // Carol claimed her portal, but routine task chasing never silently
     // reroutes off the primary manager (MILESTONES M4:87).
     expect(
@@ -822,7 +946,7 @@ describe("reminders.sweep", () => {
     await clearMessages(t);
     await elapseReminders(t);
 
-    await t.mutation(internal.reminders.sweep, { now: NOW });
+    await runSweep(t, NOW);
     expect((await messagesOfKind(t, "reminder.tasks"))[0].subject).toBe(
       "[Acme Summit] still outstanding",
     );
@@ -830,7 +954,12 @@ describe("reminders.sweep", () => {
 
   test("the first reminder waits a full cadence after assignment", async () => {
     const t = setupTest();
-    const { alice, eventSlug } = await organizerEvent(t);
+    // This test walks the REAL clock (creation stamps), so anchor the event
+    // dates to it too — a fixed date would drift out of the post-event grace.
+    const { alice, eventSlug } = await organizerEvent(t, {
+      startsAt: Date.now() + 30 * DAY,
+      endsAt: Date.now() + 32 * DAY,
+    });
     const { sessionId } = await acceptedWithManager(t, eventSlug);
     // Confirm both speakers so the scenario is purely about task cadence.
     await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
@@ -851,19 +980,17 @@ describe("reminders.sweep", () => {
     // Well inside the 3-day cadence: nothing fires, even though a plain hourly
     // sweep runs (the old bug fired immediately after assignment).
     expect(
-      await t.mutation(internal.reminders.sweep, { now: t0 + 3600 * 1000 }),
+      await sweepEventNow(t, eventSlug, t0 + 3600 * 1000),
     ).toMatchObject({ taskEmails: 0, participationEmails: 0 });
     expect(
-      await t.mutation(internal.reminders.sweep, {
-        now: t0 + 3 * DAY - 1000,
-      }),
+      await sweepEventNow(t, eventSlug, t0 + 3 * DAY - 1000),
     ).toMatchObject({ taskEmails: 0 });
     expect(await messagesOfKind(t, "reminder.tasks")).toHaveLength(0);
 
     // A full cadence after assignment: it finally fires.
-    expect(
-      await t.mutation(internal.reminders.sweep, { now: t0 + 3 * DAY }),
-    ).toMatchObject({ taskEmails: 1 });
+    expect(await sweepEventNow(t, eventSlug, t0 + 3 * DAY)).toMatchObject({
+      taskEmails: 1,
+    });
   });
 
   test("a manager owed a task AND covering an awaiting speaker gets ONE email", async () => {
@@ -886,18 +1013,23 @@ describe("reminders.sweep", () => {
     await clearMessages(t);
     await elapseReminders(t);
 
-    const result = await t.mutation(internal.reminders.sweep, { now: NOW });
+    const result = await sweepEventNow(t, eventSlug, NOW);
     // Both a task section and a participation section, but ONE message (M5:86).
     const sends = await messageRows(t);
     expect(sends).toHaveLength(1);
     expect(sends[0].toEmail).toBe("bob@example.com");
-    // The counters still register both sections rode in that single email.
-    expect(result).toMatchObject({ taskEmails: 1, participationEmails: 1 });
+    // ...and it is COUNTED once: counters count emails, not sections, so the
+    // combined send is one taskEmail and the totals sum to messages sent.
+    expect(result).toMatchObject({ taskEmails: 1, participationEmails: 0 });
+    // The participation section did ride along in the one email.
+    expect(
+      (sends[0].context as { participantIds: string[] }).participantIds,
+    ).toHaveLength(1);
 
     // Carol's task instance and Dave's participant were both stamped, so a
     // second sweep inside the window is silent.
     expect(
-      await t.mutation(internal.reminders.sweep, { now: NOW + 3600 * 1000 }),
+      await sweepEventNow(t, eventSlug, NOW + 3600 * 1000),
     ).toMatchObject({ taskEmails: 0, participationEmails: 0 });
   });
 
@@ -922,7 +1054,7 @@ describe("reminders.sweep", () => {
     });
 
     // Sam signs in, claims his snapshot, and confirms.
-    const sam = await signIn(t, "sam", { email: "sam@example.com" });
+    const sam = await signIn(t, "sam", { email: "sam@example.com", emailVerified: true });
     await sam.mutation(api.portal.enter, { eventSlug });
     await confirm(alice, eventSlug, await participantFor(t, sessionId, "Sam"));
 
@@ -948,5 +1080,351 @@ describe("reminders.sweep", () => {
       now: NOW,
     });
     expect(after.find((c) => c.kind === "overdueTasks")?.count).toBe(0);
+  });
+
+  test("one failing event's sweep does not block other events", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const okSlug = await createEvent(alice, orgSlug, "Healthy Summit");
+    const brokenSlug = await createEvent(alice, orgSlug, "Broken Summit");
+    await inviteSpeaker(
+      alice,
+      okSlug,
+      { firstName: "Hana", lastName: "Fine", email: "hana@example.com" },
+      "Healthy talk",
+    );
+    await inviteSpeaker(
+      alice,
+      brokenSlug,
+      { firstName: "Bora", lastName: "Stuck", email: "bora@example.com" },
+      "Broken talk",
+    );
+    await setCadence(alice, okSlug, 1);
+    await setCadence(alice, brokenSlug, 1);
+    // The healthy event carries an override, so it renders even after the
+    // built-in default disappears below; the broken event has none.
+    await alice.mutation(api.templates.upsert, {
+      eventSlug: okSlug,
+      key: "reminder.participation",
+      subject: "Confirm for {{event.name}}",
+      html: "<p>{{body}}</p>",
+    });
+    await clearMessages(t);
+    await elapseReminders(t);
+
+    // Simulate a per-event render failure: the participation template is
+    // missing, so the broken event's sweep throws mid-flight.
+    const saved = DEFAULT_TEMPLATES["reminder.participation"];
+    delete DEFAULT_TEMPLATES["reminder.participation"];
+    try {
+      await expectRejectedWith(
+        sweepEventNow(t, brokenSlug, NOW),
+        "not_found",
+      );
+      // The dispatcher schedules BOTH events; the broken one fails in its own
+      // mutation and the healthy one still gets its reminder out.
+      expect(await runSweep(t, NOW)).toMatchObject({ events: 2 });
+      const sends = await messagesOfKind(t, "reminder.participation");
+      expect(sends.map((m) => m.toEmail)).toEqual(["hana@example.com"]);
+    } finally {
+      DEFAULT_TEMPLATES["reminder.participation"] = saved;
+    }
+  });
+
+  test("the sweep stops chasing after the post-event grace window", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    await manualRequirement(alice, eventSlug, "Upload your slides");
+    await setCadence(alice, eventSlug, 1);
+    const endsAt = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      return event.endsAt;
+    });
+    await clearMessages(t);
+    await elapseReminders(t);
+
+    // Inside the 7-day grace: post-event collection still gets chased.
+    expect(await sweepEventNow(t, eventSlug, endsAt + 6 * DAY)).toMatchObject({
+      taskEmails: 1,
+    });
+
+    // Past the grace: the dispatcher skips the event without archiving, and a
+    // stale per-event job refuses on its own re-check too.
+    await elapseReminders(t);
+    await clearMessages(t);
+    expect(await runSweep(t, endsAt + 8 * DAY)).toMatchObject({ events: 0 });
+    expect(await sweepEventNow(t, eventSlug, endsAt + 8 * DAY)).toEqual({
+      taskEmails: 0,
+      participationEmails: 0,
+      deferredRecipients: 0,
+    });
+    expect(await messageRows(t)).toHaveLength(0);
+  });
+
+  test("recipients past MAX_RECIPIENTS_PER_EVENT are reported, not silently dropped", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    // 201 distinct awaiting speakers: the 201st can't get a bucket this run.
+    await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      const sessionId = await ctx.db.insert("sessions", {
+        eventId: event._id,
+        title: "Mega panel",
+        source: "direct",
+        status: "planned",
+      });
+      for (let i = 0; i < 201; i++) {
+        const eventContactId = await ctx.db.insert("eventContacts", {
+          eventId: event._id,
+          orgId: event.orgId,
+          firstName: `Sp${i}`,
+          lastName: "Eaker",
+          email: `sp${i}@example.com`,
+        });
+        await ctx.db.insert("sessionParticipants", {
+          sessionId,
+          eventId: event._id,
+          eventContactId,
+          role: "speaker",
+          state: "awaiting",
+          lastRemindedAt: LONG_AGO,
+        });
+      }
+    });
+    await setCadence(alice, eventSlug, 1);
+    await clearMessages(t);
+
+    const result = await sweepEventNow(t, eventSlug, NOW);
+    expect(result).toEqual({
+      taskEmails: 0,
+      participationEmails: 200,
+      deferredRecipients: 1,
+    });
+    // The deferred speaker was NOT stamped, so the next sweep picks them up.
+    expect(await sweepEventNow(t, eventSlug, NOW + 3600 * 1000)).toMatchObject({
+      participationEmails: 1,
+      deferredRecipients: 0,
+    });
+  });
+});
+
+// ── Calendar invite sends (emails.ts) ────────────────────────────────────
+
+describe("emails.sendCalendarInvite", () => {
+  const ICS = {
+    method: "REQUEST" as const,
+    uid: "session-test@stagestack.dev",
+    sequence: 0,
+    startMs: NOW + 10 * DAY,
+    endMs: NOW + 10 * DAY + 3600 * 1000,
+    summary: "Convex in anger",
+    organizerName: "Acme Summit",
+    organizerEmail: "hello@stagestack.dev",
+    attendeeName: "Carol Speaker",
+    attendeeEmail: "carol@example.com",
+  };
+
+  async function inviteArgs(t: TestT, eventSlug: string) {
+    return await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      return {
+        orgId: event.orgId,
+        eventId: event._id,
+        toEmail: "carol@example.com",
+        subject: "Your slot at Acme Summit",
+        html: "<p>Slot details</p>",
+        ics: ICS,
+        kind: "schedule.released",
+        context: { sequence: 0 },
+      };
+    });
+  }
+
+  test("a failed send leaves a failed comms-log row and still throws", async () => {
+    const t = setupTest();
+    const { eventSlug } = await organizerEvent(t);
+    const args = await inviteArgs(t, eventSlug);
+    await clearMessages(t);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ message: "boom" }), { status: 500 }),
+      ),
+    );
+    try {
+      await expect(
+        t.action(internal.emails.sendCalendarInvite, args),
+      ).rejects.toThrow(/Resend API 500/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // The row was opened BEFORE the network call, so the failure has a trace:
+    // status failed, the error recorded, and the recipient/kind preserved.
+    const rows = await messageRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "schedule.released",
+      toEmail: "carol@example.com",
+      deliveryStatus: "failed",
+    });
+    // The resendEmailId was attached before the fetch — a webhook can never
+    // race past a missing row again.
+    expect(rows[0].resendEmailId).toBeDefined();
+    expect((rows[0].context as { sendError: string }).sendError).toContain(
+      "Resend API 500",
+    );
+  });
+
+  test("a successful send patches the row and the webhook lookup still works", async () => {
+    const t = setupTest();
+    const { eventSlug } = await organizerEvent(t);
+    const args = await inviteArgs(t, eventSlug);
+    await clearMessages(t);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ id: "re_provider_1" }), { status: 200 }),
+      ),
+    );
+    let emailId = "";
+    try {
+      emailId = await t.action(internal.emails.sendCalendarInvite, args);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    const [row] = await messageRows(t);
+    expect(row).toMatchObject({
+      kind: "schedule.released",
+      deliveryStatus: "sent",
+      resendEmailId: emailId,
+    });
+
+    // Delivery webhook finds the row by resendEmailId and upgrades the status.
+    await t.mutation(internal.emails.handleEmailEvent, {
+      id: emailId as import("@convex-dev/resend").EmailId,
+      event: {
+        type: "email.delivered",
+        created_at: "2026-08-10T09:00:00.000Z",
+        data: {
+          created_at: "2026-08-10T09:00:00.000Z",
+          email_id: "re_provider_1",
+          from: "StageStack <hello@stagestack.dev>",
+          to: ["carol@example.com"],
+          subject: args.subject,
+        },
+      },
+    });
+    expect((await messageRows(t))[0].deliveryStatus).toBe("delivered");
+  });
+
+  test("an agenda release drives the whole send: base64 .ics attachment + Idempotency-Key", async () => {
+    const SLOT_START = Date.parse("2026-09-01T15:00:00Z");
+    const SLOT_END = Date.parse("2026-09-01T16:00:00Z");
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Erin", lastName: "Onstage", email: "erin@example.com" },
+      "Closing keynote",
+    );
+    const roomId = await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "rooms",
+      item: { name: "Main Stage" },
+    });
+    await alice.mutation(api.agenda.scheduleSession, {
+      eventSlug,
+      sessionId,
+      slot: {
+        startsAt: SLOT_START,
+        endsAt: SLOT_END,
+        roomId: roomId as Id<"rooms">,
+      },
+    });
+    await clearMessages(t);
+
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ id: "re_provider_1" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await alice.mutation(api.agenda.release, {
+        eventSlug,
+        sessionIds: [sessionId],
+      });
+      // Drain the runAfter(0) sendCalendarInvite action (and its followups).
+      for (let i = 0; i < 5; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await t.finishInProgressScheduledFunctions();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // The raw Resend call is the only one carrying an attachment.
+    const inviteCalls = fetchMock.mock.calls.filter((call) => {
+      const init = call[1] as RequestInit | undefined;
+      if (typeof init?.body !== "string") return false;
+      try {
+        return JSON.parse(init.body).attachments !== undefined;
+      } catch {
+        return false;
+      }
+    });
+    expect(inviteCalls).toHaveLength(1);
+    const [url, init] = inviteCalls[0] as [RequestInfo | URL, RequestInit];
+    expect(String(url)).toBe("https://api.resend.com/emails");
+    const body = JSON.parse(init.body as string) as {
+      to: string[];
+      attachments: Array<{
+        filename: string;
+        content: string;
+        content_type: string;
+      }>;
+    };
+    expect(body.to).toEqual(["erin@example.com"]);
+    expect(body.attachments).toHaveLength(1);
+    expect(body.attachments[0].filename).toBe("invite.ics");
+    expect(body.attachments[0].content_type).toBe(
+      "text/calendar; method=REQUEST; charset=UTF-8",
+    );
+    const ics = atob(body.attachments[0].content);
+    expect(ics).toContain("BEGIN:VCALENDAR");
+    expect(ics).toContain("METHOD:REQUEST");
+    expect(ics).toContain(`UID:session-${sessionId}-`);
+    expect(ics).toContain("LOCATION:Main Stage");
+
+    // The comms row was opened before the network call, patched to `sent`
+    // after it, and the Idempotency-Key is the SAME component emailId the
+    // delivery webhook will use to find the row.
+    const [row] = await messagesOfKind(t, "schedule.released");
+    expect(row).toMatchObject({
+      toEmail: "erin@example.com",
+      deliveryStatus: "sent",
+    });
+    expect(typeof row.resendEmailId).toBe("string");
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Idempotency-Key"]).toBe(row.resendEmailId);
   });
 });

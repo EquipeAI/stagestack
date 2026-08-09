@@ -381,7 +381,7 @@ describe("manual completion", () => {
     const { alice, eventSlug } = await eventSetup(t);
     const { bob } = await acceptedTwoSpeakers(t, eventSlug);
     await manualRequirement(alice, eventSlug);
-    const carol = await signIn(t, "carol");
+    const carol = await signIn(t, "carol", { emailVerified: true });
     await carol.mutation(api.portal.enter, { eventSlug });
 
     const rows = await alice.query(api.tasks.listInstances, { eventSlug });
@@ -432,7 +432,7 @@ describe("manual completion", () => {
     await manualRequirement(alice, eventSlug);
     const rows = await alice.query(api.tasks.listInstances, { eventSlug });
 
-    const mallory = await signIn(t, "mallory");
+    const mallory = await signIn(t, "mallory", { emailVerified: true });
     await mallory.mutation(api.portal.enter, { eventSlug });
     // Ownership misses read as not_found so task ids stay unprobeable.
     await expectRejectedWith(
@@ -498,7 +498,7 @@ describe("profile-field evidence", () => {
       (await alice.query(api.tasks.listInstances, { eventSlug }))[0].status;
     expect(await statusNow()).toBe("pending");
 
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", { emailVerified: true });
     await dana.mutation(api.portal.enter, { eventSlug });
     const headshotId = await storeBlob(t);
     await dana.mutation(api.portal.updateMyProfile, {
@@ -536,7 +536,7 @@ describe("profile-field evidence", () => {
       reviewRequired: false,
       dueAt: DUE,
     });
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", { emailVerified: true });
     await dana.mutation(api.portal.enter, { eventSlug });
     await dana.mutation(api.portal.updateMyProfile, {
       eventSlug,
@@ -565,7 +565,7 @@ describe("organizer review", () => {
       "Opening keynote",
     );
     await manualRequirement(alice, eventSlug, { reviewRequired: true });
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", { emailVerified: true });
     await dana.mutation(api.portal.enter, { eventSlug });
     const instanceId = (
       await alice.query(api.tasks.listInstances, { eventSlug })
@@ -721,7 +721,7 @@ describe("file evidence", () => {
       reviewRequired: true,
       dueAt: DUE,
     });
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", { emailVerified: true });
     await dana.mutation(api.portal.enter, { eventSlug });
     const instanceId = (
       await alice.query(api.tasks.listInstances, { eventSlug })
@@ -783,7 +783,7 @@ describe("portal.myTasks", () => {
     const { bob } = await acceptedTwoSpeakers(t, eventSlug);
     await manualRequirement(alice, eventSlug);
 
-    const carol = await signIn(t, "carol");
+    const carol = await signIn(t, "carol", { emailVerified: true });
     await carol.mutation(api.portal.enter, { eventSlug });
     const mine = await carol.query(api.portal.myTasks, { eventSlug });
     expect(mine).toHaveLength(1);
@@ -840,7 +840,7 @@ describe("session readiness", () => {
       { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
       "Opening keynote",
     );
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", { emailVerified: true });
     await dana.mutation(api.portal.enter, { eventSlug });
     const [participant] = await participantsOf(t, sessionId);
     await dana.mutation(api.portal.withdrawParticipation, {
@@ -959,7 +959,7 @@ describe("speaker-tracking dashboard", () => {
     expect(evan).toMatchObject({ missingBio: true, missingHeadshot: true });
 
     // Claiming portal access shows up immediately.
-    const danaUser = await signIn(t, "dana");
+    const danaUser = await signIn(t, "dana", { emailVerified: true });
     await danaUser.mutation(api.portal.enter, { eventSlug });
     const after = await alice.query(api.tasks.dashboard, {
       eventSlug,

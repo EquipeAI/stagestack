@@ -25,6 +25,7 @@ import {
   Textarea,
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
+import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
 import { formatDateTime, fromInputValue, toInputValue } from '~/lib/datetime'
 
@@ -111,7 +112,11 @@ export function ProposalDetailDialog({
           onReleased={onClose}
         />
 
-        <ReviewPanel eventSlug={eventSlug} proposalId={proposalId} />
+        <ReviewPanel
+          eventSlug={eventSlug}
+          proposalId={proposalId}
+          timezone={event.timezone}
+        />
 
         <AnswersPanel
           answers={proposal.answers}
@@ -162,7 +167,9 @@ function DecisionPanel({
           setProblem(bulkErrorMessage(failed.error))
         }
       })
-      .catch(() => setProblem('The change did not run.'))
+      .catch((err: unknown) =>
+        setProblem(errorMessage(err, 'The change did not run.')),
+      )
       .finally(() => setBusy(null))
   }
 
@@ -284,7 +291,9 @@ function DecisionPanel({
                         setProblem(bulkErrorMessage(failed.error))
                       }
                     })
-                    .catch(() => setProblem('The release did not run.'))
+                    .catch((err: unknown) =>
+                      setProblem(errorMessage(err, 'The release did not run.')),
+                    )
                     .finally(() => setBusy(null))
                 }}
               >
@@ -327,7 +336,11 @@ function DecisionPanel({
                       pushToast('Decision corrected', displayTitle(proposal))
                       setNote('')
                     })
-                    .catch(() => setProblem('The correction did not run.'))
+                    .catch((err: unknown) =>
+                      setProblem(
+                        errorMessage(err, 'The correction did not run.'),
+                      ),
+                    )
                     .finally(() => setBusy(null))
                 }}
               >
@@ -357,9 +370,11 @@ const REVIEW_STATUS_LABEL: Record<string, string> = {
 function ReviewPanel({
   eventSlug,
   proposalId,
+  timezone,
 }: {
   eventSlug: string
   proposalId: Id<'proposals'>
+  timezone: string
 }) {
   const summary = useQuery(api.reviews.summary, { eventSlug, proposalId })
 
@@ -448,7 +463,7 @@ function ReviewPanel({
                 ) : null}
                 {review.submittedAt !== undefined ? (
                   <span style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
-                    {new Date(review.submittedAt).toISOString().slice(0, 10)}
+                    {formatDateTime(review.submittedAt, timezone)}
                   </span>
                 ) : null}
               </span>

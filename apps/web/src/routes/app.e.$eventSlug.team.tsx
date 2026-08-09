@@ -17,6 +17,8 @@ import {
   Select,
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
+import { useLastLoaded, useNow } from '~/components/tasks/useNow'
+import { copyToClipboard } from '~/lib/clipboard'
 import { pushToast } from '~/components/toast'
 import { formatDateTime } from '~/lib/datetime'
 import { ROLE_LABEL } from '~/lib/roles'
@@ -38,7 +40,10 @@ type Member = {
 function Team() {
   const { eventSlug } = Route.useParams()
   const event = useQuery(api.events.get, { eventSlug })
-  const team = useQuery(api.team.listForEvent, { eventSlug })
+  // Team reads take `now` (invitation expiry is time-derived); hold the last
+  // result across the once-a-minute re-subscribe so the page doesn't blink.
+  const now = useNow()
+  const team = useLastLoaded(useQuery(api.team.listForEvent, { eventSlug, now }))
   const canManage = event?.role === 'organizer'
 
   if (team === undefined) {
@@ -197,7 +202,8 @@ function InvitationRow({
   const copyLink = () => {
     if (typeof window === 'undefined') return
     const url = `${window.location.origin}/invite/${invitation.token}`
-    void navigator.clipboard.writeText(url).then(() => {
+    void copyToClipboard(url, 'Invitation link copied').then((ok) => {
+      if (!ok) return
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
     })

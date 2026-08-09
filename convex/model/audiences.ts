@@ -139,7 +139,7 @@ function finalize(
   };
 }
 
-type EventState = {
+export type EventState = {
   participants: Array<Doc<"sessionParticipants">>;
   contactById: Map<Id<"eventContacts">, Doc<"eventContacts">>;
   sessionById: Map<Id<"sessions">, Doc<"sessions">>;
@@ -318,11 +318,14 @@ export async function resolveAudience(
   event: Doc<"events">,
   kind: AudienceKind,
   now: number,
+  /** Preloaded participant graph — pass it when resolving several kinds of
+   * the same event so the graph is read once, not once per kind. */
+  preloaded?: EventState,
 ): Promise<AudienceResult> {
   if (kind === "assignedReviewers") {
     return await reviewerAudience(ctx, event);
   }
-  const state = await loadEventState(ctx, event);
+  const state = preloaded ?? (await loadEventState(ctx, event));
   const living = livingParticipants(state);
 
   switch (kind) {
@@ -364,10 +367,13 @@ export async function audienceCounts(
 ): Promise<AudienceCount[]> {
   // Organizer-only: audiences expose who is reachable on this event.
   requireOrganizer(caller);
+  // One graph read shared by every speaker-derived kind (M8) — counting five
+  // audiences must not load the participant graph five times.
+  const state = await loadEventState(ctx, caller.event);
   const counts: AudienceCount[] = [];
   for (const kind of AUDIENCE_KINDS) {
     const { recipients, skipped, totalKnown, truncated } =
-      await resolveAudience(ctx, caller.event, kind, now);
+      await resolveAudience(ctx, caller.event, kind, now, state);
     counts.push({
       kind,
       count: recipients.length,

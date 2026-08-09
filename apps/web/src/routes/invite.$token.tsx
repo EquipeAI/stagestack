@@ -5,6 +5,7 @@ import { api } from '@convex/_generated/api'
 import { Badge, Button, Callout, Card, DescriptionList, Logo } from '~/ds'
 import { PageBody } from '~/components/PageBody'
 import { usePending } from '~/lib/usePending'
+import { useLastLoaded, useNow } from '~/components/tasks/useNow'
 import { ROLE_LABEL } from '~/lib/roles'
 
 export const Route = createFileRoute('/invite/$token')({
@@ -13,7 +14,12 @@ export const Route = createFileRoute('/invite/$token')({
 
 function InvitePage() {
   const { token } = Route.useParams()
-  const invitation = useQuery(api.team.previewInvitation, { token })
+  // Preview takes `now` so expiry is decided server-side; hold the last
+  // result across the once-a-minute re-subscribe so the card doesn't blink.
+  const now = useNow()
+  const invitation = useLastLoaded(
+    useQuery(api.team.previewInvitation, { token, now }),
+  )
 
   return (
     <div style={{ minHeight: '100dvh', background: 'var(--surface-canvas)' }}>

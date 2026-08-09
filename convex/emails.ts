@@ -84,7 +84,9 @@ export const sendTestEmail = internalMutation({
 
 const MAIL_FROM = "StageStack <hello@stagestack.dev>";
 
-/** Raw Resend send with one .ics attachment. Returns the component's emailId. */
+/** Raw Resend send with one .ics attachment. Returns the component's emailId.
+ * `onEmailId` runs BEFORE the network call, so a caller can persist the id
+ * first — the delivery webhook may otherwise race the send's bookkeeping. */
 async function sendWithIcs(
   ctx: ActionCtx,
   args: {
@@ -94,6 +96,7 @@ async function sendWithIcs(
     ics: string;
     method: IcsMethod;
     replyTo?: string;
+    onEmailId?: (emailId: string) => Promise<void>;
   },
 ): Promise<string> {
   return await resend.sendEmailManually(
@@ -105,6 +108,7 @@ async function sendWithIcs(
       ...(args.replyTo === undefined ? {} : { replyTo: [args.replyTo] }),
     },
     async (emailId) => {
+      await args.onEmailId?.(emailId);
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
@@ -136,7 +140,9 @@ async function sendWithIcs(
   );
 }
 
-/** The comms-log half of a calendar send — actions have no ctx.db. */
+/** The comms-log half of a calendar send — actions have no ctx.db. Inserted
+ * BEFORE the network call (M8): a send that dies mid-flight still leaves a
+ * row to patch `failed`, instead of vanishing without a trace. */
 export const recordCalendarMessage = internalMutation({
   args: {
     orgId: v.id("organizations"),
@@ -145,7 +151,6 @@ export const recordCalendarMessage = internalMutation({
     toEmail: v.string(),
     kind: v.string(),
     subject: v.string(),
-    resendEmailId: v.string(),
     context: v.optional(v.any()),
   },
   returns: v.id("messages"),
@@ -157,10 +162,48 @@ export const recordCalendarMessage = internalMutation({
       toEmail: args.toEmail,
       kind: args.kind,
       subject: args.subject,
-      resendEmailId: args.resendEmailId,
       deliveryStatus: "queued",
       context: args.context,
     });
+  },
+});
+
+/** Progress/outcome patches for the row `recordCalendarMessage` opened.
+ * `resendEmailId` lands before the network call so the delivery webhook's
+ * by_resendEmailId lookup can never miss the row; "sent" only upgrades a row
+ * still `queued` (a fast webhook may already have written `delivered`);
+ * "failed" records the error in `context.sendError` for the re-release path. */
+export const patchCalendarMessage = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    resendEmailId: v.optional(v.string()),
+    outcome: v.optional(v.union(v.literal("sent"), v.literal("failed"))),
+    error: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const message = await ctx.db.get("messages", args.messageId);
+    if (message === null) return null;
+    if (args.resendEmailId !== undefined) {
+      await ctx.db.patch("messages", args.messageId, {
+        resendEmailId: args.resendEmailId,
+      });
+    }
+    if (args.outcome === "failed") {
+      const context =
+        typeof message.context === "object" && message.context !== null
+          ? message.context
+          : {};
+      await ctx.db.patch("messages", args.messageId, {
+        deliveryStatus: "failed",
+        context: { ...context, sendError: args.error ?? "send failed" },
+      });
+    } else if (args.outcome === "sent" && message.deliveryStatus === "queued") {
+      await ctx.db.patch("messages", args.messageId, {
+        deliveryStatus: "sent",
+      });
+    }
+    return null;
   },
 });
 
@@ -205,25 +248,50 @@ export const sendCalendarInvite = internalAction({
   returns: v.string(),
   handler: async (ctx, args) => {
     const ics = buildIcs(args.ics);
-    const resendEmailId = await sendWithIcs(ctx, {
-      to: args.toEmail,
-      subject: args.subject,
-      html: args.html,
-      ics,
-      method: args.ics.method,
-      replyTo: args.replyTo,
-    });
-    await ctx.runMutation(internal.emails.recordCalendarMessage, {
-      orgId: args.orgId,
-      eventId: args.eventId,
-      contactId: args.contactId,
-      toEmail: args.toEmail,
-      kind: args.kind,
-      subject: args.subject,
-      resendEmailId,
-      context: args.context,
-    });
-    return resendEmailId;
+    // Comms-log row FIRST (M8): the send must never be untraceable. The id is
+    // attached before the network call, the outcome patched after.
+    const messageId = await ctx.runMutation(
+      internal.emails.recordCalendarMessage,
+      {
+        orgId: args.orgId,
+        eventId: args.eventId,
+        contactId: args.contactId,
+        toEmail: args.toEmail,
+        kind: args.kind,
+        subject: args.subject,
+        context: args.context,
+      },
+    );
+    try {
+      const resendEmailId = await sendWithIcs(ctx, {
+        to: args.toEmail,
+        subject: args.subject,
+        html: args.html,
+        ics,
+        method: args.ics.method,
+        replyTo: args.replyTo,
+        onEmailId: async (emailId) => {
+          await ctx.runMutation(internal.emails.patchCalendarMessage, {
+            messageId,
+            resendEmailId: emailId,
+          });
+        },
+      });
+      await ctx.runMutation(internal.emails.patchCalendarMessage, {
+        messageId,
+        outcome: "sent",
+      });
+      return resendEmailId;
+    } catch (error) {
+      // Record, then rethrow: the action still fails loudly, but the comms
+      // log shows WHAT failed so the invite can be re-released.
+      await ctx.runMutation(internal.emails.patchCalendarMessage, {
+        messageId,
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   },
 });
 

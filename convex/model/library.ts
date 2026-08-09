@@ -1,12 +1,16 @@
+import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound } from "../lib/functions";
 import { logAudit } from "./audit";
-import { assertText } from "./validation";
+import { assertEventActive, assertText } from "./validation";
 
 // Event library (M0): tracks, tags, rooms, custom fields — one generic CRUD
 // over the four tables since they share shape and rules.
+
+const SESSION_SCAN = 1000;
+const ITEM_SCAN = 1000;
 
 export type LibraryKind = "tracks" | "tags" | "rooms" | "customFields";
 
@@ -81,6 +85,7 @@ export async function addLibraryItem(
   table: LibraryKind,
   input: LibraryItemInput,
 ): Promise<string> {
+  assertEventActive(caller.event);
   const name = assertName(input.name);
   const eventId = caller.event._id;
   const order = await nextOrder(ctx, table, eventId);
@@ -153,6 +158,7 @@ export async function updateLibraryItem(
   id: string,
   patch: Partial<LibraryItemInput> & { order?: number },
 ): Promise<void> {
+  assertEventActive(caller.event);
   await getScoped(ctx, caller, table, id);
   const update: Record<string, unknown> = {};
   if (patch.name !== undefined) update.name = assertName(patch.name);
@@ -180,13 +186,64 @@ export async function updateLibraryItem(
   });
 }
 
+/**
+ * Refuse to delete a library row anything still points at. Nothing rewrites the
+ * dangling ids — and a room id inside `releasedSlot` is already out in the .ics
+ * files speakers hold, so a deleted room would leave the calendar entry naming
+ * a place that no longer exists.
+ *
+ * Custom fields are exempt: no table stores per-field answers yet.
+ */
+async function assertNotInUse(
+  ctx: MutationCtx,
+  table: LibraryKind,
+  eventId: Id<"events">,
+  id: string,
+): Promise<void> {
+  if (table === "customFields") return;
+  const sessions = await ctx.db
+    .query("sessions")
+    .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+    .take(SESSION_SCAN);
+  const sessionCount = sessions.filter((s) =>
+    table === "tracks"
+      ? s.trackId === id
+      : table === "tags"
+        ? (s.tagIds ?? []).some((t) => t === id)
+        : s.roomId === id || s.releasedSlot?.roomId === id,
+  ).length;
+  let itemCount = 0;
+  if (table === "rooms") {
+    const items = await ctx.db
+      .query("agendaItems")
+      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+      .take(ITEM_SCAN);
+    itemCount = items.filter((i) => i.roomId === id).length;
+  }
+  if (sessionCount === 0 && itemCount === 0) return;
+  const used = [
+    sessionCount > 0
+      ? `${sessionCount} ${sessionCount === 1 ? "session" : "sessions"}`
+      : null,
+    itemCount > 0
+      ? `${itemCount} ${itemCount === 1 ? "agenda item" : "agenda items"}`
+      : null,
+  ].filter((part) => part !== null);
+  throw new ConvexError({
+    code: "library_item_in_use",
+    message: `Still used by ${used.join(" and ")} — change them first, then delete this.`,
+  });
+}
+
 export async function removeLibraryItem(
   ctx: MutationCtx,
   caller: EventCaller,
   table: LibraryKind,
   id: string,
 ): Promise<void> {
+  assertEventActive(caller.event);
   await getScoped(ctx, caller, table, id);
+  await assertNotInUse(ctx, table, caller.event._id, id);
   await ctx.db.delete(table, id as Id<LibraryKind>);
   await logAudit(ctx, {
     orgId: caller.org._id,

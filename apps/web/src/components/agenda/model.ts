@@ -264,15 +264,9 @@ export const ACK_LABEL: Record<AckValue, string> = {
   conflict: 'Conflict',
 }
 
-export const PARTICIPANT_STATE_LABEL: Record<
-  BoardParticipant['state'],
-  string
-> = {
-  awaiting: 'Awaiting Response',
-  confirmed: 'Confirmed',
-  declined: 'Declined',
-  withdrawn: 'Withdrawn',
-}
+// State labels live in ~/lib/labels — re-exported here so agenda views keep
+// importing their vocabulary from the agenda model.
+export { PARTICIPANT_STATE_LABEL } from '~/lib/labels'
 
 export function participantName(p: {
   firstName: string

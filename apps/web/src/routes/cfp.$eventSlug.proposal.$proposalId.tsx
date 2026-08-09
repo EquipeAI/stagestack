@@ -5,6 +5,8 @@ import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { FunctionReturnType } from 'convex/server'
 import type { Id } from '@convex/_generated/dataModel'
+import type { Answers, UploadedNames } from '~/components/cfp/model'
+import type { SpeakerDraft } from '~/components/cfp/SpeakersEditor'
 import {
   Button,
   Callout,
@@ -32,6 +34,7 @@ import {
   SpeakersSummary,
   incompleteSpeakers,
   speakersFromDocs,
+  speakersToInput,
 } from '~/components/cfp/SpeakersEditor'
 import {
   useAnswersDraft,
@@ -39,11 +42,15 @@ import {
 } from '~/components/cfp/useProposalDrafts'
 import {
   PROPOSAL_STATUS_LABEL,
+  answerSummary,
   cfpWindowState,
   fieldDomId,
+  isBlankAnswer,
   missingAnswers,
+  speakerName,
 } from '~/components/cfp/model'
 import { saveStatusLabel } from '~/components/cfp/useAutosave'
+import { deepEqual } from '~/lib/cfpForm'
 
 // The submitter's home for one proposal: state, the edit surface while the
 // window is open, resubmit, and withdraw. Organizers never see this page.
@@ -148,6 +155,22 @@ function ManageProposal({
   const statusEditable = status === 'draft' || status === 'pending'
   const editable = statusEditable && windowState === 'open'
 
+  // Once the editor is up, the window expiring must not unmount it: in
+  // resubmit mode every edit lives only in its state, so swapping to the
+  // read-only view would silently destroy them. The editor handles its own
+  // expired presentation instead.
+  const [hadOpenWindow, setHadOpenWindow] = useState(editable)
+  if (editable && !hadOpenWindow) setHadOpenWindow(true)
+  const keepEditorMounted = statusEditable && hadOpenWindow
+
+  // When the reopen grant is what holds the window open, it is also what ends
+  // it — the countdown has to look at the deadline actually in force.
+  const reopenedUntil = data.proposal.reopenedUntil ?? null
+  const deadline =
+    reopenedUntil !== null && reopenedUntil > now
+      ? reopenedUntil
+      : (data.event.cfpCloseAt ?? null)
+
   return (
     <PageBody narrow>
       <PageHeader
@@ -192,10 +215,13 @@ function ManageProposal({
         />
       </Card>
 
-      {editable ? (
+      {editable || keepEditorMounted ? (
         <ProposalEditor
           data={data}
           proposalId={proposalId}
+          expired={!editable}
+          deadline={deadline}
+          now={now}
           self={
             user === null || user === undefined
               ? undefined
@@ -227,10 +253,18 @@ function ManageProposal({
 function ProposalEditor({
   data,
   proposalId,
+  expired,
+  deadline,
+  now,
   self,
 }: {
   data: MyProposalView
   proposalId: Id<'proposals'>
+  /** The window closed while this editor was open. Render, never unmount. */
+  expired: boolean
+  /** When the window in force closes; null when no close is announced. */
+  deadline: number | null
+  now: number
   self?: { firstName: string; lastName: string; email: string }
 }) {
   // A draft is the submitter's alone, so it saves as it is typed. Anything
@@ -246,6 +280,28 @@ function ProposalEditor({
   const submitProposal = useMutation(api.cfp.submitProposal)
   const submit = usePending()
   const [flagged, setFlagged] = useState<ReadonlySet<string>>(() => new Set())
+
+  // Edits the server has not seen. In resubmit mode this is everything typed
+  // since the page opened; in draft mode only the autosave tail.
+  const unsent =
+    !deepEqual(answersDraft.answers, data.proposal.answers) ||
+    !deepEqual(
+      speakersToInput(speakersDraft.speakers),
+      speakersToInput(speakersFromDocs(data.speakers)),
+    )
+
+  if (expired) {
+    // Nothing pending: the ordinary closed-window view is the honest one.
+    if (!unsent) return <ReadOnlyProposal data={data} statusEditable />
+    return (
+      <ExpiredLocalEdits
+        data={data}
+        answers={answersDraft.answers}
+        uploadedNames={answersDraft.uploadedNames}
+        speakers={speakersDraft.speakers}
+      />
+    )
+  }
 
   const missing = missingAnswers(data.form, answersDraft.answers)
   const nameless = incompleteSpeakers(speakersDraft.speakers)
@@ -291,6 +347,16 @@ function ProposalEditor({
             : 'Changes save as you type. Nothing reaches the organizers until you resubmit.'
         }
       />
+      {isResubmit &&
+      deadline !== null &&
+      deadline - now <= CLOSING_SOON_MS ? (
+        <Callout tone="attention" title="The window is about to close">
+          Resubmit before{' '}
+          <Mono>{formatDateTime(deadline, data.event.timezone)}</Mono>. Edits on
+          this page are saved nowhere else — if the window closes first they
+          stay on this screen for you to copy, but they cannot be submitted.
+        </Callout>
+      ) : null}
       {!isResubmit && answersDraft.autosave.error !== null ? (
         <Callout tone="blocked" title="Your last change was not saved">
           {answersDraft.autosave.error}
@@ -428,6 +494,84 @@ function ProposalEditor({
           ? 'Resubmitting saves your changes and notifies the organizers that your proposal changed.'
           : 'Submitting notifies the organizers and sends you a confirmation email.'}
       </p>
+    </div>
+  )
+}
+
+/** How close the deadline gets before the resubmit editor starts warning. */
+const CLOSING_SOON_MS = 15 * 60_000
+
+// ── Expired with unsent edits ────────────────────────────────────────────
+
+/**
+ * The window closed while unsent edits were on screen. They exist nowhere but
+ * in this component's props, so the one job here is to keep them visible and
+ * copyable — the organizers still see the previously submitted version.
+ */
+function ExpiredLocalEdits({
+  data,
+  answers,
+  uploadedNames,
+  speakers,
+}: {
+  data: MyProposalView
+  answers: Answers
+  uploadedNames: UploadedNames
+  speakers: Array<SpeakerDraft>
+}) {
+  const copyText = () => {
+    const lines: Array<string> = [`${data.proposal.title} — unsent edits`, '']
+    for (const section of data.form.sections) {
+      for (const field of section.fields) {
+        const value = answers[field.id]
+        if (isBlankAnswer(value)) continue
+        lines.push(
+          `${field.label}:`,
+          answerSummary(field, value, uploadedNames[field.id]),
+          '',
+        )
+      }
+    }
+    lines.push('Speakers:')
+    for (const speaker of speakers) {
+      const parts = [speakerName(speaker), speaker.email, speaker.tagline]
+        .map((part) => part.trim())
+        .filter((part) => part !== '')
+      lines.push(`- ${parts.join(' · ')}`)
+      if (speaker.bio.trim() !== '') lines.push(`  ${speaker.bio.trim()}`)
+    }
+    return lines.join('\n')
+  }
+
+  const copy = () => {
+    void navigator.clipboard.writeText(copyText()).then(
+      () => pushToast('Copied', 'Your unsent edits are on the clipboard.'),
+      () => pushToast('Copy failed', 'Select the text below and copy it by hand.'),
+    )
+  }
+
+  return (
+    <div
+      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}
+    >
+      <Callout
+        tone="blocked"
+        title="The window closed with unsent edits"
+        actions={<Button onClick={copy}>Copy my edits</Button>}
+      >
+        The changes below were never sent — the organizers still see the
+        version you submitted before. They live only on this screen: copy what
+        you need, and ask the organizers to reopen the proposal if you want to
+        submit them. Leaving this page discards them.
+      </Callout>
+      <PageHeader title="Your unsent edits" />
+      <CfpAnswersSummary
+        form={data.form}
+        answers={answers}
+        uploadedNames={uploadedNames}
+      />
+      <PageHeader title="Speakers" />
+      <SpeakersSummary speakers={speakers} />
     </div>
   )
 }

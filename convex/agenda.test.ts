@@ -77,6 +77,49 @@ async function participantRows(t: TestT, sessionId: Id<"sessions">) {
   );
 }
 
+async function participantByEmail(
+  t: TestT,
+  sessionId: Id<"sessions">,
+  email: string,
+) {
+  return await t.run(async (ctx) => {
+    const rows = await ctx.db
+      .query("sessionParticipants")
+      .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+      .collect();
+    for (const row of rows) {
+      const contact = await ctx.db.get("eventContacts", row.eventContactId);
+      if (contact?.email === email) return row;
+    }
+    throw new Error(`no participation for ${email}`);
+  });
+}
+
+/** A second speaker on the same session (the CFP path creates these; tests
+ * insert the rows directly to stay about the behavior under test). */
+async function addCoSpeaker(
+  t: TestT,
+  sessionId: Id<"sessions">,
+  speaker: { firstName: string; lastName: string; email: string },
+): Promise<void> {
+  await t.run(async (ctx) => {
+    const session = await ctx.db.get("sessions", sessionId);
+    if (session === null) throw new Error("no session");
+    const contactId = await ctx.db.insert("eventContacts", {
+      eventId: session.eventId,
+      orgId: (await ctx.db.get("events", session.eventId))!.orgId,
+      ...speaker,
+    });
+    await ctx.db.insert("sessionParticipants", {
+      sessionId,
+      eventId: session.eventId,
+      eventContactId: contactId,
+      role: "speaker",
+      state: "awaiting",
+    });
+  });
+}
+
 async function setup() {
   const t = setupTest();
   const alice = await signIn(t, "alice");
@@ -735,7 +778,8 @@ describe("agenda.cancelRelease", () => {
       throw new Error("no bob participation");
     });
 
-    const bob = await signIn(t, "bob");
+    // portal.enter requires a Clerk-verified address (model/portal.ts).
+    const bob = await signIn(t, "bob", { emailVerified: true });
     await bob.mutation(api.portal.enter, { eventSlug });
     await bob.mutation(api.portal.withdrawParticipation, {
       eventSlug,
@@ -759,6 +803,205 @@ describe("agenda.cancelRelease", () => {
   });
 });
 
+// ── .ics SEQUENCE monotonicity + failed-invite resend ────────────────────
+// RFC 5546: SEQUENCE must never go backwards for a UID. Outlook/Exchange keep
+// a cancelled UID as a tombstone and silently drop any REQUEST that doesn't
+// exceed the CANCEL's number, so the persisted per-session counter
+// (sessions.icsSequence) must survive every path that clears releasedSlot.
+
+describe("ics sequence", () => {
+  test("never decreases across release → cancel → re-release", async () => {
+    const { t, alice, eventSlug, mainStage } = await setup();
+    const sessionId = await placedSession(
+      alice,
+      eventSlug,
+      "Reactive backends",
+      "bob@example.com",
+      { startsAt: T10, endsAt: T11, roomId: mainStage },
+    );
+    await alice.mutation(api.agenda.release, {
+      eventSlug,
+      sessionIds: [sessionId],
+    });
+    await alice.mutation(api.agenda.cancelRelease, { eventSlug, sessionId });
+
+    // Same slot, re-released after the cancel. Restarting at 0 would leave
+    // the REQUEST at or below the CANCEL's tombstone — it must continue above.
+    expect(
+      await alice.mutation(api.agenda.release, {
+        eventSlug,
+        sessionIds: [sessionId],
+      }),
+    ).toEqual([{ sessionId, ok: true }]);
+
+    const jobs = await calendarJobs(t);
+    expect(jobs.map((j) => [j.ics.method, j.ics.sequence])).toEqual([
+      ["REQUEST", 0],
+      ["CANCEL", 1],
+      ["REQUEST", 2],
+    ]);
+    const session = await sessionRow(t, sessionId);
+    expect(session.icsSequence).toBe(2);
+    expect(session.releasedSlot).toMatchObject({ sequence: 2 });
+  });
+
+  test("a per-participant cancel bumps the persisted counter", async () => {
+    const { t, alice, eventSlug, mainStage, sideRoom } = await setup();
+    const sessionId = await directSession(alice, eventSlug, "Two speakers", {
+      firstName: "Bob",
+      lastName: "Speaker",
+      email: "bob@example.com",
+    });
+    await addCoSpeaker(t, sessionId, {
+      firstName: "Carol",
+      lastName: "Speaker",
+      email: "carol@example.com",
+    });
+    await place(alice, eventSlug, sessionId, {
+      startsAt: T10,
+      endsAt: T11,
+      roomId: mainStage,
+    });
+    await alice.mutation(api.agenda.release, {
+      eventSlug,
+      sessionIds: [sessionId],
+    });
+
+    // Bob withdraws: his CANCEL goes out at 1 AND the session records it.
+    const bobRow = await participantByEmail(t, sessionId, "bob@example.com");
+    // portal.enter requires a Clerk-verified address (model/portal.ts).
+    const bob = await signIn(t, "bob", { emailVerified: true });
+    await bob.mutation(api.portal.enter, { eventSlug });
+    await bob.mutation(api.portal.withdrawParticipation, {
+      eventSlug,
+      participantId: bobRow._id,
+    });
+    expect((await sessionRow(t, sessionId)).icsSequence).toBe(1);
+
+    // The next session-wide release must EXCEED that CANCEL, not reuse it.
+    await place(alice, eventSlug, sessionId, {
+      startsAt: T10,
+      endsAt: T11,
+      roomId: sideRoom,
+    });
+    await alice.mutation(api.agenda.release, {
+      eventSlug,
+      sessionIds: [sessionId],
+    });
+    const jobs = await calendarJobs(t);
+    const last = jobs[jobs.length - 1];
+    expect(last.toEmail).toBe("carol@example.com");
+    expect(last.ics.method).toBe("REQUEST");
+    expect(last.ics.sequence).toBe(2);
+    expect((await sessionRow(t, sessionId)).releasedSlot).toMatchObject({
+      sequence: 2,
+    });
+  });
+
+  test("an unchanged release resends only to a participant whose last invite failed", async () => {
+    const { t, alice, eventSlug, mainStage } = await setup();
+    const sessionId = await directSession(alice, eventSlug, "Two speakers", {
+      firstName: "Bob",
+      lastName: "Speaker",
+      email: "bob@example.com",
+    });
+    await addCoSpeaker(t, sessionId, {
+      firstName: "Carol",
+      lastName: "Speaker",
+      email: "carol@example.com",
+    });
+    await place(alice, eventSlug, sessionId, {
+      startsAt: T10,
+      endsAt: T11,
+      roomId: mainStage,
+    });
+    await alice.mutation(api.agenda.release, {
+      eventSlug,
+      sessionIds: [sessionId],
+    });
+
+    // The scheduled send action doesn't run under convex-test, so write the
+    // comms-log rows convex/emails.ts would have recorded: bob's send died
+    // mid-flight, carol's went out.
+    const rows = await participantRows(t, sessionId);
+    const bobMessageId = await t.run(async (ctx) => {
+      const session = await ctx.db.get("sessions", sessionId);
+      if (session === null) throw new Error("no session");
+      const orgId = (await ctx.db.get("events", session.eventId))!.orgId;
+      let failedId: Id<"messages"> | undefined;
+      for (const row of rows) {
+        const contact = await ctx.db.get("eventContacts", row.eventContactId);
+        const failed = contact?.email === "bob@example.com";
+        const messageId = await ctx.db.insert("messages", {
+          orgId,
+          eventId: session.eventId,
+          toEmail: contact?.email ?? "",
+          kind: "schedule.released",
+          subject: "Your slot at Acme Summit",
+          deliveryStatus: failed ? "failed" : "sent",
+          context: {
+            sessionId,
+            participantId: row._id,
+            sequence: 0,
+            mode: "first",
+            ...(failed ? { sendError: "Resend API 500" } : {}),
+          },
+        });
+        if (failed) failedId = messageId;
+      }
+      if (failedId === undefined) throw new Error("no bob message");
+      return failedId;
+    });
+
+    // Bob acknowledged from the portal despite never receiving the email.
+    const bobRow = await participantByEmail(t, sessionId, "bob@example.com");
+    await alice.mutation(api.agenda.setAck, {
+      eventSlug,
+      participantId: bobRow._id,
+      response: "acknowledged",
+    });
+
+    const before = (await calendarJobs(t)).length;
+    expect(
+      await alice.mutation(api.agenda.release, {
+        eventSlug,
+        sessionIds: [sessionId],
+      }),
+    ).toEqual([{ sessionId, ok: true }]);
+
+    const jobs = await calendarJobs(t);
+    expect(jobs).toHaveLength(before + 1);
+    const resend = jobs[jobs.length - 1];
+    expect(resend.toEmail).toBe("bob@example.com");
+    // He gets the exact notice he missed, at a sequence above the failed one.
+    expect(resend.kind).toBe("schedule.released");
+    expect(resend.ics.method).toBe("REQUEST");
+    expect(resend.ics.sequence).toBe(1);
+    expect(resend.context?.mode).toBe("resend");
+
+    const session = await sessionRow(t, sessionId);
+    expect(session.icsSequence).toBe(1);
+    // The released placement itself is untouched by a resend…
+    expect(session.releasedSlot).toMatchObject({ sequence: 0 });
+    // …and neither is the acknowledgement bob already gave.
+    expect(
+      (await participantRows(t, sessionId)).find((r) => r._id === bobRow._id)
+        ?.ack,
+    ).toBe("acknowledged");
+
+    // Once nothing on record failed, the same call is "unchanged" again.
+    await t.run(async (ctx) => {
+      await ctx.db.patch("messages", bobMessageId, { deliveryStatus: "sent" });
+    });
+    expect(
+      await alice.mutation(api.agenda.release, {
+        eventSlug,
+        sessionIds: [sessionId],
+      }),
+    ).toEqual([{ sessionId, ok: false, error: "unchanged" }]);
+  });
+});
+
 // ── Acknowledgement ──────────────────────────────────────────────────────
 
 describe("acknowledgement", () => {
@@ -771,7 +1014,8 @@ describe("acknowledgement", () => {
       "bob@example.com",
       { startsAt: T10, endsAt: T11, roomId: mainStage },
     );
-    const bob = await signIn(t, "bob");
+    // portal.enter requires a Clerk-verified address (model/portal.ts).
+    const bob = await signIn(t, "bob", { emailVerified: true });
     await bob.mutation(api.portal.enter, { eventSlug });
 
     const [participant] = await participantRows(t, sessionId);
@@ -816,7 +1060,8 @@ describe("acknowledgement", () => {
       "bob@example.com",
       { startsAt: T10, endsAt: T11, roomId: mainStage },
     );
-    const bob = await signIn(t, "bob");
+    // portal.enter requires a Clerk-verified address (model/portal.ts).
+    const bob = await signIn(t, "bob", { emailVerified: true });
     await bob.mutation(api.portal.enter, { eventSlug });
     await alice.mutation(api.agenda.release, {
       eventSlug,
@@ -861,7 +1106,8 @@ describe("acknowledgement", () => {
       "bob@example.com",
       { startsAt: T10, endsAt: T11, roomId: mainStage },
     );
-    const bob = await signIn(t, "bob");
+    // portal.enter requires a Clerk-verified address (model/portal.ts).
+    const bob = await signIn(t, "bob", { emailVerified: true });
     await bob.mutation(api.portal.enter, { eventSlug });
     await alice.mutation(api.agenda.release, {
       eventSlug,
@@ -1016,7 +1262,8 @@ describe("agenda.setVirtualLinks", () => {
         host: "https://meet.example.com/host",
       },
     });
-    const bob = await signIn(t, "bob");
+    // portal.enter requires a Clerk-verified address (model/portal.ts).
+    const bob = await signIn(t, "bob", { emailVerified: true });
     await bob.mutation(api.portal.enter, { eventSlug });
 
     let context = await bob.query(api.portal.context, { eventSlug });
@@ -1034,5 +1281,58 @@ describe("agenda.setVirtualLinks", () => {
     );
     // The host link is organizer-only and never appears in the portal shape.
     expect(JSON.stringify(context)).not.toContain("meet.example.com/host");
+  });
+});
+
+// ── Archived events ──────────────────────────────────────────────────────
+
+describe("archived events", () => {
+  test("every agenda write is refused once the event is archived", async () => {
+    const { t, alice, eventSlug, mainStage } = await setup();
+    const sessionId = await placedSession(
+      alice,
+      eventSlug,
+      "Frozen talk",
+      "bob@example.com",
+      { startsAt: T10, endsAt: T11, roomId: mainStage },
+    );
+    await alice.mutation(api.agenda.release, {
+      eventSlug,
+      sessionIds: [sessionId],
+    });
+    const [participant] = await participantRows(t, sessionId);
+
+    await alice.mutation(api.events.setArchived, { eventSlug, archived: true });
+
+    // Board edits, item CRUD, release, cancel and acks are all M6 writes.
+    for (const call of [
+      place(alice, eventSlug, sessionId, {
+        startsAt: T11,
+        endsAt: T12,
+        roomId: mainStage,
+      }),
+      alice.mutation(api.agenda.createAgendaItem, {
+        eventSlug,
+        title: "Lunch",
+        startsAt: T11,
+        endsAt: T12,
+      }),
+      alice.mutation(api.agenda.release, { eventSlug, sessionIds: [sessionId] }),
+      alice.mutation(api.agenda.cancelRelease, { eventSlug, sessionId }),
+      alice.mutation(api.agenda.setAck, {
+        eventSlug,
+        participantId: participant._id,
+        response: "acknowledged",
+      }),
+    ]) {
+      await expectRejectedWith(call, "event_archived");
+    }
+
+    // The board stays readable, and nothing above sent a cancellation.
+    const board = await alice.query(api.agenda.board, { eventSlug });
+    expect(board.sessions).toHaveLength(1);
+    expect(
+      (await calendarJobs(t)).filter((j) => j.ics.method === "CANCEL"),
+    ).toHaveLength(0);
   });
 });

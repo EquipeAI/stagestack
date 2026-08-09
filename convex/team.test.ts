@@ -37,6 +37,7 @@ describe("team.inviteToEvent / acceptInvitation", () => {
 
     const preview = await t.query(api.team.previewInvitation, {
       token: await tokenFor(t, "rita@example.com"),
+      now: Date.now(),
     });
     expect(preview).toMatchObject({
       orgName: "Acme Conf Co",
@@ -45,7 +46,10 @@ describe("team.inviteToEvent / acceptInvitation", () => {
       status: "pending",
     });
 
-    const listed = await alice.query(api.team.listForEvent, { eventSlug });
+    const listed = await alice.query(api.team.listForEvent, {
+      eventSlug,
+      now: Date.now(),
+    });
     expect(listed.invitations).toHaveLength(1);
     expect(listed.members).toHaveLength(1);
     expect(listed.members[0]).toMatchObject({
@@ -103,15 +107,33 @@ describe("team.inviteToEvent / acceptInvitation", () => {
       role: "organizer",
     });
     const expiredToken = await tokenFor(t, "expired@example.com");
+    // The preview's expiry comes from the injected `now`, not the server clock:
+    // the same live invitation reads pending before its TTL and expired after.
+    const expiresAt = await t.run(async (ctx) => {
+      const invite = await ctx.db.get("invitations", expiredId);
+      if (invite === null) throw new Error("invitation vanished");
+      return invite.expiresAt;
+    });
+    expect(
+      await t.query(api.team.previewInvitation, {
+        token: expiredToken,
+        now: expiresAt - 1,
+      }),
+    ).toMatchObject({ status: "pending" });
+    expect(
+      await t.query(api.team.previewInvitation, {
+        token: expiredToken,
+        now: expiresAt + 1,
+      }),
+    ).toMatchObject({ status: "expired" });
+
+    // acceptInvitation is a mutation and reads the real clock, so the row has
+    // to actually be stale for it to refuse.
     await t.run(async (ctx) => {
       await ctx.db.patch("invitations", expiredId, {
         expiresAt: Date.now() - 1000,
       });
     });
-    expect(
-      await t.query(api.team.previewInvitation, { token: expiredToken }),
-    ).toMatchObject({ status: "expired" });
-
     const expiredUser = await signIn(t, "expired");
     await expectRejectedWith(
       expiredUser.mutation(api.team.acceptInvitation, { token: expiredToken }),
@@ -120,7 +142,10 @@ describe("team.inviteToEvent / acceptInvitation", () => {
 
     // An unknown token previews as null.
     expect(
-      await t.query(api.team.previewInvitation, { token: "nope" }),
+      await t.query(api.team.previewInvitation, {
+        token: "nope",
+        now: Date.now(),
+      }),
     ).toBeNull();
   });
 
@@ -186,7 +211,7 @@ describe("team.inviteOrgAdmin", () => {
     });
     const token = await tokenFor(t, "adam@example.com");
     expect(
-      await t.query(api.team.previewInvitation, { token }),
+      await t.query(api.team.previewInvitation, { token, now: Date.now() }),
     ).toMatchObject({ eventName: null, role: "admin", status: "pending" });
 
     const adam = await signIn(t, "adam");
@@ -247,6 +272,52 @@ describe("team.inviteOrgAdmin", () => {
   });
 });
 
+describe("team lists take the clock as an argument", () => {
+  test("pending invitations drop out of both lists at the injected `now`", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+    await alice.mutation(api.team.inviteToEvent, {
+      eventSlug,
+      email: "rita@example.com",
+      role: "reviewer",
+    });
+    await alice.mutation(api.team.inviteOrgAdmin, {
+      orgSlug,
+      email: "adam@example.com",
+      role: "admin",
+    });
+    const { earliest, latest } = await t.run(async (ctx) => {
+      const invites = await ctx.db.query("invitations").collect();
+      const expiries = invites.map((i) => i.expiresAt);
+      return { earliest: Math.min(...expiries), latest: Math.max(...expiries) };
+    });
+
+    const beforeEvent = await alice.query(api.team.listForEvent, {
+      eventSlug,
+      now: earliest - 1,
+    });
+    expect(beforeEvent.invitations).toHaveLength(1);
+    const afterEvent = await alice.query(api.team.listForEvent, {
+      eventSlug,
+      now: latest + 1,
+    });
+    expect(afterEvent.invitations).toEqual([]);
+    // Members are not time-derived, so the same call still returns the team.
+    expect(afterEvent.members).toHaveLength(1);
+
+    expect(
+      (await alice.query(api.team.listForOrg, { orgSlug, now: earliest - 1 }))
+        .invitations,
+    ).toHaveLength(1);
+    expect(
+      (await alice.query(api.team.listForOrg, { orgSlug, now: latest + 1 }))
+        .invitations,
+    ).toEqual([]);
+  });
+});
+
 describe("team.revokeInvitation", () => {
   test(
     "an organizer of event A cannot revoke event B's invitation",
@@ -295,11 +366,15 @@ describe("team.revokeInvitation", () => {
       invitationId,
     });
 
-    const listed = await alice.query(api.team.listForEvent, { eventSlug });
+    const listed = await alice.query(api.team.listForEvent, {
+      eventSlug,
+      now: Date.now(),
+    });
     expect(listed.invitations).toEqual([]);
     expect(
       await t.query(api.team.previewInvitation, {
         token: await tokenFor(t, "rita@example.com"),
+        now: Date.now(),
       }),
     ).toMatchObject({ status: "revoked" });
   });

@@ -13,11 +13,15 @@ import {
 } from "./test.helpers";
 
 // Speaker portal (M3). The rules worth breaking the build over: access comes
-// only from a Clerk-verified email matching an event snapshot, a profile edit
+// only from a Clerk-VERIFIED email matching an event snapshot, a profile edit
 // touches exactly one event's snapshot plus the org directory, and a completed
 // manager handoff moves management away from the previous manager.
 
 const ISSUER = "https://test.clerk.example.com";
+
+// Portal claiming requires the Clerk `email_verified` claim; an absent claim
+// reads as unverified, so every identity that enters the portal carries it.
+const VERIFIED = { emailVerified: true };
 
 async function userIdFor(t: TestT, key: string): Promise<Id<"users">> {
   return await t.run(async (ctx) => {
@@ -88,7 +92,7 @@ async function directSetup(t: TestT) {
  * primary manager of a session he does not appear in. */
 async function acceptedProposalSetup(t: TestT) {
   const alice = await signIn(t, "alice");
-  const bob = await signIn(t, "bob");
+  const bob = await signIn(t, "bob", VERIFIED);
   const orgSlug = await createOrg(alice, "Acme Conf Co");
   const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
   await alice.mutation(api.cfp.publishForm, { eventSlug });
@@ -144,7 +148,7 @@ describe("portal.enter (verified-email auto-claim)", () => {
     const t = setupTest();
     const { eventSlug, eventContactId } = await directSetup(t);
 
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", VERIFIED);
     await dana.mutation(api.portal.enter, { eventSlug });
 
     const context = await dana.query(api.portal.context, { eventSlug });
@@ -183,11 +187,38 @@ describe("portal.enter (verified-email auto-claim)", () => {
     ).toHaveLength(1);
   });
 
+  test("an unverified email can neither claim a snapshot nor complete a handoff", async () => {
+    const t = setupTest();
+    const { eventSlug, eventContactId } = await directSetup(t);
+
+    // Absent claim (JWT template without email_verified) reads as unverified.
+    const danaNoClaim = await signIn(t, "dana");
+    await expectRejectedWith(
+      danaNoClaim.mutation(api.portal.enter, { eventSlug }),
+      "email_unverified",
+    );
+    // An explicit false claim — the attack: anyone can ADD dana@example.com
+    // to their Clerk account without proving they own the mailbox.
+    const danaUnverified = await signIn(t, "dana", { emailVerified: false });
+    await expectRejectedWith(
+      danaUnverified.mutation(api.portal.enter, { eventSlug }),
+      "email_unverified",
+    );
+    expect((await eventContact(t, eventContactId)).userId).toBeUndefined();
+
+    // Verifying the address unlocks the claim.
+    const dana = await signIn(t, "dana", VERIFIED);
+    await dana.mutation(api.portal.enter, { eventSlug });
+    expect((await eventContact(t, eventContactId)).userId).toBe(
+      await userIdFor(t, "dana"),
+    );
+  });
+
   test("a signed-in stranger gets an empty portal, not an error", async () => {
     const t = setupTest();
     const { eventSlug, eventContactId } = await directSetup(t);
 
-    const eve = await signIn(t, "eve");
+    const eve = await signIn(t, "eve", VERIFIED);
     await eve.mutation(api.portal.enter, { eventSlug });
     const context = await eve.query(api.portal.context, { eventSlug });
     expect(context.hasAccess).toBe(false);
@@ -218,7 +249,7 @@ describe("portal.updateMyProfile", () => {
       },
     );
 
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", VERIFIED);
     await dana.mutation(api.portal.enter, { eventSlug });
     await dana.mutation(api.portal.updateMyProfile, {
       eventSlug,
@@ -261,7 +292,7 @@ describe("portal.updateMyProfile", () => {
   test("rejects a profile link that isn't an http(s) URL", async () => {
     const t = setupTest();
     const { eventSlug, eventContactId } = await directSetup(t);
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", VERIFIED);
     await dana.mutation(api.portal.enter, { eventSlug });
 
     // A javascript: scheme would become a clickable XSS vector on public pages
@@ -296,11 +327,11 @@ describe("portal.updateMyProfile", () => {
   test("NEGATIVE: another user cannot edit, confirm, or upload for a claimed profile", async () => {
     const t = setupTest();
     const { eventSlug, sessionId, eventContactId } = await directSetup(t);
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", VERIFIED);
     await dana.mutation(api.portal.enter, { eventSlug });
     const participantId = (await participantsOf(t, sessionId))[0]._id;
 
-    const mallory = await signIn(t, "mallory");
+    const mallory = await signIn(t, "mallory", VERIFIED);
     await mallory.mutation(api.portal.enter, { eventSlug });
 
     for (const call of [
@@ -341,7 +372,7 @@ describe("participation state", () => {
   test("a speaker confirms their own participation", async () => {
     const t = setupTest();
     const { eventSlug, sessionId } = await directSetup(t);
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", VERIFIED);
     await dana.mutation(api.portal.enter, { eventSlug });
     const participantId = (await participantsOf(t, sessionId))[0]._id;
 
@@ -460,7 +491,7 @@ describe("participation state", () => {
   test("a withdrawn participation can no longer be confirmed", async () => {
     const t = setupTest();
     const { alice, eventSlug, sessionId } = await directSetup(t);
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", VERIFIED);
     await dana.mutation(api.portal.enter, { eventSlug });
     const participantId = (await participantsOf(t, sessionId))[0]._id;
 
@@ -491,7 +522,7 @@ describe("portal.withdrawParticipation", () => {
   test("alerts organizers, keeps the session planned, and is idempotent", async () => {
     const t = setupTest();
     const { eventSlug, sessionId } = await directSetup(t);
-    const dana = await signIn(t, "dana");
+    const dana = await signIn(t, "dana", VERIFIED);
     await dana.mutation(api.portal.enter, { eventSlug });
     const participantId = (await participantsOf(t, sessionId))[0]._id;
 
@@ -531,6 +562,122 @@ describe("portal.withdrawParticipation", () => {
   });
 });
 
+describe("published blob follows privacy transitions", () => {
+  /** Publish the lineup + the session so the blob carries Dana's profile. */
+  async function publishDana(t: TestT) {
+    const { alice, eventSlug, sessionId } = await directSetup(t);
+    const dana = await signIn(t, "dana", VERIFIED);
+    await dana.mutation(api.portal.enter, { eventSlug });
+    const participantId = (await participantsOf(t, sessionId))[0]._id;
+    await dana.mutation(api.portal.confirmParticipation, {
+      eventSlug,
+      participantId,
+      to: "confirmed",
+    });
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId,
+      published: true,
+    });
+    const program = (await t.query(api.publish.publicProgram, {
+      slug: eventSlug,
+    }))!;
+    expect(JSON.stringify(program)).toContain("Dana Keynote");
+    return { alice, dana, eventSlug, sessionId, participantId };
+  }
+
+  async function publishedVersion(t: TestT): Promise<number> {
+    return await t.run(async (ctx) => {
+      const rows = await ctx.db.query("publishedPrograms").collect();
+      expect(rows).toHaveLength(1);
+      return rows[0].version;
+    });
+  }
+
+  test("a withdrawal rewrites the served blob immediately", async () => {
+    const t = setupTest();
+    const { dana, eventSlug, participantId } = await publishDana(t);
+    const before = await publishedVersion(t);
+
+    // The withdrawal alert promises "their name and profile are suppressed
+    // from public output" — no explicit republish may be required for that.
+    await dana.mutation(api.portal.withdrawParticipation, {
+      eventSlug,
+      participantId,
+    });
+    const program = (await t.query(api.publish.publicProgram, {
+      slug: eventSlug,
+    }))!;
+    expect(JSON.stringify(program)).not.toContain("Dana");
+    expect(program.lineup).toHaveLength(1);
+    expect(program.lineup[0].toBeAnnounced).toBe(true);
+    expect(await publishedVersion(t)).toBe(before + 1);
+  });
+
+  test("a decline (portal or organizer) rewrites the served blob", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, participantId } = await publishDana(t);
+
+    // Organizer records the decline on Dana's behalf.
+    await alice.mutation(api.sessions.setParticipationState, {
+      eventSlug,
+      participantId,
+      to: "declined",
+    });
+    const program = (await t.query(api.publish.publicProgram, {
+      slug: eventSlug,
+    }))!;
+    expect(JSON.stringify(program)).not.toContain("Dana");
+    expect(program.lineup[0].toBeAnnounced).toBe(true);
+  });
+
+  test("a decline on a never-published event publishes nothing", async () => {
+    const t = setupTest();
+    const { eventSlug, sessionId } = await directSetup(t);
+    const dana = await signIn(t, "dana", VERIFIED);
+    await dana.mutation(api.portal.enter, { eventSlug });
+    await dana.mutation(api.portal.confirmParticipation, {
+      eventSlug,
+      participantId: (await participantsOf(t, sessionId))[0]._id,
+      to: "declined",
+    });
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("publishedPrograms").collect(),
+    );
+    expect(rows).toEqual([]);
+  });
+});
+
+describe("manager backstage audience", () => {
+  test("the manager sees the backstage link only once a speaker confirmed", async () => {
+    const t = setupTest();
+    const { bob, eventSlug, sessionId } = await acceptedProposalSetup(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch("sessions", sessionId, {
+        virtualLinks: { backstage: "https://backstage.example/room" },
+      });
+    });
+    await bob.mutation(api.portal.enter, { eventSlug });
+
+    // Carol is still awaiting → no backstage for the manager either (M6:
+    // "Confirmed participants and their primary managers").
+    let context = await bob.query(api.portal.context, { eventSlug });
+    expect(context.managing).toHaveLength(1);
+    expect(context.managing[0].backstageUrl).toBeUndefined();
+
+    await bob.mutation(api.portal.confirmParticipation, {
+      eventSlug,
+      participantId: context.managing[0].participants[0].participantId,
+      to: "confirmed",
+    });
+    context = await bob.query(api.portal.context, { eventSlug });
+    expect(context.managing[0].backstageUrl).toBe(
+      "https://backstage.example/room",
+    );
+  });
+});
+
 describe("portal.updateSessionContent", () => {
   test("the primary manager edits shared session content", async () => {
     const t = setupTest();
@@ -558,7 +705,7 @@ describe("portal.updateSessionContent", () => {
     expect(await auditActions(t)).toContain("portal.updateSession");
 
     // The speaker is not the manager here: content stays the manager's.
-    const carol = await signIn(t, "carol");
+    const carol = await signIn(t, "carol", VERIFIED);
     await carol.mutation(api.portal.enter, { eventSlug });
     expect(
       (await carol.query(api.portal.context, { eventSlug })).managing,
@@ -606,7 +753,7 @@ describe("manager handoff", () => {
       (await bob.query(api.portal.context, { eventSlug })).managing,
     ).toHaveLength(1);
 
-    const mona = await signIn(t, "mona");
+    const mona = await signIn(t, "mona", VERIFIED);
     await mona.mutation(api.portal.enter, { eventSlug });
 
     const monaId = await userIdFor(t, "mona");
@@ -636,6 +783,25 @@ describe("manager handoff", () => {
     expect(await auditActions(t)).toContain("portal.handoffCompleted");
   });
 
+  test("an unverified invitee cannot complete a pending handoff", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, sessionId } = await acceptedProposalSetup(t);
+    const bobId = await userIdFor(t, "bob");
+    await alice.mutation(api.sessions.startManagerHandoff, {
+      eventSlug,
+      sessionId,
+      email: "mona@example.com",
+    });
+
+    const mona = await signIn(t, "mona"); // no email_verified claim
+    await expectRejectedWith(
+      mona.mutation(api.portal.enter, { eventSlug }),
+      "email_unverified",
+    );
+    expect((await participantsOf(t, sessionId))[0].managerUserId).toBe(bobId);
+    expect((await handoffRows(t))[0].status).toBe("pending");
+  });
+
   test("an expired or revoked handoff never completes", async () => {
     const t = setupTest();
     const { alice, bob, eventSlug, sessionId } = await acceptedProposalSetup(t);
@@ -652,7 +818,7 @@ describe("manager handoff", () => {
       });
     });
 
-    const mona = await signIn(t, "mona");
+    const mona = await signIn(t, "mona", VERIFIED);
     await mona.mutation(api.portal.enter, { eventSlug });
     expect((await participantsOf(t, sessionId))[0].managerUserId).toBe(bobId);
     expect((await handoffRows(t))[0].status).toBe("pending");

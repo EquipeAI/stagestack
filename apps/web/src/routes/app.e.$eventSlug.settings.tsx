@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
@@ -9,6 +9,7 @@ import {
   Button,
   Callout,
   Card,
+  Dialog,
   Field,
   IconButton,
   Input,
@@ -20,6 +21,7 @@ import {
 } from '~/ds'
 import { fromInputValue, timezoneOptions, toInputValue } from '~/lib/datetime'
 import { usePending } from '~/lib/usePending'
+import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
 
 export const Route = createFileRoute('/app/e/$eventSlug/settings')({
@@ -67,6 +69,83 @@ function Settings() {
   )
 }
 
+// ── Section forms ─────────────────────────────────────────────────────────
+
+type FormValues = Record<string, string | boolean>
+
+function sameValues(a: FormValues, b: FormValues) {
+  for (const key of Object.keys(a)) {
+    if (a[key] !== b[key]) return false
+  }
+  return true
+}
+
+/**
+ * A section form seeded from the live doc. Convex pushes every change, so a
+ * form nobody has touched follows the server; a form holding local edits keeps
+ * them and reports the divergence, because saving sends the whole section and
+ * the organizer has to see what they are about to overwrite.
+ */
+function useSectionForm<T extends FormValues>(server: T) {
+  const [seed, setSeed] = useState<T>(server)
+  const [draft, setDraft] = useState<T>(server)
+  // A save normalises what it stores (trimming, mostly), so what comes back
+  // right after one is the truth for this form even though the fields differ
+  // from it — that is this form's own write, not somebody else's.
+  const followNext = useRef(false)
+
+  let values = draft
+  let base = seed
+  // Adjusted during render so this same pass shows the server's value.
+  if (
+    !sameValues(seed, server) &&
+    (followNext.current ||
+      sameValues(draft, seed) ||
+      sameValues(draft, server))
+  ) {
+    followNext.current = false
+    base = server
+    values = server
+    setSeed(server)
+    setDraft(server)
+  }
+
+  return {
+    values,
+    set<TKey extends keyof T>(key: TKey, value: T[TKey]) {
+      followNext.current = false
+      setDraft((prev) => ({ ...prev, [key]: value }))
+    },
+    /** Called after this form's own successful save. */
+    saved() {
+      followNext.current = true
+    },
+    /** The server moved under edits this form has not saved. */
+    conflict: !sameValues(base, server),
+    discard() {
+      setSeed(server)
+      setDraft(server)
+    },
+  }
+}
+
+function ConflictNotice({ onDiscard }: { onDiscard: () => void }) {
+  return (
+    <Callout
+      tone="attention"
+      title="This section changed somewhere else"
+      actions={
+        <Button size="sm" onClick={onDiscard}>
+          Discard my edits
+        </Button>
+      }
+    >
+      Another tab or another organizer saved different values while you were
+      editing. Saving replaces theirs with what is on this screen.
+    </Callout>
+  )
+}
+
 function SectionFooter({
   pending,
   error,
@@ -110,11 +189,14 @@ function DetailsSection({
 }) {
   const update = useMutation(api.events.updateSettings)
   const { pending, error, setError, run } = usePending()
-  const [name, setName] = useState(event.name)
-  const [type, setType] = useState(event.type ?? '')
-  const [location, setLocation] = useState(event.location ?? '')
-  const [website, setWebsite] = useState(event.website ?? '')
-  const [description, setDescription] = useState(event.description ?? '')
+  const form = useSectionForm({
+    name: event.name,
+    type: event.type ?? '',
+    location: event.location ?? '',
+    website: event.website ?? '',
+    description: event.description ?? '',
+  })
+  const { name, type, location, website, description } = form.values
 
   const save = () => {
     if (name.trim() === '') return setError('The event needs a name.')
@@ -130,6 +212,7 @@ function DetailsSection({
         },
       })
       pushToast('Details saved', name.trim())
+      form.saved()
     })
   }
 
@@ -140,8 +223,13 @@ function DetailsSection({
       footer={<SectionFooter pending={pending} error={error} onSave={save} />}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        {form.conflict ? <ConflictNotice onDiscard={form.discard} /> : null}
         <Field label="Name" htmlFor="s-name">
-          <Input id="s-name" value={name} onChange={(e) => setName(e.target.value)} />
+          <Input
+            id="s-name"
+            value={name}
+            onChange={(e) => form.set('name', e.target.value)}
+          />
         </Field>
         <div style={twoCol}>
           <Field
@@ -150,14 +238,18 @@ function DetailsSection({
             optional
             hint="e.g. Conference, Summit, Meetup."
           >
-            <Input id="s-type" value={type} onChange={(e) => setType(e.target.value)} />
+            <Input
+              id="s-type"
+              value={type}
+              onChange={(e) => form.set('type', e.target.value)}
+            />
           </Field>
           <Field label="Location" htmlFor="s-location" optional>
             <Input
               id="s-location"
               value={location}
               placeholder="San Francisco, CA"
-              onChange={(e) => setLocation(e.target.value)}
+              onChange={(e) => form.set('location', e.target.value)}
             />
           </Field>
         </div>
@@ -167,7 +259,7 @@ function DetailsSection({
             type="url"
             value={website}
             placeholder="https://example.com"
-            onChange={(e) => setWebsite(e.target.value)}
+            onChange={(e) => form.set('website', e.target.value)}
           />
         </Field>
         <Field label="Description" htmlFor="s-description" optional>
@@ -175,7 +267,7 @@ function DetailsSection({
             id="s-description"
             rows={4}
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => form.set('description', e.target.value)}
           />
         </Field>
       </div>
@@ -195,7 +287,8 @@ function SlugSection({
   const update = useMutation(api.events.updateSettings)
   const navigate = useNavigate()
   const { pending, error, setError, run } = usePending()
-  const [slug, setSlug] = useState(event.slug)
+  const form = useSectionForm({ slug: event.slug })
+  const { slug } = form.values
 
   const save = () => {
     const next = slug.trim()
@@ -203,6 +296,7 @@ function SlugSection({
     if (next === event.slug) return setError('That is already the slug.')
     void run(async () => {
       await update({ eventSlug, patch: { slug: next } })
+      form.saved()
       pushToast('Slug changed', `Public URLs now use /e/${next}`)
       await navigate({
         to: '/app/e/$eventSlug/settings',
@@ -230,11 +324,12 @@ function SlugSection({
           Links already shared — the CFP page, the public program, invitations —
           stop resolving the moment you save.
         </Callout>
+        {form.conflict ? <ConflictNotice onDiscard={form.discard} /> : null}
         <Field label="Slug" htmlFor="s-slug" hint={`stagestack.dev/e/${slug.trim()}`}>
           <Input
             id="s-slug"
             value={slug}
-            onChange={(e) => setSlug(e.target.value)}
+            onChange={(e) => form.set('slug', e.target.value)}
           />
         </Field>
       </div>
@@ -253,11 +348,12 @@ function DatesSection({
 }) {
   const update = useMutation(api.events.updateSettings)
   const { pending, error, setError, run } = usePending()
-  const [timezone, setTimezone] = useState(event.timezone)
-  const [startsAt, setStartsAt] = useState(
-    toInputValue(event.startsAt, event.timezone),
-  )
-  const [endsAt, setEndsAt] = useState(toInputValue(event.endsAt, event.timezone))
+  const form = useSectionForm({
+    startsAt: toInputValue(event.startsAt, event.timezone),
+    endsAt: toInputValue(event.endsAt, event.timezone),
+    timezone: event.timezone,
+  })
+  const { startsAt, endsAt, timezone } = form.values
   const zones = useMemo(() => timezoneOptions(timezone), [timezone])
 
   const save = () => {
@@ -272,6 +368,7 @@ function DatesSection({
         patch: { startsAt: start, endsAt: end, timezone },
       })
       pushToast('Dates saved', `Event time is now stated in ${timezone}.`)
+      form.saved()
     })
   }
 
@@ -282,13 +379,14 @@ function DatesSection({
       footer={<SectionFooter pending={pending} error={error} onSave={save} />}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        {form.conflict ? <ConflictNotice onDiscard={form.discard} /> : null}
         <div style={twoCol}>
           <Field label="Starts" htmlFor="s-starts">
             <Input
               id="s-starts"
               type="datetime-local"
               value={startsAt}
-              onChange={(e) => setStartsAt(e.target.value)}
+              onChange={(e) => form.set('startsAt', e.target.value)}
             />
           </Field>
           <Field label="Ends" htmlFor="s-ends">
@@ -296,7 +394,7 @@ function DatesSection({
               id="s-ends"
               type="datetime-local"
               value={endsAt}
-              onChange={(e) => setEndsAt(e.target.value)}
+              onChange={(e) => form.set('endsAt', e.target.value)}
             />
           </Field>
         </div>
@@ -309,7 +407,7 @@ function DatesSection({
             id="s-tz"
             options={zones}
             value={timezone}
-            onChange={(e) => setTimezone(e.target.value)}
+            onChange={(e) => form.set('timezone', e.target.value)}
           />
         </Field>
       </div>
@@ -328,11 +426,12 @@ function CfpSection({
 }) {
   const update = useMutation(api.events.updateSettings)
   const { pending, error, setError, run } = usePending()
-  const [openAt, setOpenAt] = useState(toInputValue(event.cfpOpenAt, event.timezone))
-  const [closeAt, setCloseAt] = useState(
-    toInputValue(event.cfpCloseAt, event.timezone),
-  )
-  const [published, setPublished] = useState(event.cfpPublished)
+  const form = useSectionForm({
+    openAt: toInputValue(event.cfpOpenAt, event.timezone),
+    closeAt: toInputValue(event.cfpCloseAt, event.timezone),
+    published: event.cfpPublished,
+  })
+  const { openAt, closeAt, published } = form.values
 
   const save = () => {
     const open = openAt === '' ? null : fromInputValue(openAt, event.timezone)
@@ -353,6 +452,7 @@ function CfpSection({
         'CFP settings saved',
         published ? 'The CFP is published.' : 'The CFP is unpublished.',
       )
+      form.saved()
     })
   }
 
@@ -364,6 +464,7 @@ function CfpSection({
       footer={<SectionFooter pending={pending} error={error} onSave={save} />}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        {form.conflict ? <ConflictNotice onDiscard={form.discard} /> : null}
         <div style={twoCol}>
           <Field
             label="Opens"
@@ -376,9 +477,13 @@ function CfpSection({
                 id="s-cfp-open"
                 type="datetime-local"
                 value={openAt}
-                onChange={(e) => setOpenAt(e.target.value)}
+                onChange={(e) => form.set('openAt', e.target.value)}
               />
-              <Button size="sm" onClick={() => setOpenAt('')} disabled={openAt === ''}>
+              <Button
+                size="sm"
+                onClick={() => form.set('openAt', '')}
+                disabled={openAt === ''}
+              >
                 Clear
               </Button>
             </div>
@@ -394,11 +499,11 @@ function CfpSection({
                 id="s-cfp-close"
                 type="datetime-local"
                 value={closeAt}
-                onChange={(e) => setCloseAt(e.target.value)}
+                onChange={(e) => form.set('closeAt', e.target.value)}
               />
               <Button
                 size="sm"
-                onClick={() => setCloseAt('')}
+                onClick={() => form.set('closeAt', '')}
                 disabled={closeAt === ''}
               >
                 Clear
@@ -409,7 +514,7 @@ function CfpSection({
         <Switch
           label="CFP published"
           checked={published}
-          onChange={(e) => setPublished(e.target.checked)}
+          onChange={(e) => form.set('published', e.target.checked)}
         />
         <p style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
           Publishing makes the public CFP page reachable. The form builder
@@ -422,6 +527,10 @@ function CfpSection({
 
 // ── Communications ────────────────────────────────────────────────────────
 
+// One @, no spaces, a dotted domain. Delivery is the real validator; this only
+// catches the typo before mail is addressed to nobody.
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 function CommsSection({
   eventSlug,
   event,
@@ -431,12 +540,14 @@ function CommsSection({
 }) {
   const update = useMutation(api.events.updateSettings)
   const { pending, error, setError, run } = usePending()
-  const [cadence, setCadence] = useState(
-    event.reminderCadenceDays === undefined
-      ? ''
-      : String(event.reminderCadenceDays),
-  )
-  const [replyTo, setReplyTo] = useState(event.replyTo ?? '')
+  const form = useSectionForm({
+    cadence:
+      event.reminderCadenceDays === undefined
+        ? ''
+        : String(event.reminderCadenceDays),
+    replyTo: event.replyTo ?? '',
+  })
+  const { cadence, replyTo } = form.values
 
   const save = () => {
     const trimmed = cadence.trim()
@@ -445,7 +556,7 @@ function CommsSection({
       return setError('Cadence must be a whole number of days, at least 1.')
     }
     const address = replyTo.trim()
-    if (address !== '' && !address.includes('@')) {
+    if (address !== '' && !EMAIL_SHAPE.test(address)) {
       return setError('That does not look like an email address.')
     }
     void run(async () => {
@@ -462,6 +573,7 @@ function CommsSection({
           ? 'Reminders are off for this event.'
           : `Reminders go out every ${days} ${days === 1 ? 'day' : 'days'}.`,
       )
+      form.saved()
     })
   }
 
@@ -479,6 +591,7 @@ function CommsSection({
       footer={<SectionFooter pending={pending} error={error} onSave={save} />}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        {form.conflict ? <ConflictNotice onDiscard={form.discard} /> : null}
         <div style={twoCol}>
           <Field
             label="Reminder cadence"
@@ -491,7 +604,7 @@ function CommsSection({
               type="number"
               value={cadence}
               placeholder="7"
-              onChange={(e) => setCadence(e.target.value)}
+              onChange={(e) => form.set('cadence', e.target.value)}
             />
           </Field>
           <Field
@@ -505,7 +618,7 @@ function CommsSection({
               type="email"
               value={replyTo}
               placeholder="speakers@example.com"
-              onChange={(e) => setReplyTo(e.target.value)}
+              onChange={(e) => form.set('replyTo', e.target.value)}
             />
           </Field>
         </div>
@@ -543,11 +656,72 @@ function LibrarySections({ eventSlug }: { eventSlug: string }) {
   )
 }
 
+type LibraryTable = 'tracks' | 'tags' | 'rooms' | 'customFields'
+
+/** What the confirmation dialog is about to delete. */
+type RemoveTarget = { table: LibraryTable; id: string; kind: string; label: string }
+
 function useLibrary(eventSlug: string) {
   const add = useMutation(api.library.add)
-  const remove = useMutation(api.library.remove)
+  const removeItem = useMutation(api.library.remove)
   const { pending, error, setError, run } = usePending()
-  return { add, remove, pending, error, setError, run, eventSlug }
+  // Removal is tracked per row — one shared flag disables every row's button
+  // and hides which one is actually working — and it goes through a
+  // confirmation, because the delete is immediate and has no undo.
+  const [removingId, setRemovingId] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState<RemoveTarget | null>(null)
+
+  const remove = (target: RemoveTarget) => {
+    setConfirming(null)
+    setRemovingId(target.id)
+    setError(null)
+    void removeItem({ eventSlug, table: target.table, id: target.id })
+      .catch((err: unknown) => setError(errorMessage(err)))
+      .finally(() => setRemovingId(null))
+  }
+
+  return {
+    add,
+    pending,
+    error,
+    setError,
+    run,
+    eventSlug,
+    removingId,
+    confirming,
+    askRemove: setConfirming,
+    remove,
+  }
+}
+
+function RemoveConfirm({
+  target,
+  onCancel,
+  onConfirm,
+}: {
+  target: RemoveTarget | null
+  onCancel: () => void
+  onConfirm: (target: RemoveTarget) => void
+}) {
+  if (target === null) return null
+  return (
+    <Dialog
+      title={`Remove this ${target.kind}?`}
+      description="It disappears from every picker on this event, and removing it cannot be undone."
+      width={480}
+      onClose={onCancel}
+      footer={
+        <>
+          <Button onClick={onCancel}>Cancel</Button>
+          <Button variant="danger" onClick={() => onConfirm(target)}>
+            Remove
+          </Button>
+        </>
+      }
+    >
+      <p style={{ font: 'var(--type-body)' }}>{target.label}</p>
+    </Dialog>
+  )
 }
 
 function LibraryShell({
@@ -700,12 +874,15 @@ function TracksSection({
           {items.map((item) => (
             <ItemRow
               key={item._id}
-              removing={lib.pending}
-              onRemove={() => {
-                void lib.run(() =>
-                  lib.remove({ eventSlug, table: 'tracks', id: item._id }),
-                )
-              }}
+              removing={lib.removingId === item._id}
+              onRemove={() =>
+                lib.askRemove({
+                  table: 'tracks',
+                  id: item._id,
+                  kind: 'track',
+                  label: item.name,
+                })
+              }
             >
               <span
                 style={{
@@ -758,6 +935,11 @@ function TracksSection({
           </Button>
         </div>
       </div>
+      <RemoveConfirm
+        target={lib.confirming}
+        onCancel={() => lib.askRemove(null)}
+        onConfirm={lib.remove}
+      />
     </LibraryShell>
   )
 }
@@ -801,11 +983,14 @@ function TagsSection({
             <Tag
               key={item._id}
               color={item.color}
-              onRemove={() => {
-                void lib.run(() =>
-                  lib.remove({ eventSlug, table: 'tags', id: item._id }),
-                )
-              }}
+              onRemove={() =>
+                lib.askRemove({
+                  table: 'tags',
+                  id: item._id,
+                  kind: 'tag',
+                  label: item.name,
+                })
+              }
             >
               {item.name}
             </Tag>
@@ -830,6 +1015,11 @@ function TagsSection({
           </Button>
         </div>
       </div>
+      <RemoveConfirm
+        target={lib.confirming}
+        onCancel={() => lib.askRemove(null)}
+        onConfirm={lib.remove}
+      />
     </LibraryShell>
   )
 }
@@ -847,9 +1037,14 @@ function RoomsSection({
 
   const addItem = () => {
     if (name.trim() === '') return lib.setError('Name the room.')
-    const parsed = capacity.trim() === '' ? undefined : Number(capacity)
-    if (parsed !== undefined && !Number.isFinite(parsed)) {
-      return lib.setError('Capacity must be a number.')
+    const trimmed = capacity.trim()
+    let parsed: number | undefined
+    if (trimmed !== '') {
+      const seats = Number(trimmed)
+      if (!Number.isInteger(seats) || seats < 1) {
+        return lib.setError('Capacity must be a whole number of seats, 1 or more.')
+      }
+      parsed = seats
     }
     void lib.run(async () => {
       await lib.add({
@@ -876,12 +1071,15 @@ function RoomsSection({
           {items.map((item) => (
             <ItemRow
               key={item._id}
-              removing={lib.pending}
-              onRemove={() => {
-                void lib.run(() =>
-                  lib.remove({ eventSlug, table: 'rooms', id: item._id }),
-                )
-              }}
+              removing={lib.removingId === item._id}
+              onRemove={() =>
+                lib.askRemove({
+                  table: 'rooms',
+                  id: item._id,
+                  kind: 'room',
+                  label: item.name,
+                })
+              }
             >
               <span
                 style={{
@@ -932,6 +1130,11 @@ function RoomsSection({
           </Button>
         </div>
       </div>
+      <RemoveConfirm
+        target={lib.confirming}
+        onCancel={() => lib.askRemove(null)}
+        onConfirm={lib.remove}
+      />
     </LibraryShell>
   )
 }
@@ -992,12 +1195,15 @@ function CustomFieldsSection({
           {items.map((item) => (
             <ItemRow
               key={item._id}
-              removing={lib.pending}
-              onRemove={() => {
-                void lib.run(() =>
-                  lib.remove({ eventSlug, table: 'customFields', id: item._id }),
-                )
-              }}
+              removing={lib.removingId === item._id}
+              onRemove={() =>
+                lib.askRemove({
+                  table: 'customFields',
+                  id: item._id,
+                  kind: 'custom field',
+                  label: item.name,
+                })
+              }
             >
               <span
                 style={{
@@ -1078,6 +1284,11 @@ function CustomFieldsSection({
           </Button>
         </div>
       </div>
+      <RemoveConfirm
+        target={lib.confirming}
+        onCancel={() => lib.askRemove(null)}
+        onConfirm={lib.remove}
+      />
     </LibraryShell>
   )
 }

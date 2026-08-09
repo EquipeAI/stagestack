@@ -181,10 +181,14 @@ export type InvitePreview = {
 };
 
 /** Public-ish preview for the /invite/<token> landing page (token is the
- * bearer credential; reveals only names + role). */
+ * bearer credential; reveals only names + role).
+ *
+ * `now` is an argument rather than a clock read: a query is not re-run because
+ * time advanced, so an expiry derived from `Date.now()` would go stale. */
 export async function previewInvitation(
   ctx: QueryCtx,
   token: string,
+  now: number,
 ): Promise<InvitePreview | null> {
   const invite = await ctx.db
     .query("invitations")
@@ -196,7 +200,7 @@ export async function previewInvitation(
     ? await ctx.db.get("events", invite.eventId)
     : null;
   const status =
-    invite.status === "pending" && invite.expiresAt < Date.now()
+    invite.status === "pending" && invite.expiresAt < now
       ? "expired"
       : invite.status;
   return {
@@ -359,10 +363,12 @@ async function toTeamMembers(
 /** Everyone with access to an event: org owner/admins + event members.
  * Pending invitations (which carry bearer tokens) are organizer-only: a
  * reviewer who could read an organizer-invite token could accept it and
- * escalate their own role. */
+ * escalate their own role. `now` is an argument, not a clock read — expiry
+ * filtering inside a query has to come from the client's ticking value. */
 export async function listEventTeam(
   ctx: QueryCtx,
   caller: EventCaller,
+  now: number,
 ): Promise<{
   members: TeamMember[];
   invitations: Array<Doc<"invitations">>;
@@ -388,16 +394,18 @@ export async function listEventTeam(
             .query("invitations")
             .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
             .take(100)
-        ).filter((i) => i.status === "pending" && i.expiresAt > Date.now())
+        ).filter((i) => i.status === "pending" && i.expiresAt > now)
       : [];
   return { members, invitations };
 }
 
 /** Org-level team view: members plus pending org-wide invitations.
- * Admin-only — org invitations carry bearer tokens. */
+ * Admin-only — org invitations carry bearer tokens. `now` is an argument, not
+ * a clock read, for the same reason as listEventTeam. */
 export async function listOrgTeam(
   ctx: QueryCtx,
   caller: OrgCaller,
+  now: number,
 ): Promise<{
   members: TeamMember[];
   invitations: Array<Doc<"invitations">>;
@@ -417,7 +425,7 @@ export async function listOrgTeam(
     (i) =>
       i.eventId === undefined &&
       i.status === "pending" &&
-      i.expiresAt > Date.now(),
+      i.expiresAt > now,
   );
   return { members, invitations };
 }

@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import type * as React from 'react'
 import type { WindowState } from './model'
@@ -6,19 +5,11 @@ import { Button, Callout, Card, EmptyState, Logo } from '~/ds'
 import { PageBody } from '~/components/PageBody'
 import { formatDateTime } from '~/lib/datetime'
 import { errorMessage } from '~/lib/errors'
+import { useNow as useTick } from '~/lib/useNow'
 
 /** Wall clock that advances, so a window closing mid-session is noticed. */
 export function useNow(intervalMs = 30_000) {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setNow(Date.now())
-    }, intervalMs)
-    return () => {
-      clearInterval(timer)
-    }
-  }, [intervalMs])
-  return now
+  return useTick(intervalMs)
 }
 
 export function Mono({ children }: { children: React.ReactNode }) {
@@ -83,7 +74,9 @@ export function CfpWindowBanner({
   zone: string
   reopenedUntil?: number | null
 }) {
-  const now = Date.now()
+  // A ticking clock, not Date.now() in render: a reopen expiring mid-session
+  // must flip the banner without a re-render from elsewhere.
+  const now = useNow()
   if (
     reopenedUntil !== undefined &&
     reopenedUntil !== null &&

@@ -443,6 +443,146 @@ describe("sessions.correct", () => {
       "invalid_status",
     );
   });
+
+  test("decline→accept round-trips are fully idempotent, email-less speakers included", async () => {
+    const t = setupTest();
+    const ctx = await submittedProposal(t);
+    // An email-less co-speaker: no email identity to dedupe on, so only the
+    // proposal-speaker link keeps re-materialisation from duplicating them.
+    await ctx.bob.mutation(api.cfp.setSpeakers, {
+      proposalId: ctx.proposalId,
+      speakers: [
+        {
+          firstName: "Bob",
+          lastName: "Speaker",
+          email: "bob@example.com",
+          isPrimary: true,
+        },
+        { firstName: "Ana", lastName: "Anonyma", isPrimary: false },
+      ],
+    });
+    // A participant-scope requirement so task instances round-trip too.
+    await ctx.alice.mutation(api.tasks.createRequirement, {
+      eventSlug: ctx.eventSlug,
+      title: "Headshot",
+      scope: "participant",
+      evidence: "manual",
+      reviewRequired: false,
+      dueAt: Date.now() + 7 * 86_400_000,
+    });
+    await stage(ctx.alice, ctx.eventSlug, ctx.proposalId, "acceptQueue");
+    await ctx.alice.mutation(api.sessions.release, {
+      eventSlug: ctx.eventSlug,
+      proposalIds: [ctx.proposalId],
+    });
+
+    const counts = async () =>
+      await t.run(async (dbCtx) => ({
+        sessions: (await dbCtx.db.query("sessions").collect()).length,
+        eventContacts: (await dbCtx.db.query("eventContacts").collect()).length,
+        contacts: (await dbCtx.db.query("contacts").collect()).length,
+        participants: (await dbCtx.db.query("sessionParticipants").collect())
+          .length,
+        tasks: (await dbCtx.db.query("taskInstances").collect()).length,
+      }));
+    const after = await counts();
+    expect(after).toEqual({
+      sessions: 1,
+      eventContacts: 2,
+      contacts: 2,
+      participants: 2,
+      tasks: 2,
+    });
+
+    // Two full round-trips: counts must not move by a single row.
+    for (let i = 0; i < 2; i += 1) {
+      await ctx.alice.mutation(api.sessions.correct, {
+        eventSlug: ctx.eventSlug,
+        proposalId: ctx.proposalId,
+        to: "declined",
+        note: "Withdrawn in error.",
+      });
+      await ctx.alice.mutation(api.sessions.correct, {
+        eventSlug: ctx.eventSlug,
+        proposalId: ctx.proposalId,
+        to: "accepted",
+        note: "Reinstated.",
+      });
+    }
+    expect(await counts()).toEqual(after);
+  });
+
+  test("a withdrawn participant stays withdrawn through a decline→accept correction", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalId } = await accepted(t);
+    await t.run(async (ctx) => {
+      const participant = await ctx.db.query("sessionParticipants").first();
+      await ctx.db.patch("sessionParticipants", participant!._id, {
+        state: "withdrawn",
+      });
+    });
+
+    await alice.mutation(api.sessions.correct, {
+      eventSlug,
+      proposalId,
+      to: "declined",
+      note: "Mistake.",
+    });
+    await alice.mutation(api.sessions.correct, {
+      eventSlug,
+      proposalId,
+      to: "accepted",
+      note: "Reinstated.",
+    });
+
+    const participants = await participantRows(t);
+    expect(participants).toHaveLength(1);
+    // Withdrawn is terminal everywhere else; the restore honors that too.
+    expect(participants[0].state).toBe("withdrawn");
+    // ...and the exclusion is visible in the correction's audit entry.
+    const corrections = await t.run(async (ctx) =>
+      (await ctx.db.query("auditLog").collect()).filter(
+        (row) => row.action === "decision.correct",
+      ),
+    );
+    expect(corrections.at(-1)?.meta).toMatchObject({
+      to: "accepted",
+      withdrawnExcluded: 1,
+    });
+  });
+
+  test("cancelling via correction rewrites a published program immediately", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalId } = await accepted(t);
+    const sessionId = (await sessionRows(t))[0]._id;
+    await t.run(async (ctx) => {
+      const participant = await ctx.db.query("sessionParticipants").first();
+      await ctx.db.patch("sessionParticipants", participant!._id, {
+        state: "confirmed",
+      });
+    });
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId,
+      published: true,
+    });
+    let program = (await t.query(api.publish.publicProgram, {
+      slug: eventSlug,
+    }))!;
+    expect(program.lineup).toHaveLength(1);
+
+    await alice.mutation(api.sessions.correct, {
+      eventSlug,
+      proposalId,
+      to: "declined",
+      note: "We had to cancel this session.",
+    });
+    // The served blob no longer carries the cancelled session — without
+    // waiting for the organizer's next explicit publish.
+    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
+    expect(program.lineup).toEqual([]);
+  });
 });
 
 describe("sessions.createDirect", () => {

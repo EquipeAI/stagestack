@@ -2,8 +2,8 @@ import { useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   DragOverlay,
+  KeyboardSensor,
   PointerSensor,
-  pointerWithin,
   useSensor,
   useSensors,
 } from '@dnd-kit/core'
@@ -20,10 +20,17 @@ import { AgendaItemDialog } from './AgendaItemDialog'
 import { ReleaseDialog } from './ReleaseDialog'
 import { SessionDetailDialog } from './SessionDetailDialog'
 import {
+  AGENDA_KEYBOARD_CODES,
+  AGENDA_SCREEN_READER_INSTRUCTIONS,
+  agendaCollisionDetection,
+  agendaKeyboardCoordinates,
+} from './keyboardDrag'
+import {
   DEFAULT_DURATION_MS,
   TRAY_DROPPABLE,
   VIEW_ICON,
   VIEW_LABEL,
+  clockLabel,
   dayKey,
   dayLabel,
   durationOf,
@@ -43,9 +50,16 @@ import type {
   PlacedBlock,
   ViewId,
 } from './model'
-import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core'
+import type {
+  Announcements,
+  DragEndEvent,
+  DragStartEvent,
+  Over,
+  UniqueIdentifier,
+} from '@dnd-kit/core'
 import type { Id } from '@convex/_generated/dataModel'
 import { Button, Callout, Card, EmptyState, Select, Tabs, Toolbar } from '~/ds'
+import { usePending } from '~/lib/usePending'
 
 // The whole agenda builder (M6): one board subscription, five projections of
 // it, and a single drag surface shared by the Room/Track/Day/Week grids. Drops
@@ -78,6 +92,9 @@ export function AgendaBoard({
 }) {
   const scheduleSession = useMutation(api.agenda.scheduleSession)
   const updateItem = useMutation(api.agenda.updateAgendaItem)
+  // A drop is a mutation like any other: it can be refused (locked event, a
+  // blocker the backend won't take), and the refusal has to reach the screen.
+  const { error, setError, run } = usePending()
 
   const [activeId, setActiveId] = useState<string | null>(null)
   const [modal, setModal] = useState<Modal>(null)
@@ -120,7 +137,46 @@ export function AgendaBoard({
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, {
+      keyboardCodes: AGENDA_KEYBOARD_CODES,
+      coordinateGetter: agendaKeyboardCoordinates,
+    }),
   )
+
+  // dnd-kit's default announcements read raw droppable ids; the board says
+  // what moved and where it landed instead.
+  const announcements = useMemo<Announcements>(() => {
+    const name = (id: UniqueIdentifier) =>
+      blockLookup.get(String(id))?.title ?? 'Block'
+    const target = (over: Over | null): string | null => {
+      if (over === null) return null
+      const overId = String(over.id)
+      if (overId === TRAY_DROPPABLE) return 'the unscheduled tray'
+      const slot = parseSlotDroppableId(overId)
+      if (slot === null) return null
+      const column = columns.find((c) => c.key === slot.columnKey)
+      const when = clockLabel(slot.ms, zone)
+      return column === undefined ? when : `${when} in ${column.label}`
+    }
+    return {
+      onDragStart: ({ active }) =>
+        `Picked up ${name(active.id)}. Use the arrow keys to move it, space to drop, escape to cancel.`,
+      onDragOver: ({ active, over }) => {
+        const where = target(over)
+        return where === null
+          ? `${name(active.id)} is over no slot.`
+          : `${name(active.id)} is over ${where}.`
+      },
+      onDragEnd: ({ active, over }) => {
+        const where = target(over)
+        return where === null
+          ? `${name(active.id)} was dropped without a change.`
+          : `${name(active.id)} was dropped on ${where}.`
+      },
+      onDragCancel: ({ active }) =>
+        `Move cancelled. ${name(active.id)} stayed where it was.`,
+    }
+  }, [blockLookup, columns, zone])
 
   const pendingSessions = board.sessions.filter(
     (s) => s.pendingRelease && s.startsAt !== undefined,
@@ -128,6 +184,7 @@ export function AgendaBoard({
 
   const onDragStart = (e: DragStartEvent) => {
     setActiveId(String(e.active.id))
+    setError(null)
   }
 
   const onDragEnd = (e: DragEndEvent) => {
@@ -141,11 +198,13 @@ export function AgendaBoard({
     if (overId === TRAY_DROPPABLE) {
       // Agenda items always carry a time; only sessions return to the tray.
       if (parsed.kind === 'session') {
-        void scheduleSession({
-          eventSlug,
-          sessionId: parsed.id as Id<'sessions'>,
-          slot: null,
-        })
+        void run(() =>
+          scheduleSession({
+            eventSlug,
+            sessionId: parsed.id as Id<'sessions'>,
+            slot: null,
+          }),
+        )
       }
       return
     }
@@ -165,17 +224,21 @@ export function AgendaBoard({
         : dragged?.roomId
 
     if (parsed.kind === 'session') {
-      void scheduleSession({
-        eventSlug,
-        sessionId: parsed.id as Id<'sessions'>,
-        slot: { startsAt, endsAt, roomId },
-      })
+      void run(() =>
+        scheduleSession({
+          eventSlug,
+          sessionId: parsed.id as Id<'sessions'>,
+          slot: { startsAt, endsAt, roomId },
+        }),
+      )
     } else {
-      void updateItem({
-        eventSlug,
-        itemId: parsed.id as Id<'agendaItems'>,
-        patch: { startsAt, endsAt, roomId },
-      })
+      void run(() =>
+        updateItem({
+          eventSlug,
+          itemId: parsed.id as Id<'agendaItems'>,
+          patch: { startsAt, endsAt, roomId },
+        }),
+      )
     }
   }
 
@@ -231,6 +294,25 @@ export function AgendaBoard({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
       {toolbar}
 
+      {error !== null ? (
+        <Callout
+          tone="blocked"
+          title="That move wasn't saved"
+          actions={
+            <Button
+              size="sm"
+              onClick={() => {
+                setError(null)
+              }}
+            >
+              Dismiss
+            </Button>
+          }
+        >
+          {error} The board still shows the placement the backend has.
+        </Callout>
+      ) : null}
+
       {noRooms ? (
         <Callout
           tone="attention"
@@ -258,7 +340,11 @@ export function AgendaBoard({
       ) : (
         <DndContext
           sensors={sensors}
-          collisionDetection={pointerWithin}
+          collisionDetection={agendaCollisionDetection}
+          accessibility={{
+            announcements,
+            screenReaderInstructions: AGENDA_SCREEN_READER_INSTRUCTIONS,
+          }}
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}
         >

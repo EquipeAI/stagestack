@@ -127,15 +127,14 @@ export default defineSchema({
     .index("by_slug", ["slug"]),
 
   // ── Org contact directory (current profiles) ─────────────────────────
+  // Portal claims live on eventContacts.userId; the directory row itself
+  // carries no user link.
   contacts: defineTable({
     orgId: v.id("organizations"),
     ...contactProfileFields,
-    // Set when a StageStack user claims/links this contact (M3 portal).
-    userId: v.optional(v.id("users")),
   })
     .index("by_orgId", ["orgId"])
-    .index("by_orgId_and_email", ["orgId", "email"])
-    .index("by_userId", ["userId"]),
+    .index("by_orgId_and_email", ["orgId", "email"]),
 
   // ── Event library (event-scoped vocabulary) ──────────────────────────
   tracks: defineTable({
@@ -200,17 +199,32 @@ export default defineSchema({
     status: v.union(
       v.literal("queued"),
       v.literal("claimed"),
-      v.literal("running"),
       v.literal("done"),
       v.literal("failed"),
     ),
     // Who asked for this work; the worker executes with this user's authority.
     initiatedBy: v.optional(v.id("users")),
+    // Denormalized from event-scoped payloads at enqueue time so the UI can
+    // list an event's jobs without scanning the queue (payload is v.any(),
+    // which can't be indexed).
+    eventId: v.optional(v.id("events")),
+    // Times the lease sweep found this job's claim expired. At
+    // WORKER_MAX_ATTEMPTS (convex/worker.ts) the sweep fails the job instead
+    // of requeueing it.
+    attempts: v.optional(v.number()),
+    // Committed import-execute batches with their recorded results: replaying
+    // a batch whose response was lost returns the record instead of writing
+    // duplicates (worker.ts importExecuteBatch).
+    completedBatches: v.optional(
+      v.array(v.object({ batchIndex: v.number(), results: v.any() })),
+    ),
     result: v.optional(v.any()),
     error: v.optional(v.string()),
     claimedAt: v.optional(v.number()),
     finishedAt: v.optional(v.number()),
-  }).index("by_status", ["status"]),
+  })
+    .index("by_status", ["status"])
+    .index("by_eventId", ["eventId"]),
 
   // ── CFP (M1) ─────────────────────────────────────────────────────────
   // One form per event. `working` is the organizer's private draft;
@@ -253,6 +267,9 @@ export default defineSchema({
     reopenedUntil: v.optional(v.number()),
   })
     .index("by_eventId_and_status", ["eventId", "status"])
+    // Unfiltered organizer lists: creation-ordered so the take() cap keeps
+    // the newest rows rather than a status-skewed slice.
+    .index("by_eventId", ["eventId"])
     .index("by_submitterUserId", ["submitterUserId"])
     // Scopes the per-user submission-limit count to one event.
     .index("by_submitterUserId_and_eventId", ["submitterUserId", "eventId"]),
@@ -315,12 +332,17 @@ export default defineSchema({
     eventId: v.id("events"),
     orgId: v.id("organizations"),
     contactId: v.optional(v.id("contacts")),
+    // The proposal speaker this snapshot was materialised from (set on insert
+    // only): the stable identity a decline→accept correction matches on, so
+    // an email-less speaker is never snapshotted twice.
+    proposalSpeakerId: v.optional(v.id("proposalSpeakers")),
     ...contactProfileFields,
     // Set when a portal user claims this snapshot (M3).
     userId: v.optional(v.id("users")),
   })
     .index("by_eventId", ["eventId"])
     .index("by_contactId", ["contactId"])
+    .index("by_proposalSpeakerId", ["proposalSpeakerId"])
     .index("by_userId", ["userId"])
     .index("by_eventId_and_email", ["eventId", "email"]),
 
@@ -337,7 +359,7 @@ export default defineSchema({
     status: v.union(v.literal("planned"), v.literal("cancelled")),
     cancelledAt: v.optional(v.number()),
     // ── Scheduling (M6). Draft placement is internal; releasedSlot is what
-    // speakers were told (its sequence drives .ics updates).
+    // speakers were told (its sequence records the release that carried it).
     roomId: v.optional(v.id("rooms")),
     startsAt: v.optional(v.number()),
     endsAt: v.optional(v.number()),
@@ -350,6 +372,13 @@ export default defineSchema({
         sequence: v.number(),
       }),
     ),
+    // Last .ics SEQUENCE sent for this session's invite UIDs. Monotonic — it
+    // only ever increments and survives cancelRelease clearing releasedSlot,
+    // because Outlook/Exchange tombstone a cancelled UID and silently drop a
+    // later REQUEST whose SEQUENCE isn't higher than the CANCEL's (RFC 5546;
+    // gaps are fine, going backwards is not). Absent on rows that predate the
+    // field → readers fall back to releasedSlot.sequence.
+    icsSequence: v.optional(v.number()),
     // Manually entered virtual/hybrid links with explicit audiences (M6).
     virtualLinks: v.optional(
       v.object({

@@ -7,7 +7,7 @@ import type {
   PublicSpeaker,
 } from '@convex/model/publish'
 import { Avatar, Badge, Icon, Logo, Tag } from '~/ds'
-import { formatDateRange } from '~/lib/datetime'
+import { DATE_LOCALE, formatDateRange } from '~/lib/datetime'
 
 // One renderer for the published program, reused by the public event page
 // (/e/<slug>), the organizer's live preview, and the external embed
@@ -16,31 +16,55 @@ import { formatDateRange } from '~/lib/datetime'
 
 export type { PublicProgram }
 
-// ── time helpers (event zone is authoritative) ───────────────────────────
+// ── time helpers (event zone is authoritative, locale is pinned) ─────────
+// This renderer is server-rendered on the public page; day and month names
+// must not depend on the reader's locale or the two renders disagree.
 function fmtTime(ms: number, zone: string) {
-  const dt = DateTime.fromMillis(ms, { zone })
+  const dt = DateTime.fromMillis(ms, { zone, locale: DATE_LOCALE })
   return dt.isValid ? dt.toFormat('HH:mm') : '—'
 }
 function dayKey(ms: number, zone: string) {
-  return DateTime.fromMillis(ms, { zone }).toFormat('yyyy-LL-dd')
+  return DateTime.fromMillis(ms, { zone, locale: DATE_LOCALE }).toFormat(
+    'yyyy-LL-dd',
+  )
 }
 function dayLabel(ms: number, zone: string) {
-  const dt = DateTime.fromMillis(ms, { zone })
+  const dt = DateTime.fromMillis(ms, { zone, locale: DATE_LOCALE })
   return dt.isValid ? dt.toFormat('cccc, d LLL yyyy') : '—'
 }
 
+const PRODUCT_ORIGIN = 'https://stagestack.dev'
+
+/**
+ * The origin this app is served from — a link handed out from a preview
+ * deployment has to point back at that deployment, not at production. The
+ * browser knows its own origin; a server render falls back to the production
+ * host, which is where these links are generated in practice.
+ */
+export function siteOrigin() {
+  return typeof window === 'undefined' ? PRODUCT_ORIGIN : window.location.origin
+}
+
 /** Public link surface derived from one slug + the deployment URL. */
-export function publicLinks(slug: string, convexUrl: string | undefined) {
+export function publicLinks(
+  slug: string,
+  convexUrl: string | undefined,
+  origin: string = siteOrigin(),
+) {
   const site = (convexUrl ?? '').replace('.convex.cloud', '.convex.site')
   return {
-    pageUrl: `https://stagestack.dev/e/${slug}`,
+    pageUrl: `${origin}/e/${slug}`,
     apiUrl: site ? `${site}/api/events/${slug}/program` : '',
   }
 }
 
 /** The <script>/<iframe> an external site pastes to embed a section. */
-export function embedSnippet(slug: string, section: 'lineup' | 'agenda') {
-  return `<iframe src="https://stagestack.dev/embed/${slug}?section=${section}" title="StageStack ${section}" style="width:100%;border:0;min-height:640px" loading="lazy"></iframe>`
+export function embedSnippet(
+  slug: string,
+  section: 'lineup' | 'agenda',
+  origin: string = siteOrigin(),
+) {
+  return `<iframe src="${origin}/embed/${slug}?section=${section}" title="StageStack ${section}" style="width:100%;border:0;min-height:640px" loading="lazy"></iframe>`
 }
 
 // ── section eyebrow ───────────────────────────────────────────────────────
@@ -180,7 +204,8 @@ export function EventHero({ event }: { event: PublicProgram['event'] }) {
         <a
           href={event.website}
           target="_blank"
-          rel="noreferrer"
+          // Organizer-supplied URL: the opened page gets no opener handle.
+          rel="noopener noreferrer"
           style={{
             display: 'inline-flex',
             alignItems: 'center',

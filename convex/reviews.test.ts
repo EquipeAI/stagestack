@@ -12,6 +12,7 @@ import {
   type TestT,
   type TestUserT,
 } from "./test.helpers";
+import { starterFormDef } from "./model/cfp";
 
 // Review & evaluation (M2). The privacy rules are the point of most of these
 // tests: a reviewer must reach exactly their own assignments, see evaluation
@@ -505,5 +506,40 @@ describe("reviews.unassign", () => {
       "invalid_status",
     );
     expect(await auditActions(t)).toContain("review.unassign");
+  });
+});
+
+describe("reviews.myAssignments file answers", () => {
+  test("a malformed stored file answer degrades to a null URL instead of failing the list", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1);
+    // Add a file field and republish so it is an evaluation field.
+    const def = starterFormDef();
+    def.sections[1].fields.push({
+      id: "slides",
+      kind: "file",
+      label: "Slides",
+      required: false,
+    });
+    await alice.mutation(api.cfp.updateWorkingForm, { eventSlug, def });
+    await alice.mutation(api.cfp.publishForm, { eventSlug });
+    // Plant a malformed value directly — the write path refuses these now,
+    // but a reviewer list must survive one that predates the gate.
+    await t.run(async (ctx) => {
+      const proposal = await ctx.db.get("proposals", proposalIds[0]);
+      await ctx.db.patch("proposals", proposalIds[0], {
+        answers: { ...proposal!.answers, slides: "not-a-storage-id" },
+      });
+    });
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: rita.id,
+    });
+
+    const rows = await rita.as.query(api.reviews.myAssignments, { eventSlug });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].proposal.fileUrls["not-a-storage-id"]).toBeNull();
   });
 });
