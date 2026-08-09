@@ -22,6 +22,22 @@
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-bottom: var(--space-px) solid var(--border-default);
+  /* Clears the notch in landscape and when the page is scrolled to the top. */
+  padding-top: var(--safe-top);
+}
+
+/* `backdrop-filter` on a sticky, full-width element is one of the most
+   expensive things a mobile GPU can be asked to do: the blur is recomputed
+   against fresh backdrop pixels on every single frame of a scroll, which is
+   exactly when the main thread is already busy. Phones drop frames on it.
+   Below 860px the bar goes opaque instead — visually near-identical against
+   the canvas, and free. */
+@media (max-width: 860px) {
+  .mkt-nav {
+    background: var(--surface-canvas);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 .mkt-nav__inner {
   max-width: var(--content-max);
@@ -283,4 +299,64 @@
 }
 .mkt-footer__link:hover {
   color: var(--gray-900);
+}
+
+/* ── Landing page on a phone ─────────────────────────────────────────────
+   The hero and section rhythm is tuned for a 1180px canvas; at 375px the
+   80px/64px vertical padding means the reader scrolls past whitespace before
+   reaching the value proposition, and the first screenful carries almost no
+   information. */
+@media (max-width: 640px) {
+  .mkt-hero {
+    padding-top: var(--space-10);
+    padding-bottom: var(--space-10);
+  }
+  .mkt-hero__sub {
+    font-size: var(--text-lg);
+  }
+  /* Stacked, full-width CTAs: two 48px buttons side by side on a 343px
+     content width leaves each too narrow to read, and `flex-wrap` alone
+     leaves a ragged second row. */
+  .mkt-hero__ctas {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .mkt-hero__ctas > * {
+    width: 100%;
+  }
+  .mkt-hero__ctas .ss-btn {
+    width: 100%;
+  }
+  .mkt-section {
+    padding-top: var(--space-10);
+    padding-bottom: var(--space-10);
+  }
+  .mkt-shot {
+    margin-top: var(--space-8);
+  }
+  /* The footer is the last thing above the home indicator. */
+  .mkt-footer {
+    padding-bottom: calc(var(--space-10) + var(--safe-bottom));
+  }
+}
+
+/* The landing page is ~6 screens tall, and all of it is styled, laid out and
+   painted before the browser can show the hero. `content-visibility:auto`
+   lets it skip layout and paint for the sections still off-screen, which is
+   the cheapest available win on first render for a long marketing page.
+   `contain-intrinsic-size` supplies a height estimate so the scrollbar and
+   in-page anchors behave while sections are unrendered.
+
+   Deliberately not applied to .mkt-hero or .mkt-nav — those are above the
+   fold, and skipping the LCP element would defeat the purpose. */
+.mkt-band,
+.mkt-section:not(.mkt-hero__inner) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 600px;
+}
+
+/* A long terminal transcript scrolls sideways inside its own box; make that
+   gesture not hijack the browser's back-swipe. */
+.mkt-terminal {
+  overscroll-behavior-x: contain;
 }

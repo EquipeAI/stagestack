@@ -1,7 +1,74 @@
-/* Webfonts — variable, latin-subset woff2 served from jsDelivr (Fontsource).
-   Three families, one file each: total first-paint font cost ~95KB.
-   Geist (SIL OFL) · Geist Mono (SIL OFL) · Instrument Sans (SIL OFL) */
-@font-face{font-family:"Geist";font-style:normal;font-display:swap;font-weight:100 900;src:url(https://cdn.jsdelivr.net/npm/@fontsource-variable/geist@5/files/geist-latin-wght-normal.woff2) format("woff2-variations");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
-@font-face{font-family:"Geist Mono";font-style:normal;font-display:swap;font-weight:100 900;src:url(https://cdn.jsdelivr.net/npm/@fontsource-variable/geist-mono@5/files/geist-mono-latin-wght-normal.woff2) format("woff2-variations");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
-@font-face{font-family:"Instrument Sans";font-style:normal;font-display:swap;font-weight:400 700;src:url(https://cdn.jsdelivr.net/npm/@fontsource-variable/instrument-sans@5/files/instrument-sans-latin-wght-normal.woff2) format("woff2-variations");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
-@font-face{font-family:"Instrument Sans";font-style:italic;font-display:swap;font-weight:400 700;src:url(https://cdn.jsdelivr.net/npm/@fontsource-variable/instrument-sans@5/files/instrument-sans-latin-wght-italic.woff2) format("woff2-variations");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+/* Webfonts — variable, latin-subset woff2, SELF-HOSTED from /public/fonts.
+   Previously these came from cdn.jsdelivr.net, which put a DNS lookup + TLS
+   handshake to a third origin on the critical path before the first glyph
+   could even start downloading — the single worst font pattern on a mobile
+   connection. Same-origin means the already-warm connection is reused, and
+   the two first-paint faces are <link rel=preload>ed in __root.tsx.
+
+   Geist (SIL OFL) · Geist Mono (SIL OFL) · Instrument Sans (SIL OFL)
+   The Instrument Sans italic face was dropped: the only <em> in the app
+   (.mkt-hl) sets font-style:normal, so it was ~30KB nobody rendered. */
+
+/* Latin subset only — the unicode-range keeps the browser from downloading
+   any of these for a page that never uses those codepoints. */
+
+/* Body / UI. Preloaded: it paints almost every glyph on screen. */
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url(/fonts/geist-latin-wght-normal.woff2) format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Display / headings. Preloaded: it renders the LCP element on most pages. */
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400 700;
+  src: url(/fonts/instrument-sans-latin-wght-normal.woff2)
+    format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Numerics, eyebrows and code. Deliberately NOT preloaded — it decorates
+   small secondary text, so it can arrive late and swap in without costing
+   LCP any bandwidth contention. */
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url(/fonts/geist-mono-latin-wght-normal.woff2) format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Metric-matched fallbacks. While a webfont is still in its `swap` window the
+   text is painted in one of these instead of raw Arial/Helvetica, so the
+   reflow when the real face lands is a nudge rather than a jump — this is what
+   keeps font swapping out of CLS. `size-adjust` scales the fallback's glyphs
+   so its x-height and advance widths land close to the real face. */
+@font-face {
+  font-family: 'Geist Fallback';
+  src: local('Arial'), local('Helvetica'), local('Roboto');
+  size-adjust: 97%;
+  ascent-override: 95%;
+  descent-override: 24%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: 'Instrument Sans Fallback';
+  src: local('Arial'), local('Helvetica'), local('Roboto');
+  size-adjust: 95%;
+  ascent-override: 96%;
+  descent-override: 25%;
+  line-gap-override: 0%;
+}

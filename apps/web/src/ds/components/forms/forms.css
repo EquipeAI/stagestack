@@ -46,3 +46,8 @@
 .ss-search .ss-icon{position:absolute;left:10px;color:var(--text-tertiary);pointer-events:none}
 .ss-search .ss-input{padding-left:31px}
 .ss-search kbd{position:absolute;right:8px;font-family:var(--font-mono);font-size:var(--text-2xs);color:var(--text-tertiary);border:1px solid var(--border-default);border-radius:var(--radius-xs);padding:1px 5px;background:var(--surface-canvas)}
+/* A "/" or "⌘K" hint is noise on a touch device, and it sits exactly where
+   iOS paints type=search's native clear button. */
+@media (hover:none){
+  .ss-search__kbd{display:none}
+}

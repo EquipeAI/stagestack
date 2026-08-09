@@ -7,10 +7,34 @@
   --content-max-prose:68ch;
   --page-gutter:24px;
   --page-gutter-wide:48px;
+
+  /* iOS notch / home-indicator insets. `viewport-fit=cover` (see __root.tsx)
+     lets the page paint edge to edge, and these are how content stays out of
+     the rounded corners and the gesture bar. They resolve to 0px on every
+     device without a cutout, so they are safe to add unconditionally.
+     `max(0px, ...)` guards the browsers that report the variable as an empty
+     string rather than a length. */
+  --safe-top:max(0px, env(safe-area-inset-top));
+  --safe-right:max(0px, env(safe-area-inset-right));
+  --safe-bottom:max(0px, env(safe-area-inset-bottom));
+  --safe-left:max(0px, env(safe-area-inset-left));
+
   --z-base:0; /* @kind other */
   --z-sticky:100; /* @kind other */
   --z-dropdown:200; /* @kind other */
   --z-overlay:300; /* @kind other */
   --z-modal:400; /* @kind other */
   --z-toast:500; /* @kind other */
+}
+
+/* A 24px gutter on each side of a 375px phone spends 13% of the viewport on
+   whitespace. Tightening it to 16px gives ~48px back to actual content, which
+   on a data-dense screen is the difference between a table column fitting and
+   not. Everything that lays out against the page edge reads --page-gutter, so
+   this one override moves all of it. */
+@media (max-width:640px){
+  :root{
+    --page-gutter:16px;
+    --page-gutter-wide:16px;
+  }
 }

@@ -21,3 +21,76 @@
 .ss-crumbs a{color:inherit}
 .ss-crumbs a:hover{color:var(--text-primary);text-decoration:none}
 .ss-crumbs__current{color:var(--text-primary)}
+
+/* ── Sidebar on a phone ───────────────────────────────────────────────────
+   A 236px fixed rail beside the content leaves ~139px for the page on a
+   375px viewport, which is unusable. Under 860px the same markup becomes a
+   horizontally-scrolling tab strip pinned under the topbar: no layout
+   duplication, no separate mobile nav component, and the active item is
+   scrolled into view by the shell.
+
+   `overflow-x:auto` + `flex-wrap:nowrap` is the strip; `scroll-snap` makes it
+   settle on a whole item instead of mid-label; `overscroll-behavior-x:contain`
+   stops a horizontal swipe at the end of the strip from triggering the
+   browser's back-navigation gesture. */
+@media (max-width:860px){
+  .ss-sidebar{
+    width:100%;
+    height:auto;
+    border-right:0;
+    border-bottom:1px solid var(--border-default);
+    background:var(--surface-card);
+  }
+  /* The event name is already the <h1> of every page under this nav. */
+  .ss-sidebar__head{display:none}
+  .ss-sidebar__scroll{
+    display:flex;
+    flex-wrap:nowrap;
+    gap:var(--space-1);
+    overflow-x:auto;
+    overflow-y:hidden;
+    padding:var(--space-2) var(--page-gutter);
+    scroll-snap-type:x proximity;
+    overscroll-behavior-x:contain;
+    scrollbar-width:none;
+  }
+  .ss-sidebar__scroll::-webkit-scrollbar{display:none}
+  .ss-sidebar__scroll>div{display:flex;gap:var(--space-1)}
+  .ss-sidebar__group{display:none}
+  .ss-navitem{
+    width:auto;
+    flex:none;
+    white-space:nowrap;
+    scroll-snap-align:center;
+    border:1px solid transparent;
+  }
+  /* The desktop active marker is a bar on the left edge of the rail, which
+     means nothing in a horizontal strip. */
+  .ss-navitem[data-active=true]::before{display:none}
+  .ss-navitem[data-active=true]{
+    background:var(--surface-brand);
+    color:var(--gray-900);
+    box-shadow:none;
+    border-color:transparent;
+  }
+}
+
+/* Tab bars overflow the same way — many screens have more tabs than a phone
+   is wide, and a wrapped tab row loses the single-baseline reading. */
+@media (max-width:640px){
+  .ss-tabs{
+    /* max-width is what actually makes the scroller a scroller. The pill
+       variant is `display:inline-flex`, so it is sized by its content and
+       `overflow-x:auto` alone lets it grow straight past the viewport rather
+       than clipping — which is exactly how a 396px tab row ended up 38px wider
+       than a 390px screen. */
+    max-width:100%;
+    overflow-x:auto;
+    overflow-y:hidden;
+    flex-wrap:nowrap;
+    overscroll-behavior-x:contain;
+    scrollbar-width:none;
+  }
+  .ss-tabs::-webkit-scrollbar{display:none}
+  .ss-tab{flex:none;white-space:nowrap}
+}

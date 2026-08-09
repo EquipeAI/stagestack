@@ -49,15 +49,24 @@ export function ToastViewport() {
   if (list.length === 0) return null
   return (
     <div
+      // Pinned to the right on desktop; on a phone it spans the width (see
+      // .toast-viewport in feedback.css) because a 300px-min toast inset by a
+      // gutter does not fit a 320px screen. The bottom offset clears the iOS
+      // home indicator.
+      className="toast-viewport"
       style={{
         position: 'fixed',
-        right: 'var(--page-gutter)',
-        bottom: 'var(--page-gutter)',
+        right: 'calc(var(--page-gutter) + var(--safe-right))',
+        bottom: 'calc(var(--page-gutter) + var(--safe-bottom))',
+        left: 'auto',
         zIndex: 'var(--z-toast)',
         display: 'flex',
         flexDirection: 'column',
         gap: 'var(--space-2)',
       }}
+      // Announce asynchronously-arriving status text to screen readers.
+      role="status"
+      aria-live="polite"
     >
       {list.map((t) => (
         <Toast

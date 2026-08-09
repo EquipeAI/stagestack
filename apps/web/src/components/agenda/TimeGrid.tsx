@@ -355,7 +355,12 @@ function GridBlock({
       onClick={() => {
         onOpenBlock(block)
       }}
-      style={{ ...style, opacity: isSource ? 0.4 : 1, touchAction: 'none' }}
+      // `touch-action` lives in a class, not here: on a coarse pointer it has
+      // to become `manipulation` so a finger that lands on a block can still
+      // scroll the grid (see .agenda-draggable in app.css). An inline
+      // `touchAction:'none'` would be unoverridable by that media query.
+      className="agenda-draggable"
+      style={{ ...style, opacity: isSource ? 0.4 : 1 }}
     >
       <BlockCard
         block={block}

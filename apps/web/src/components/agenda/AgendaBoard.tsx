@@ -3,7 +3,8 @@ import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useSensor,
   useSensors,
 } from '@dnd-kit/core'
@@ -135,8 +136,23 @@ export function AgendaBoard({
     [view, board, allPlaced, selectedDay, days, roomsById, tracksById],
   )
 
+  // Mouse and touch are split rather than handled by one PointerSensor,
+  // because the right activation gesture is genuinely different per input.
+  //
+  // With a single PointerSensor the touch contract was "6px of movement starts
+  // a drag", and since every block also carried `touch-action:none`, a finger
+  // landing anywhere on the agenda could neither scroll the grid nor scroll the
+  // page — the board was effectively frozen on a phone.
+  //
+  // Touch now activates on a 250ms press-and-hold with an 8px tolerance: a
+  // flick is a scroll, a hold is a drag, and a tap still opens the block. This
+  // is the same long-press convention as reordering a home screen, so it needs
+  // no explanation.
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 250, tolerance: 8 },
+    }),
     useSensor(KeyboardSensor, {
       keyboardCodes: AGENDA_KEYBOARD_CODES,
       coordinateGetter: agendaKeyboardCoordinates,
@@ -349,7 +365,7 @@ export function AgendaBoard({
           onDragEnd={onDragEnd}
         >
           <ConflictLegend />
-          <div style={{ display: 'flex', gap: 'var(--space-4)', alignItems: 'flex-start' }}>
+          <div className="agenda-layout">
             <Tray
               sessions={tray}
               activeId={activeId}

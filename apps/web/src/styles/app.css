@@ -13,3 +13,122 @@
     outline: none !important;
   }
 }
+
+/* ── Event shell ──────────────────────────────────────────────────────────
+   Desktop: a sticky 236px nav rail beside a scrolling page.
+   Phone (<=860px): the rail becomes a sticky horizontal tab strip stacked
+   above the page. Same DOM either way — only the axis changes. */
+.app-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+.app-shell__nav {
+  position: sticky;
+  top: var(--topbar-height);
+  align-self: flex-start;
+  /* dvh, not vh: on mobile Safari `vh` is locked to the *largest* viewport, so
+     100vh is taller than what you can actually see whenever the URL bar is
+     showing, and the bottom of the nav sits under it. */
+  height: calc(100dvh - var(--topbar-height));
+  z-index: var(--z-sticky);
+}
+/* Without min-width:0 a flex child refuses to shrink below the intrinsic
+   width of its content, so one wide table or a long unbroken title makes the
+   whole document scroll sideways instead of the table scrolling internally. */
+.app-shell__main {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 860px) {
+  .app-shell {
+    flex-direction: column;
+  }
+  .app-shell__nav {
+    height: auto;
+    width: 100%;
+    align-self: stretch;
+  }
+}
+
+/* ── Horizontal scroll containers ────────────────────────────────────────
+   Wide content (tables, the agenda grid, publish previews) scrolls inside its
+   own box rather than making the document scroll sideways. */
+.scroll-x {
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Keep a swipe that runs off the end of a table from being read as the
+     browser's "go back" gesture. */
+  overscroll-behavior-x: contain;
+}
+/* Opt-in: bleed the scroller out to the screen edges on a phone so the page
+   gutter does not eat into the scrollable width.
+   Only valid on an element whose inset really is --page-gutter. Notably NOT
+   used by DataTable — those live inside a Card, whose inset is --pad-card, so
+   bleeding by the page gutter would punch the table through the card's border
+   and rounded corner. */
+@media (max-width: 640px) {
+  .scroll-x--bleed {
+    margin-inline: calc(var(--page-gutter) * -1);
+    padding-inline: var(--page-gutter);
+  }
+}
+
+/* ── Agenda tray + grid layout ────────────────────────────────────────────
+   The board is a two-column row: a fixed 17rem "Unscheduled" tray beside the
+   grid. Those were inline styles on the components, which a media query cannot
+   override, so the tray kept its 17rem on every screen. On a 390px phone that
+   left 358 - 272 - 16 = 70px for the grid, and at 320px the grid collapsed to
+   0px and its 24px time gutter pushed the document 9px wide [measured].
+
+   Under 860px — the same breakpoint at which the shell turns its sidebar into
+   a tab strip — the columns stack and the tray goes full width, so the grid
+   gets the whole viewport. `min-width:0` on the grid column is what lets its
+   internal `.scroll-x` scroller shrink instead of forcing the row wider. */
+.agenda-layout {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+.agenda-tray {
+  flex: none;
+  width: 17rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+@media (max-width: 860px) {
+  .agenda-layout {
+    flex-direction: column;
+    /* Once the row becomes a column the cross axis is horizontal, so the
+       `align-items:flex-start` above would size both children to their content
+       and let the grid push the page 218px wide [measured]. Stretch instead. */
+    align-items: stretch;
+  }
+  .agenda-tray {
+    width: 100%;
+  }
+}
+
+/* ── Agenda drag-and-drop on touch ───────────────────────────────────────
+   A draggable needs `touch-action:none` for a pointer-based drag, but on a
+   touchscreen that also cancels scrolling — and since the agenda grid is
+   wall-to-wall draggable blocks, it made the board impossible to scroll.
+   The TouchSensor in AgendaBoard activates on a 250ms hold instead, and
+   suppresses the browser's own scroll itself once a drag starts, so blocks
+   can keep `manipulation` and stay scrollable until then. */
+.agenda-draggable {
+  touch-action: none;
+}
+@media (pointer: coarse) {
+  .agenda-draggable {
+    touch-action: manipulation;
+    /* A long press on a block otherwise raises iOS's text-selection
+       magnifier / Android's context menu mid-drag. */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+}

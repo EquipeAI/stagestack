@@ -1,7 +1,21 @@
 import React from "react";
 
 export function DataTable({ columns = [], rows = [], selectedIds = [], rowKey = "id", onRowClick, className = "", ...rest }) {
+  // Every table in the app is wider than a phone: the header cells are
+  // `white-space:nowrap` and a typical table carries 5-8 columns. Wrapping it
+  // in its own scroll container is what keeps the *document* from scrolling
+  // sideways — a horizontally-panning page breaks the sticky header, the tab
+  // strip and the reader's place all at once.
+  //
+  // `tabIndex={0}` and role/aria-label make the scroller keyboard-reachable,
+  // which is required of any scrollable region that is not otherwise focusable.
   return (
+    <div
+      className="ss-table-scroll scroll-x"
+      tabIndex={0}
+      role="region"
+      aria-label={rest["aria-label"] || "Table"}
+    >
     <table className={["ss-table", className].filter(Boolean).join(" ")} {...rest}>
       <thead>
         <tr>
@@ -44,5 +58,6 @@ export function DataTable({ columns = [], rows = [], selectedIds = [], rowKey = 
         })}
       </tbody>
     </table>
+    </div>
   );
 }

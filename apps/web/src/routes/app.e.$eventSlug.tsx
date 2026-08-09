@@ -132,15 +132,11 @@ function EventLayout() {
   }
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'stretch' }}>
-      <div
-        style={{
-          position: 'sticky',
-          top: 'var(--topbar-height)',
-          alignSelf: 'flex-start',
-          height: 'calc(100dvh - var(--topbar-height))',
-        }}
-      >
+    // Classes, not inline styles: the shell flips from "rail beside content"
+    // to "tab strip above content" at 860px, and a media query cannot reach a
+    // style attribute. See .app-shell in styles/app.css.
+    <div className="app-shell">
+      <div className="app-shell__nav">
         <SidebarNav
           header={
             <span
@@ -160,7 +156,7 @@ function EventLayout() {
           onSelect={onSelect}
         />
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="app-shell__main">
         <PageBody>
           {data === undefined ? (
             <p style={{ color: 'var(--text-tertiary)' }}>Loading event…</p>

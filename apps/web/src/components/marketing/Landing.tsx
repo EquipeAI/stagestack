@@ -31,6 +31,12 @@ function Nav() {
             <img
               src={githubIcon}
               alt=""
+              // Intrinsic size as attributes so the box is reserved before CSS
+              // resolves, and async decoding so a 16px icon never blocks the
+              // frame that paints the nav.
+              width={16}
+              height={16}
+              decoding="async"
               style={{ width: 'var(--space-4)', height: 'var(--space-4)', opacity: 0.8 }}
             />
             GitHub
@@ -458,6 +464,12 @@ function Footer() {
           <img
             src={githubIcon}
             alt=""
+            width={16}
+            height={16}
+            // Footer, six screens down: never contend with the hero for
+            // bandwidth on a phone.
+            loading="lazy"
+            decoding="async"
             style={{
               width: 'var(--space-4)',
               height: 'var(--space-4)',

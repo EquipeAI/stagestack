@@ -23,7 +23,10 @@ function AppLayout() {
     >
       <header
         style={{
-          height: 'var(--topbar-height)',
+          // The bar grows by the top inset so its content clears the notch /
+          // status bar, while its background still paints edge to edge under
+          // it (viewport-fit=cover). Left/right insets matter in landscape.
+          height: 'calc(var(--topbar-height) + var(--safe-top))',
           flex: 'none',
           position: 'sticky',
           top: 0,
@@ -31,7 +34,12 @@ function AppLayout() {
           display: 'flex',
           alignItems: 'center',
           gap: 'var(--space-4)',
-          padding: '0 var(--page-gutter)',
+          // Longhands throughout: a `padding` shorthand listed after
+          // `paddingTop` would silently reset the safe-area inset to 0.
+          paddingTop: 'var(--safe-top)',
+          paddingBottom: 0,
+          paddingLeft: 'calc(var(--page-gutter) + var(--safe-left))',
+          paddingRight: 'calc(var(--page-gutter) + var(--safe-right))',
           background: 'var(--surface-card)',
           borderBottom: 'var(--space-px) solid var(--border-default)',
         }}

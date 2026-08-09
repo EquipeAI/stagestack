@@ -24,6 +24,63 @@ function visibleFocusables(surface) {
   );
 }
 
+// How many dialogs currently want the page behind them frozen. Nested dialogs
+// (a confirm on top of a detail sheet) must not have the inner one restore
+// scrolling when it closes, so the lock is released on the last one out.
+let scrollLocks = 0;
+let restoreScroll = null;
+
+/**
+ * Freeze the document behind an open dialog.
+ *
+ * `overflow:hidden` on <body> alone does not hold on iOS Safari — the page
+ * still rubber-bands, and worse, Safari discards the scroll position, so
+ * closing the dialog dumps you at the top of a long list. Pinning the body
+ * with `position:fixed` at a negative offset keeps the rendered position and
+ * genuinely stops touch scrolling; the offset is read back on release.
+ */
+function lockBodyScroll() {
+  scrollLocks += 1;
+  if (scrollLocks > 1) return;
+  const y = window.scrollY;
+  const body = document.body;
+  restoreScroll = {
+    y,
+    top: body.style.top,
+    position: body.style.position,
+    width: body.style.width,
+    overflowY: body.style.overflowY,
+  };
+  body.style.position = "fixed";
+  body.style.top = `-${y}px`;
+  // Without this the body collapses to its content width once it is taken out
+  // of flow, which reflows the frozen page visibly behind the scrim.
+  body.style.width = "100%";
+  // Keeps the scrollbar gutter on desktop so the page does not shift sideways.
+  body.style.overflowY = "scroll";
+}
+
+function unlockBodyScroll() {
+  scrollLocks = Math.max(0, scrollLocks - 1);
+  if (scrollLocks > 0 || restoreScroll === null) return;
+  const { y, top, position, width, overflowY } = restoreScroll;
+  restoreScroll = null;
+  const body = document.body;
+  body.style.position = position;
+  body.style.top = top;
+  body.style.width = width;
+  body.style.overflowY = overflowY;
+  // Instant, not smooth: this is restoring a position, not a navigation.
+  // Guarded because jsdom (and very old Safari) has no options-object form.
+  if (typeof window.scrollTo === "function") {
+    try {
+      window.scrollTo({ top: y, behavior: "instant" });
+    } catch {
+      window.scrollTo(0, y);
+    }
+  }
+}
+
 export function Dialog({ open = true, ...rest }) {
   // The surface owns the focus/Escape effects, so mounting it only while open
   // keeps those hooks unconditional and ties them to the dialog's lifetime.
@@ -45,7 +102,9 @@ function DialogSurface({ title, description, width = 480, onClose, footer, class
     const surface = surfaceRef.current;
     if (surface && !surface.contains(document.activeElement)) {
       const first = visibleFocusables(surface)[0];
-      (first || surface).focus();
+      // `preventScroll` matters on a phone: focusing the first field of a
+      // bottom sheet otherwise scrolls the frozen page behind the scrim.
+      (first || surface).focus({ preventScroll: true });
     }
     return function () {
       if (
@@ -53,9 +112,15 @@ function DialogSurface({ title, description, width = 480, onClose, footer, class
         typeof opener.focus === "function" &&
         document.contains(opener)
       ) {
-        opener.focus();
+        opener.focus({ preventScroll: true });
       }
     };
+  }, []);
+
+  // The page behind the scrim must not scroll while the dialog is up.
+  React.useEffect(function () {
+    lockBodyScroll();
+    return unlockBodyScroll;
   }, []);
 
   // Escape closes and Tab cycles inside the surface. Both stop propagation so a

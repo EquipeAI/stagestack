@@ -29,3 +29,16 @@
   --row-height-md:38px;
   --row-height-lg:44px;
 }
+
+/* Density roles tighten on a phone. --pad-card at 20px and --pad-section at
+   32px are tuned for a 1180px canvas; on a 375px screen they spend a third of
+   the width and most of the first screenful on padding. Cards and sections read
+   these tokens rather than literals, so this is the single place to relax the
+   whole app's density. Row heights deliberately do NOT shrink — they are touch
+   targets. */
+@media (max-width:640px){
+  :root{
+    --pad-card:14px;
+    --pad-section:20px;
+  }
+}

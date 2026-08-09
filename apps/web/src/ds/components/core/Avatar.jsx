@@ -18,7 +18,23 @@ export function Avatar({ name = "", src, size = 28, className = "", ...rest }) {
       style={{ width: size, height: size, fontSize: Math.max(10, Math.round(size * 0.38)) }}
       {...rest}
     >
-      {src ? <img src={src} alt={name} /> : initials(name)}
+      {/* The wrapper already fixes the box, so the image cannot shift layout —
+          but width/height still stop it being laid out at 0×0 for a frame, and
+          lazy+async keeps a wall of speaker avatars off the critical path.
+          alt="" because the accessible name is on the wrapper's title: the
+          image is decorative once the name is already announced. */}
+      {src ? (
+        <img
+          src={src}
+          alt=""
+          width={size}
+          height={size}
+          loading="lazy"
+          decoding="async"
+        />
+      ) : (
+        initials(name)
+      )}
     </span>
   );
 }

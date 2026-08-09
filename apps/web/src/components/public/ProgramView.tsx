@@ -135,6 +135,16 @@ export function EventHero({ event }: { event: PublicProgram['event'] }) {
         <img
           src={event.logoUrl}
           alt=""
+          // An organiser-uploaded logo has no known intrinsic size, so the
+          // height is pinned as an *attribute* as well as in CSS: that reserves
+          // the 48px row before the stylesheet is even parsed, so the heading
+          // below it never gets pushed down when the image arrives.
+          height={48}
+          // This sits at the top of the public program page, so it is the
+          // likeliest LCP element — but as an <img> discovered by the preload
+          // scanner it defaults to Low priority until layout proves it visible.
+          fetchPriority="high"
+          decoding="async"
           style={{
             height: 'var(--space-12)',
             width: 'auto',

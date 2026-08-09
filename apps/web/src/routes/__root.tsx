@@ -14,6 +14,8 @@ import type { ConvexQueryClient } from '@convex-dev/react-query'
 import type { ConvexReactClient } from 'convex/react'
 import type { QueryClient } from '@tanstack/react-query'
 import { RouteNotFound } from '~/components/RouteBoundary'
+import { useKeyboardInset } from '~/lib/useKeyboardInset'
+import { preconnectOrigins } from '~/lib/preconnect'
 import appCss from '~/styles/app.css?url'
 
 const fetchClerkAuth = createServerFn({ method: 'GET' }).handler(async () => {
@@ -98,7 +100,20 @@ export const Route = createRootRouteWithContext<{
       },
       {
         name: 'viewport',
-        content: 'width=device-width, initial-scale=1',
+        // `viewport-fit=cover` lets the page paint into the notch/home-indicator
+        // area; the --safe-* tokens in layout.css keep content out of it.
+        //
+        // Deliberately NO `interactive-widget`: it is Chromium-Android and
+        // Firefox-Android only (not Safari or Safari iOS as of 26.5), so it
+        // cannot be the answer to keyboard occlusion, and `resizes-content`
+        // buys Android-only layout-viewport reflow — i.e. relayout and possible
+        // CLS on every keyboard open — for a fix that still needs a JS shim on
+        // iPhone. The shim (useKeyboardInset) handles both platforms uniformly,
+        // so the meta key would be cost without benefit.
+        //
+        // Also no `maximum-scale`/`user-scalable=no`: blocking pinch-zoom is an
+        // accessibility failure, and iOS ignores it anyway.
+        content: 'width=device-width, initial-scale=1, viewport-fit=cover',
       },
       {
         title: 'StageStack',
@@ -111,6 +126,27 @@ export const Route = createRootRouteWithContext<{
     ],
     links: [
       { rel: 'stylesheet', href: appCss },
+      // The two faces that paint first-viewport text. They are referenced from
+      // inside app.css, so without these the browser cannot discover them until
+      // the stylesheet has downloaded AND parsed — preloading starts both
+      // fetches in the same round trip as the CSS itself.
+      // `crossOrigin` is required on font preloads even same-origin: fonts are
+      // fetched in CORS mode, and a preload whose mode does not match is
+      // discarded and re-fetched.
+      {
+        rel: 'preload',
+        as: 'font',
+        type: 'font/woff2',
+        href: '/fonts/geist-latin-wght-normal.woff2',
+        crossOrigin: 'anonymous',
+      },
+      {
+        rel: 'preload',
+        as: 'font',
+        type: 'font/woff2',
+        href: '/fonts/instrument-sans-latin-wght-normal.woff2',
+        crossOrigin: 'anonymous',
+      },
       {
         rel: 'apple-touch-icon',
         sizes: '180x180',
@@ -131,6 +167,22 @@ export const Route = createRootRouteWithContext<{
       },
       { rel: 'manifest', href: '/site.webmanifest' },
       { rel: 'icon', sizes: '48x48', href: '/favicon.ico' },
+      // Warm the two origins the app must reach before it can show anything
+      // useful, neither of which is discoverable from the HTML: Clerk's script
+      // is injected by ClerkProvider after hydration, and Convex is a WebSocket
+      // opened by the client. Without these, DNS + TLS for both are serialised
+      // after hydration instead of overlapping the initial page load.
+      ...preconnectOrigins({
+        clerkPublishableKey: import.meta.env.VITE_CLERK_PUBLISHABLE_KEY,
+        convexUrl: import.meta.env.VITE_CONVEX_URL,
+      }).map((href) => ({
+        rel: 'preconnect',
+        href,
+        // Both are CORS/credentialed fetches; a preconnect whose credentials
+        // mode does not match the eventual request opens a second connection
+        // and wastes the handshake it just paid for.
+        crossOrigin: 'anonymous' as const,
+      })),
     ],
   }),
   beforeLoad: async (ctx) => {
@@ -173,6 +225,9 @@ function ClerkAuthCacheReset() {
 }
 
 function RootDocument({ children }: { children: React.ReactNode }) {
+  // Publishes --kb so bottom-anchored UI can sit above the on-screen keyboard
+  // on iOS as well as Android. No-op on desktop.
+  useKeyboardInset()
   return (
     <html>
       <head>

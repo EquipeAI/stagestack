@@ -19,6 +19,17 @@ import {
 
 export const MAX_SPEAKERS = 10
 
+// Social handles are plain text, so the DS Input's per-type mobile defaults do
+// not apply — but iOS still autocapitalises and autocorrects them, which turns
+// a submitted handle like "alvaro" into "Alvaro" and quietly breaks the link on
+// the published program. Handles are case- and spelling-sensitive strings, not
+// prose.
+const HANDLE_INPUT = {
+  autoCapitalize: 'none',
+  autoCorrect: 'off',
+  spellCheck: false,
+} as const
+
 export type SpeakerDraft = {
   key: string
   firstName: string
@@ -417,6 +428,7 @@ function SpeakerCard({
                 value={speaker.linkedin}
                 disabled={disabled}
                 autoComplete="off"
+                {...HANDLE_INPUT}
                 onChange={(e) => {
                   onPatch({ linkedin: e.target.value })
                 }}
@@ -428,6 +440,7 @@ function SpeakerCard({
                 value={speaker.twitter}
                 disabled={disabled}
                 autoComplete="off"
+                {...HANDLE_INPUT}
                 onChange={(e) => {
                   onPatch({ twitter: e.target.value })
                 }}
@@ -439,6 +452,7 @@ function SpeakerCard({
                 value={speaker.github}
                 disabled={disabled}
                 autoComplete="off"
+                {...HANDLE_INPUT}
                 onChange={(e) => {
                   onPatch({ github: e.target.value })
                 }}

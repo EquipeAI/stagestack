@@ -1,6 +1,97 @@
 *,*::before,*::after{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
+html{
+  /* iOS bumps font sizes in landscape without this. */
+  -webkit-text-size-adjust:100%;
+  /* Last-resort guard: if any one element is still too wide, clip it rather
+     than let the whole document pan sideways. `clip` and not `hidden` — an
+     `overflow:hidden` ancestor silently turns every `position:sticky`
+     descendant (the topbar, table headers, the nav strip) into a scroll
+     container and breaks it. */
+  overflow-x:clip;
+  /* Reserve the scrollbar track so opening a dialog (or any overflow change)
+     does not shift the whole page sideways by its width. */
+  scrollbar-gutter:stable;
+  /* Anchor links and scrollIntoView() land below the sticky topbar instead of
+     underneath it. */
+  scroll-padding-block-start:calc(var(--topbar-height) + var(--safe-top) + var(--space-2));
+}
 body{margin:0;background:var(--surface-canvas);color:var(--text-primary);font:var(--type-body);letter-spacing:var(--tracking-normal);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+/* ── Mobile foundation ────────────────────────────────────────────────────
+   Nothing below is a visual change on a desktop pointer; it is the set of
+   rules that stops a touch device from actively fighting the UI. */
+
+/* A long unbroken string — a speaker's URL, a session id, an email — is the
+   usual cause of a page that scrolls sideways on a phone. Breaking words at
+   the container edge is always better than a horizontally-panning document. */
+body{overflow-wrap:break-word}
+
+/* Tapping anything in a SPA should not flash the Android/iOS grey box; the
+   components draw their own :active state. */
+a,button,summary,[role=button],label,input,select,textarea{-webkit-tap-highlight-color:transparent}
+
+/* iOS Safari zooms the whole page in when a focused control's font-size is
+   under 16px, then leaves the viewport scaled and panned — the single most
+   destructive mobile bug a 14px-base design system can ship. On coarse
+   pointers every control goes to 16px and grows to match, which also gets
+   the 44px touch target Apple's HIG asks for. `pointer:coarse` rather than a
+   width query so a small window on a laptop keeps the dense desktop UI. */
+@media (pointer:coarse){
+  .ss-input,.ss-textarea,.ss-select{font-size:var(--text-lg)}
+  .ss-input--sm{height:40px;padding:0 11px;font-size:var(--text-lg)}
+  .ss-input--md{height:44px;padding:0 13px}
+  .ss-input--lg{height:48px}
+  .ss-textarea{min-height:104px}
+
+  /* Buttons and icon buttons reach the 44px minimum. */
+  .ss-btn--sm{height:38px;padding:0 14px}
+  .ss-btn--md{height:44px;padding:0 18px}
+  .ss-btn--lg{height:48px}
+  .ss-iconbtn--sm{width:38px;height:38px}
+  .ss-iconbtn--md{width:44px;height:44px}
+  .ss-iconbtn--lg{width:48px;height:48px}
+
+  /* Nav rows and tabs are the primary way around the app on a phone. */
+  .ss-navitem{height:44px}
+  .ss-tab{height:46px;padding:0 14px}
+  .ss-tabs--pill .ss-tab{height:36px}
+
+  /* A 16px checkbox is smaller than a fingertip. The box stays visually the
+     same size; a transparent ::after extends the *hit* area to 44px without
+     disturbing the layout around it. */
+  .ss-check,.ss-switch{position:relative;min-height:44px;align-items:center}
+  .ss-check__box::after,.ss-switch__track::after{content:"";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px}
+  .ss-switch__track{width:44px;height:26px}
+  .ss-switch__thumb{width:22px;height:22px}
+  .ss-switch input:checked+.ss-switch__track .ss-switch__thumb{transform:translateX(18px)}
+
+  /* Tag/table close affordances. */
+  .ss-tag{height:30px;padding:0 10px}
+  .ss-tag__x{padding:8px;margin:-8px -6px -8px 0}
+}
+
+/* Hover styles on a touchscreen do not "hover" — they latch on after a tap
+   and stay until you tap elsewhere, so a phone accumulates rows and cards
+   stuck in their hover colour. Gating every one on a device that can truly
+   hover is the fix. */
+@media (hover:none){
+  a:hover{text-decoration:none;color:var(--text-link)}
+  .ss-card--interactive:hover{border-color:var(--border-default);box-shadow:var(--shadow-xs)}
+  .ss-table tbody tr:hover{background:transparent}
+  .ss-table tbody tr[data-selected=true]:hover{background:var(--surface-selected)}
+  .ss-navitem:hover{background:none;color:var(--text-secondary)}
+  .ss-navitem[aria-current=page]:hover,.ss-navitem[data-active=true]:hover{background:var(--surface-card);color:var(--text-primary)}
+  .ss-btn--primary:hover{background:var(--gray-900)}
+  .ss-btn--brand:hover{background:var(--surface-brand)}
+  .ss-btn--secondary:hover{background:var(--surface-card);border-color:var(--border-default)}
+  .ss-btn--ghost:hover{background:transparent;color:var(--text-secondary)}
+  .ss-btn--danger:hover{background:var(--rust-500)}
+  .ss-iconbtn:hover{background:transparent;color:var(--text-secondary)}
+  .ss-input:hover,.ss-textarea:hover,.ss-select:hover{border-color:var(--border-default)}
+  .ss-check:hover .ss-check__box{border-color:var(--border-strong)}
+  /* A tooltip that opens on tap covers the thing you tapped. */
+  .ss-tooltip:hover .ss-tooltip__bubble{opacity:0}
+}
 h1,h2,h3,h4,h5,h6,p,figure,blockquote{margin:0}
 h1,h2,h3,h4{font-family:var(--font-display);letter-spacing:var(--tracking-tight);text-wrap:balance}
 p{text-wrap:pretty}

@@ -8,7 +8,17 @@
 .ss-callout--attention{background:var(--status-attention-bg);border-color:var(--ember-100);color:var(--status-attention-fg)}
 .ss-callout--blocked{background:var(--status-blocked-bg);border-color:var(--rust-100);color:var(--status-blocked-fg)}
 .ss-callout--agent{background:var(--status-agent-bg);border-color:var(--iris-100);color:var(--status-agent-fg)}
-.ss-toast{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:var(--radius-card);background:var(--gray-900);color:var(--gray-25);box-shadow:var(--shadow-lg);font:var(--type-body);min-width:300px;max-width:420px}
+.ss-toast{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:var(--radius-card);background:var(--gray-900);color:var(--gray-25);box-shadow:var(--shadow-lg);font:var(--type-body);min-width:min(300px,100%);max-width:420px}
+
+/* A 300px min-width toast inset by a 16px gutter overflows a 320px phone, so
+   the viewport spans the full width there and the toast fills it. */
+@media (max-width:640px){
+  .toast-viewport{
+    left:calc(var(--page-gutter) + var(--safe-left)) !important;
+    right:calc(var(--page-gutter) + var(--safe-right)) !important;
+  }
+  .ss-toast{max-width:none}
+}
 .ss-toast__title{font-weight:var(--weight-medium)}
 .ss-toast__desc{color:var(--gray-400);font-size:var(--text-sm);margin-top:2px}
 .ss-toast__action{margin-left:auto;background:none;border:0;color:var(--amber-300);font:var(--type-label);cursor:pointer;padding:0}
@@ -19,14 +29,73 @@
 .ss-dialog-host{position:relative;transform:translateZ(0);overflow:hidden}
 .ss-dialog-host .ss-dialog__scrim{position:absolute}
 .ss-dialog__scrim{position:fixed;inset:0;background:var(--surface-overlay);display:flex;align-items:center;justify-content:center;padding:var(--space-6);z-index:var(--z-modal);animation:ss-fade var(--duration-normal) var(--ease-out)}
-.ss-dialog{background:var(--surface-card);border-radius:var(--radius-surface);box-shadow:var(--shadow-xl);width:100%;display:flex;flex-direction:column;max-height:86vh;animation:ss-pop var(--duration-normal) var(--ease-out)}
+/* dvh so the sheet is measured against the viewport actually on screen — with
+   `vh` the footer of a tall dialog hides behind mobile Safari's URL bar. */
+.ss-dialog{background:var(--surface-card);border-radius:var(--radius-surface);box-shadow:var(--shadow-xl);width:100%;display:flex;flex-direction:column;max-height:86dvh;animation:ss-pop var(--duration-normal) var(--ease-out)}
 .ss-dialog__header{display:flex;align-items:flex-start;gap:var(--space-4);padding:var(--space-5) var(--space-5) var(--space-3)}
 .ss-dialog__title{font:var(--type-title-3);letter-spacing:var(--tracking-tight)}
 .ss-dialog__desc{font:var(--type-body);color:var(--text-secondary);margin-top:5px}
-.ss-dialog__body{padding:0 var(--space-5) var(--space-5);overflow:auto}
+/* overscroll-behavior:contain keeps a flick that reaches the end of the
+   dialog's own scroll from continuing into the page behind it ("scroll
+   chaining"), which on iOS is what makes a modal feel broken. */
+.ss-dialog__body{padding:0 var(--space-5) var(--space-5);overflow:auto;overscroll-behavior:contain;}
 .ss-dialog__footer{display:flex;align-items:center;justify-content:flex-end;gap:var(--space-2);padding:14px var(--space-5);border-top:1px solid var(--border-subtle);background:var(--surface-canvas);border-radius:0 0 var(--radius-surface) var(--radius-surface)}
 @keyframes ss-fade{from{opacity:0}to{opacity:1}}
 @keyframes ss-pop{from{opacity:0;transform:translateY(6px) scale(0.985)}to{opacity:1;transform:none}}
+
+/* ── Dialog as a bottom sheet on a phone ─────────────────────────────────
+   A centred 480px card with a 24px scrim gutter wastes the narrow axis and
+   puts the primary action in the middle of the screen, out of thumb reach.
+   Below 640px the same dialog becomes a sheet anchored to the bottom edge:
+   full width, reachable actions, and it animates up from where it is going
+   to live rather than fading in the middle. `max-width:none` overrides the
+   inline `width` prop the component sets. */
+@media (max-width:640px){
+  .ss-dialog__scrim{padding:0;align-items:flex-end}
+  .ss-dialog{
+    max-width:none !important;
+    /* svh, not dvh: `dvh` tracks the URL bar as it collapses, so an open sheet
+       visibly resizes under the user's finger mid-scroll. `svh` is the smallest
+       (URL-bar-visible) viewport — stable for the whole life of the sheet, and
+       guaranteed to fit. `dvh` stays right for the app shell, which *should*
+       grow into the space the URL bar vacates. */
+    max-height:92svh;
+    border-radius:var(--radius-surface) var(--radius-surface) 0 0;
+    animation:ss-sheet var(--duration-normal) var(--ease-out);
+  }
+  .ss-dialog__header{padding:var(--space-4) var(--page-gutter) var(--space-2)}
+  .ss-dialog__body{padding:0 var(--page-gutter) var(--space-4)}
+  /* The footer clears the home-indicator, and its buttons go full width and
+     stack so they are never 90px-wide targets side by side. */
+  .ss-dialog__footer{
+    padding:var(--space-3) var(--page-gutter);
+    /* --kb is the on-screen keyboard height (useKeyboardInset). On iOS the
+       keyboard covers fixed UI without changing any CSS unit, so without this
+       the sheet's Save button sits *behind* the keyboard the moment a field in
+       it is focused. Falls back to 0px everywhere else. */
+    padding-bottom:calc(var(--space-3) + var(--safe-bottom) + var(--kb, 0px));
+    border-radius:0;
+    flex-direction:row-reverse;
+    justify-content:stretch;
+    gap:var(--space-3);
+  }
+  .ss-dialog__footer>*{flex:1}
+  /* A grab handle reads as "this can be dismissed", which a phone user
+     expects of anything anchored to the bottom edge. */
+  .ss-dialog::before{
+    content:"";
+    width:36px;
+    height:4px;
+    border-radius:var(--radius-full);
+    background:var(--border-strong);
+    margin:var(--space-2) auto 0;
+    flex:none;
+  }
+}
+@keyframes ss-sheet{from{transform:translateY(100%)}to{transform:none}}
+@media (prefers-reduced-motion:reduce){
+  .ss-dialog,.ss-dialog__scrim{animation:none}
+}
 .ss-meter{display:flex;flex-direction:column;gap:6px}
 .ss-meter__head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);font:var(--type-caption);color:var(--text-tertiary)}
 .ss-meter__value{font-family:var(--font-mono);font-variant-numeric:tabular-nums;color:var(--text-secondary)}

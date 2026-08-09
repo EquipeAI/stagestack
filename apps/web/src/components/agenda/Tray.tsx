@@ -29,15 +29,7 @@ export function Tray({
   const dragging = activeId !== null
 
   return (
-    <aside
-      style={{
-        flex: 'none',
-        width: '17rem',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 'var(--space-3)',
-      }}
-    >
+    <aside className="agenda-tray">
       <div
         style={{
           display: 'flex',
@@ -131,6 +123,9 @@ function TrayCard({
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      // See TimeGrid's GridBlock: touch-action is a class so a coarse pointer
+      // can relax it to `manipulation` and keep the tray scrollable.
+      className="agenda-draggable"
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -142,7 +137,6 @@ function TrayCard({
         boxShadow: 'var(--shadow-xs)',
         cursor: disabled ? 'default' : 'grab',
         opacity: isSource ? 0.4 : 1,
-        touchAction: 'none',
       }}
     >
       <span
