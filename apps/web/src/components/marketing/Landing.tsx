@@ -44,12 +44,20 @@ function Nav() {
         </nav>
         <div className="mkt-nav__auth">
           <Show when="signed-out">
-            <SignInButton mode="modal">
+            <SignInButton
+              mode="modal"
+              forceRedirectUrl="/app"
+              signUpForceRedirectUrl="/app"
+            >
               <Button size="sm" variant="secondary">
                 Sign in
               </Button>
             </SignInButton>
-            <SignInButton mode="modal">
+            <SignInButton
+              mode="modal"
+              forceRedirectUrl="/app"
+              signUpForceRedirectUrl="/app"
+            >
               <Button size="sm" variant="brand">
                 Start free
               </Button>
@@ -193,7 +201,11 @@ function Hero() {
         </p>
         <div className="mkt-hero__ctas">
           <Show when="signed-out">
-            <SignInButton mode="modal">
+            <SignInButton
+              mode="modal"
+              forceRedirectUrl="/app"
+              signUpForceRedirectUrl="/app"
+            >
               <Button size="lg" variant="brand" iconRight="arrow-right">
                 Create your event
               </Button>

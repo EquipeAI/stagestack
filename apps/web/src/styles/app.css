@@ -112,6 +112,179 @@
   }
 }
 
+/* ── My StageStack home ─────────────────────────────────────────────────
+   The dashboard's job is to teach the shape of the user's universe — the
+   three hats (organize / submit / speak) — and put what needs them under
+   the light. All of it is drawn from the brand's stage vocabulary:
+   the amber overhead glow the marketing hero (.mkt-hero::before) already
+   uses, brought inside the app for the first time. */
+
+/* Spotlight: a stage light hanging over the page header. The glow bleeds
+   into the section padding and page gutter so it reads as overhead light,
+   not a bordered box, and fades in once on load as the page's single
+   ambient moment. */
+.home-hero {
+  position: relative;
+}
+.home-hero::before {
+  content: '';
+  position: absolute;
+  top: calc(var(--pad-section) * -1);
+  left: calc(var(--page-gutter) * -1);
+  right: calc(var(--page-gutter) * -1);
+  height: 340px;
+  pointer-events: none;
+  background: radial-gradient(
+    680px 300px at 50% -18%,
+    color-mix(in srgb, var(--amber-400) 16%, transparent),
+    transparent 70%
+  );
+  animation: home-hero-glow 0.9s var(--ease-out) both;
+}
+@keyframes home-hero-glow {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-hero::before {
+    animation: none;
+  }
+}
+
+.home-hero__head {
+  position: relative; /* paints above the ::before glow */
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.home-title {
+  font: var(--type-title-1);
+  letter-spacing: var(--tracking-tighter);
+  color: var(--text-primary);
+  margin: 0;
+}
+.home-sub {
+  margin: var(--space-3) 0 0;
+  max-width: 56ch;
+  font-size: var(--text-lg);
+  color: var(--text-secondary);
+}
+
+/* Hat sections: a call-sheet header — the verb you play (ORGANIZE / SUBMIT
+   / SPEAK) in mono caps against a hairline. The rule is structural: it
+   separates sections without boxing them. */
+.home-hat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.home-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font: var(--type-eyebrow);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.home-eyebrow__rule {
+  flex: 1;
+  height: var(--space-px);
+  background: var(--border-subtle);
+}
+.home-eyebrow__count {
+  letter-spacing: var(--tracking-normal);
+  text-transform: none;
+  font-size: var(--text-xs);
+}
+.home-hat__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* The title belongs to the eyebrow above it, not to the list below. */
+  margin-top: calc(var(--space-2) * -1);
+}
+
+/* The call light: the one surface on the page allowed to wear amber.
+   Only items waiting on the user personally (a speaking invitation, an
+   unsubmitted draft) are pulled under the light. */
+.home-call {
+  border: var(--space-px) solid var(--border-brand);
+  background: linear-gradient(
+    180deg,
+    var(--surface-brand-subtle) 0%,
+    color-mix(in srgb, var(--surface-brand-subtle) 45%, var(--surface-card)) 100%
+  );
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-xs);
+  padding: var(--pad-card);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.home-call__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.home-call__eyebrow {
+  font: var(--type-eyebrow);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-brand);
+}
+.home-call__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* The live light: a slow pulse, like the ON AIR lamp outside a stage door.
+   Ambient, low-contrast, and the only looped motion on the page — reduced
+   motion turns it into a plain dot. */
+.home-live-dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--amber-500);
+}
+.home-live-dot::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  border: var(--space-px) solid
+    color-mix(in srgb, var(--amber-500) 55%, transparent);
+  animation: home-live-pulse 2.4s var(--ease-in-out) infinite;
+}
+@keyframes home-live-pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-live-dot::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 /* ── Agenda drag-and-drop on touch ───────────────────────────────────────
    A draggable needs `touch-action:none` for a pointer-based drag, but on a
    touchscreen that also cancels scrolling — and since the agenda grid is
