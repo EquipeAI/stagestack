@@ -61,6 +61,7 @@ function Settings() {
       <SlugSection key={`slug-${event._id}`} eventSlug={eventSlug} event={event} />
       <DatesSection key={`dates-${event._id}`} eventSlug={eventSlug} event={event} />
       <CfpSection key={`cfp-${event._id}`} eventSlug={eventSlug} event={event} />
+      <CommsSection key={`comms-${event._id}`} eventSlug={eventSlug} event={event} />
       <LibrarySections eventSlug={eventSlug} />
     </div>
   )
@@ -413,6 +414,106 @@ function CfpSection({
         <p style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
           Publishing makes the public CFP page reachable. The form builder
           arrives with M1.
+        </p>
+      </div>
+    </Card>
+  )
+}
+
+// ── Communications ────────────────────────────────────────────────────────
+
+function CommsSection({
+  eventSlug,
+  event,
+}: {
+  eventSlug: string
+  event: Doc<'events'>
+}) {
+  const update = useMutation(api.events.updateSettings)
+  const { pending, error, setError, run } = usePending()
+  const [cadence, setCadence] = useState(
+    event.reminderCadenceDays === undefined
+      ? ''
+      : String(event.reminderCadenceDays),
+  )
+  const [replyTo, setReplyTo] = useState(event.replyTo ?? '')
+
+  const save = () => {
+    const trimmed = cadence.trim()
+    const days = trimmed === '' ? null : Number(trimmed)
+    if (days !== null && (!Number.isInteger(days) || days < 1)) {
+      return setError('Cadence must be a whole number of days, at least 1.')
+    }
+    const address = replyTo.trim()
+    if (address !== '' && !address.includes('@')) {
+      return setError('That does not look like an email address.')
+    }
+    void run(async () => {
+      await update({
+        eventSlug,
+        patch: {
+          reminderCadenceDays: days,
+          replyTo: address === '' ? null : address,
+        },
+      })
+      pushToast(
+        'Communications saved',
+        days === null
+          ? 'Reminders are off for this event.'
+          : `Reminders go out every ${days} ${days === 1 ? 'day' : 'days'}.`,
+      )
+    })
+  }
+
+  return (
+    <Card
+      title="Communications"
+      subtitle="How StageStack chases outstanding work, and where replies land."
+      actions={
+        <Badge tone={cadence.trim() === '' ? 'neutral' : 'success'} dot>
+          {cadence.trim() === ''
+            ? 'Reminders off'
+            : `Every ${cadence.trim()} days`}
+        </Badge>
+      }
+      footer={<SectionFooter pending={pending} error={error} onSave={save} />}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <div style={twoCol}>
+          <Field
+            label="Reminder cadence"
+            htmlFor="s-cadence"
+            optional
+            hint="Days between reminders. Leave empty to send none."
+          >
+            <Input
+              id="s-cadence"
+              type="number"
+              value={cadence}
+              placeholder="7"
+              onChange={(e) => setCadence(e.target.value)}
+            />
+          </Field>
+          <Field
+            label="Reply-to"
+            htmlFor="s-reply-to"
+            optional
+            hint="Replies to event email go here."
+          >
+            <Input
+              id="s-reply-to"
+              type="email"
+              value={replyTo}
+              placeholder="speakers@example.com"
+              onChange={(e) => setReplyTo(e.target.value)}
+            />
+          </Field>
+        </div>
+        <p style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
+          Consolidated task reminders are sent on this cadence — one message
+          listing everything outstanding, never one email per item. Unconfirmed
+          speakers get participation reminders instead of task chasing, because
+          the only thing they owe is an answer.
         </p>
       </div>
     </Card>

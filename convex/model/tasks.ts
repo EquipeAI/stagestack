@@ -1162,6 +1162,8 @@ export type RequirementRow = {
   reviewRequired: boolean;
   dueAt: number;
   active: boolean;
+  reminderCadenceDays?: number;
+  remindersDisabled?: boolean;
   instanceCount: number;
   openCount: number;
 };
@@ -1198,6 +1200,8 @@ export async function listRequirements(
     reviewRequired: r.reviewRequired,
     dueAt: r.dueAt,
     active: r.active,
+    reminderCadenceDays: r.reminderCadenceDays,
+    remindersDisabled: r.remindersDisabled,
     instanceCount: counts.get(r._id)?.all ?? 0,
     openCount: counts.get(r._id)?.open ?? 0,
   }));

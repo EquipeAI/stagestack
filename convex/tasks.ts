@@ -99,6 +99,8 @@ export const listRequirements = eventQuery({
       reviewRequired: v.boolean(),
       dueAt: v.number(),
       active: v.boolean(),
+      reminderCadenceDays: v.optional(v.number()),
+      remindersDisabled: v.optional(v.boolean()),
       instanceCount: v.number(),
       openCount: v.number(),
     }),

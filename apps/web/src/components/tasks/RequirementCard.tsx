@@ -35,6 +35,7 @@ export function RequirementCard({
   const update = useMutation(api.tasks.updateRequirement)
   const { pending, error, run } = usePending()
   const [editing, setEditing] = useState(false)
+  const reminders = reminderOverride(requirement)
 
   const toggleActive = (active: boolean) => {
     void run(async () => {
@@ -82,7 +83,11 @@ export function RequirementCard({
               marginRight: 'auto',
             }}
           >
-            Reminder cadence arrives with the reminder engine (M5).
+            {reminders.disabled
+              ? 'Reminders off for this requirement.'
+              : reminders.cadence === null
+                ? 'Reminders follow the event cadence.'
+                : `Reminders every ${reminders.cadence} ${reminders.cadence === 1 ? 'day' : 'days'}.`}
           </span>
           {error === null ? null : (
             <span
@@ -172,6 +177,29 @@ export function RequirementCard({
 }
 
 /**
+ * The per-requirement reminder override (M5).
+ *
+ * `tasks.updateRequirement` accepts `reminderCadenceDays` and
+ * `remindersDisabled`, but `tasks.listRequirements` does not carry them in its
+ * `returns` validator yet, so `RequirementRow` has no such properties. Reading
+ * them defensively means the controls below show the stored value the moment
+ * the query starts returning it — no change needed here.
+ */
+function reminderOverride(requirement: RequirementRow): {
+  cadence: number | null
+  disabled: boolean
+} {
+  const row = requirement as RequirementRow & {
+    reminderCadenceDays?: number | null
+    remindersDisabled?: boolean
+  }
+  return {
+    cadence: row.reminderCadenceDays ?? null,
+    disabled: row.remindersDisabled ?? false,
+  }
+}
+
+/**
  * Scope, evidence and field key are fixed at creation — the backend does not
  * take them in a patch, because changing them would silently invalidate every
  * task already created from this definition.
@@ -195,11 +223,24 @@ function EditRequirementDialog({
   const [dueAt, setDueAt] = useState(() =>
     toInputValue(requirement.dueAt, timezone),
   )
+  const stored = reminderOverride(requirement)
+  const [cadence, setCadence] = useState(
+    stored.cadence === null ? '' : String(stored.cadence),
+  )
+  const [remindersDisabled, setRemindersDisabled] = useState(stored.disabled)
 
   const submit = () => {
     if (title.trim() === '') return setError('The requirement needs a title.')
     const due = fromInputValue(dueAt, timezone)
     if (due === null) return setError('Set a due date and time.')
+    const trimmedCadence = cadence.trim()
+    const cadenceDays = trimmedCadence === '' ? null : Number(trimmedCadence)
+    if (
+      cadenceDays !== null &&
+      (!Number.isInteger(cadenceDays) || cadenceDays < 1)
+    ) {
+      return setError('Cadence must be a whole number of days, at least 1.')
+    }
     void run(async () => {
       const result = await update({
         eventSlug,
@@ -209,6 +250,8 @@ function EditRequirementDialog({
           description: description.trim(),
           reviewRequired,
           dueAt: due,
+          reminderCadenceDays: cadenceDays,
+          remindersDisabled,
         },
       })
       pushToast(
@@ -296,6 +339,36 @@ function EditRequirementDialog({
           {reviewRequired
             ? 'Submitted work parks at Awaiting Review until an organizer approves it.'
             : 'Without review, Provided counts as complete the moment the evidence exists.'}
+        </p>
+        <Field
+          label="Reminder cadence"
+          htmlFor="req-edit-cadence"
+          optional
+          hint="Days between reminders for this requirement. Empty follows the event cadence set in Settings."
+        >
+          <Input
+            id="req-edit-cadence"
+            type="number"
+            value={cadence}
+            placeholder="Inherit"
+            disabled={pending || remindersDisabled}
+            onChange={(e) => {
+              setCadence(e.target.value)
+            }}
+          />
+        </Field>
+        <Switch
+          label="Reminders off"
+          checked={remindersDisabled}
+          disabled={pending}
+          onChange={(e) => {
+            setRemindersDisabled(e.target.checked)
+          }}
+        />
+        <p style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}>
+          {remindersDisabled
+            ? 'This requirement is left out of every reminder. The task still exists and still counts as outstanding.'
+            : 'Outstanding items are consolidated into one reminder per speaker, never one email per task.'}
         </p>
         <p style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}>
           Scope ({SCOPE_LABEL[requirement.scope]}) and evidence (
