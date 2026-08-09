@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { vAnswerValue, vFormDef } from "./shared/formDef";
 
 // Org-level roles: owner manages ownership + billing-ish concerns, admin has
 // org-wide admin powers. Event-scoped access lives in eventMembers.
@@ -208,4 +209,99 @@ export default defineSchema({
     anonKey: v.string(),
     status: v.literal("draft"),
   }).index("by_anonKey", ["anonKey"]),
+
+  // ── CFP (M1) ─────────────────────────────────────────────────────────
+  // One form per event. `working` is the organizer's private draft;
+  // `published` is what the public wizard renders (absent until first
+  // publish). Publishing copies working → published and bumps version.
+  cfpForms: defineTable({
+    eventId: v.id("events"),
+    working: vFormDef,
+    published: v.optional(vFormDef),
+    version: v.number(),
+    publishedAt: v.optional(v.number()),
+    maxSubmissionsPerUser: v.optional(v.number()),
+    successMessage: v.optional(v.string()),
+    updatedAt: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
+  proposals: defineTable({
+    eventId: v.id("events"),
+    // The proposal's primary manager (may or may not be a speaker).
+    submitterUserId: v.id("users"),
+    status: v.union(
+      v.literal("draft"),
+      v.literal("pending"),
+      v.literal("acceptQueue"),
+      v.literal("declineQueue"),
+      v.literal("accepted"),
+      v.literal("declined"),
+      v.literal("withdrawn"),
+    ),
+    // Denormalized from the talkTitle answer for lists/tables.
+    title: v.string(),
+    answers: v.record(v.string(), vAnswerValue),
+    // Form version the answers were last validated against (stamped on
+    // submit/resubmit).
+    formVersion: v.number(),
+    submittedAt: v.optional(v.number()),
+    updatedAt: v.number(),
+    withdrawnAt: v.optional(v.number()),
+    // Organizer-granted edit window past cfpCloseAt (audited reopen, M1).
+    reopenedUntil: v.optional(v.number()),
+  })
+    .index("by_eventId_and_status", ["eventId", "status"])
+    .index("by_submitterUserId", ["submitterUserId"]),
+
+  // Speakers entered in the wizard — no accounts required pre-acceptance.
+  proposalSpeakers: defineTable({
+    proposalId: v.id("proposals"),
+    eventId: v.id("events"),
+    order: v.number(),
+    firstName: v.string(),
+    lastName: v.string(),
+    email: v.optional(v.string()),
+    phone: v.optional(v.string()),
+    tagline: v.optional(v.string()),
+    bio: v.optional(v.string()),
+    headshotId: v.optional(v.id("_storage")),
+    links: v.optional(
+      v.object({
+        website: v.optional(v.string()),
+        twitter: v.optional(v.string()),
+        linkedin: v.optional(v.string()),
+        github: v.optional(v.string()),
+      }),
+    ),
+    // True when this row mirrors the submitter themself.
+    isPrimary: v.boolean(),
+  }).index("by_proposalId", ["proposalId"]),
+
+  // ── Comms log (starts M1; grows in M5) ───────────────────────────────
+  // Every email StageStack sends is recorded here; the Resend webhook
+  // updates deliveryStatus by resendEmailId.
+  messages: defineTable({
+    orgId: v.id("organizations"),
+    eventId: v.optional(v.id("events")),
+    contactId: v.optional(v.id("contacts")),
+    toEmail: v.string(),
+    // e.g. "cfp.confirmation", "cfp.adminNotification", "team.invite"
+    kind: v.string(),
+    subject: v.string(),
+    resendEmailId: v.optional(v.string()),
+    deliveryStatus: v.union(
+      v.literal("queued"),
+      v.literal("sent"),
+      v.literal("delivered"),
+      v.literal("delivery_delayed"),
+      v.literal("bounced"),
+      v.literal("complained"),
+      v.literal("failed"),
+    ),
+    sentByUserId: v.optional(v.id("users")),
+    context: v.optional(v.any()),
+  })
+    .index("by_eventId", ["eventId"])
+    .index("by_contactId", ["contactId"])
+    .index("by_resendEmailId", ["resendEmailId"]),
 });

@@ -10,13 +10,42 @@ export const resend: Resend = new Resend(components.resend, {
   onEmailEvent: internal.emails.handleEmailEvent,
 });
 
-// Delivery events land here via the Resend webhook. For now just log; this
-// becomes the write path into the per-contact comms log in M1.
+// Resend event type → the comms log's deliveryStatus. Engagement events
+// ("email.opened"/"email.clicked") say nothing about delivery, so they leave
+// the stored status alone.
+const DELIVERY_STATUS_BY_EVENT: Record<
+  string,
+  | "sent"
+  | "delivered"
+  | "delivery_delayed"
+  | "bounced"
+  | "complained"
+  | "failed"
+  | undefined
+> = {
+  "email.sent": "sent",
+  "email.delivered": "delivered",
+  "email.delivery_delayed": "delivery_delayed",
+  "email.bounced": "bounced",
+  "email.complained": "complained",
+  "email.failed": "failed",
+};
+
+// Delivery events land here via the Resend webhook and update the comms log
+// row that model/comms.ts wrote when the email was queued (M1).
 export const handleEmailEvent = internalMutation({
   args: vOnEmailEventArgs,
   returns: v.null(),
-  handler: async (_ctx, args) => {
+  handler: async (ctx, args) => {
     console.log("resend event", args.id, args.event.type);
+    const status = DELIVERY_STATUS_BY_EVENT[args.event.type];
+    if (status === undefined) return null;
+    const message = await ctx.db
+      .query("messages")
+      .withIndex("by_resendEmailId", (q) => q.eq("resendEmailId", args.id))
+      .first();
+    if (message === null) return null;
+    await ctx.db.patch("messages", message._id, { deliveryStatus: status });
     return null;
   },
 });

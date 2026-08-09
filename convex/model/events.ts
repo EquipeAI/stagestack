@@ -5,6 +5,7 @@ import type { EventCaller, OrgCaller } from "../lib/functions";
 import { requireOrgAdmin } from "../lib/functions";
 import { assertValidSlug, uniqueSlug } from "./slugs";
 import { logAudit } from "./audit";
+import { ensureForm } from "./cfp";
 
 const IANA_ZONE = /^[A-Za-z_]+\/[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)?$|^UTC$/;
 
@@ -17,8 +18,8 @@ export type CreateEventArgs = {
 
 /**
  * Fast event creation (MILESTONES M0): name, start/end, timezone only.
- * Generates a unique editable slug; exposes nothing publicly. The starter CFP
- * form is generated when the CFP model lands (M1) — recorded in PLAN.md.
+ * Generates a unique editable slug; exposes nothing publicly. Also seeds the
+ * event's starter CFP form (M1) so the form builder is never empty.
  */
 export async function createEvent(
   ctx: MutationCtx,
@@ -55,6 +56,9 @@ export async function createEvent(
     timezone: args.timezone,
     cfpPublished: false,
   });
+  // Every event ships with the starter CFP form (M1). Not audited: it is part
+  // of creating the event, not a separate organizer action.
+  await ensureForm(ctx, eventId);
   await logAudit(ctx, {
     orgId: caller.org._id,
     eventId,
