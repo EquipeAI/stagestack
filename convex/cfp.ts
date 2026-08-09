@@ -123,6 +123,40 @@ export const getProposalDetail = eventQuery({
   },
 });
 
+export const createManualProposal = eventMutation({
+  args: {
+    title: v.string(),
+    abstract: v.optional(v.string()),
+    speakers: v.array(
+      v.object({
+        firstName: v.string(),
+        lastName: v.string(),
+        email: v.optional(v.string()),
+      }),
+    ),
+  },
+  returns: v.id("proposals"),
+  handler: async (ctx, args) => {
+    return await Cfp.createManualProposal(ctx, ctx.caller, args);
+  },
+});
+
+export const listFileAnswers = eventQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      proposalId: v.id("proposals"),
+      proposalTitle: v.string(),
+      fieldLabel: v.string(),
+      storageId: v.string(),
+      url: v.union(v.string(), v.null()),
+    }),
+  ),
+  handler: async (ctx) => {
+    return await Cfp.listFileAnswers(ctx, ctx.caller);
+  },
+});
+
 export const reopenProposal = eventMutation({
   args: { proposalId: v.id("proposals"), until: v.number() },
   returns: v.null(),

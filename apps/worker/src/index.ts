@@ -6,7 +6,13 @@ import { ConvexClient } from "convex/browser";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { isJobType, type JobType } from "../../../convex/shared/jobTypes";
+import {
+  IMPORT_LIMITS,
+  type PlannedRecord,
+  type RecordResult,
+} from "../../../convex/shared/importPlan";
 import { runHelloAgent } from "./hello-agent";
+import { runImportPlan, type ImportContext } from "./import-agent";
 
 const CONVEX_URL = process.env.CONVEX_URL;
 const WORKER_SECRET = process.env.WORKER_SECRET;
@@ -27,6 +33,34 @@ type PendingJob = { _id: Id<"jobs">; type: string; payload: unknown };
 const handlers: { [K in JobType]: (job: PendingJob) => Promise<unknown> } = {
   ping: async (job) => ({ pong: true, at: Date.now(), payload: job.payload }),
   "hello-agent": async (job) => await runHelloAgent(job._id),
+  "import-plan": async (job) => {
+    const context = (await client.query(api.worker.importContext, {
+      secret,
+      jobId: job._id,
+    })) as ImportContext;
+    return await runImportPlan(job._id, context);
+  },
+  "import-execute": async (job) => {
+    const { records } = job.payload as { records: PlannedRecord[] };
+    const results: RecordResult[] = [];
+    for (let i = 0; i < records.length; i += IMPORT_LIMITS.executeBatch) {
+      const batch = records.slice(i, i + IMPORT_LIMITS.executeBatch);
+      const batchResults = await client.mutation(
+        api.worker.importExecuteBatch,
+        { secret, jobId: job._id, records: batch },
+      );
+      results.push(...batchResults);
+      console.log(
+        `[worker] import ${job._id}: ${Math.min(i + batch.length, records.length)}/${records.length} records`,
+      );
+    }
+    return {
+      total: records.length,
+      ok: results.filter((r) => r.ok).length,
+      failed: results.filter((r) => !r.ok).length,
+      results,
+    };
+  },
 };
 
 async function runJob(job: PendingJob): Promise<unknown> {

@@ -8,6 +8,21 @@ import { v, type Infer } from "convex/values";
 export const jobPayloadValidators = {
   ping: v.object({ sentAt: v.number() }),
   "hello-agent": v.object({ sentAt: v.number() }),
+  // Import agent (M2): plan from an uploaded file, then execute the
+  // organizer-confirmed plan. See convex/shared/importPlan.ts.
+  "import-plan": v.object({
+    eventId: v.id("events"),
+    storageId: v.id("_storage"),
+    filename: v.string(),
+    description: v.optional(v.string()),
+  }),
+  "import-execute": v.object({
+    eventId: v.id("events"),
+    planJobId: v.id("jobs"),
+    // The organizer-approved subset of the plan, copied at confirm time so
+    // the worker needs no extra reads and the approved set is immutable.
+    records: v.array(v.any()),
+  }),
 } as const;
 
 export type JobType = keyof typeof jobPayloadValidators;

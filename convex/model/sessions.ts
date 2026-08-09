@@ -651,6 +651,64 @@ export async function createDirectSession(
   return { sessionId, eventContactId };
 }
 
+/**
+ * Import-agent session creation (M2): same session/contact/participant shape
+ * as a direct invitation, but imported records never send communications
+ * (MILESTONES M2), so no email is required and none is sent.
+ */
+export async function importSession(
+  ctx: MutationCtx,
+  caller: EventCaller,
+  args: {
+    title: string;
+    description?: string;
+    speaker: { firstName: string; lastName: string; email?: string };
+  },
+): Promise<Id<"sessions">> {
+  requireOrganizer(caller);
+  assertEventActive(caller.event);
+  const title = assertText(args.title, { label: "Session title", max: 200 });
+  const profile: SpeakerProfile = {
+    firstName: assertText(args.speaker.firstName, {
+      label: "Speaker first name",
+      max: 80,
+    }),
+    lastName: assertText(args.speaker.lastName, {
+      label: "Speaker last name",
+      max: 80,
+    }),
+    email:
+      args.speaker.email === undefined
+        ? undefined
+        : normalizeEmail(args.speaker.email),
+  };
+  const sessionId = await ctx.db.insert("sessions", {
+    eventId: caller.event._id,
+    title,
+    description: args.description,
+    source: "direct",
+    status: "planned",
+  });
+  const eventContactId = await ensureEventContact(ctx, caller.event, profile);
+  await ensureParticipant(ctx, {
+    sessionId,
+    eventId: caller.event._id,
+    eventContactId,
+    managerUserId: undefined,
+  });
+  await logAudit(ctx, {
+    orgId: caller.org._id,
+    eventId: caller.event._id,
+    actorUserId: caller.user._id,
+    viaAgent: true,
+    action: "session.import",
+    targetType: "session",
+    targetId: sessionId,
+    meta: { title },
+  });
+  return sessionId;
+}
+
 // ── Organizer session list ───────────────────────────────────────────────
 
 export type SessionParticipantRow = {

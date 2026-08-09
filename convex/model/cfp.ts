@@ -13,6 +13,7 @@ import {
 } from "./comms";
 import { slugify } from "./slugs";
 import { assertText, isEmail, normalizeEmail } from "./validation";
+import { assertEventActive } from "./reviews";
 import {
   allFields,
   visibleFields,
@@ -1250,6 +1251,127 @@ export async function getProposalDetail(
     },
     fileUrls,
   };
+}
+
+/** Abstracts-table "manual add" (M2): an organizer records a proposal that
+ * arrived outside the CFP. The organizer becomes its manager. */
+export async function createManualProposal(
+  ctx: MutationCtx,
+  caller: EventCaller,
+  args: {
+    title: string;
+    abstract?: string;
+    speakers: Array<{ firstName: string; lastName: string; email?: string }>;
+  },
+): Promise<Id<"proposals">> {
+  requireOrganizer(caller);
+  assertEventActive(caller.event);
+  const title = assertText(args.title, {
+    label: "Title",
+    max: 200,
+    code: "invalid_name",
+  });
+  if (args.speakers.length === 0 || args.speakers.length > 10) {
+    throw new ConvexError({
+      code: "invalid_submission",
+      message: "List between 1 and 10 speakers.",
+    });
+  }
+  const form = await ensureForm(ctx, caller.event._id);
+  const def = form.published ?? form.working;
+  const answers: Record<string, AnswerValue> = {};
+  const titleId = systemFieldId(def, "talkTitle");
+  if (titleId !== undefined) answers[titleId] = title;
+  const abstractId = systemFieldId(def, "abstract");
+  if (abstractId !== undefined && args.abstract !== undefined) {
+    answers[abstractId] = args.abstract;
+  }
+  const first = args.speakers[0];
+  const firstNameId = systemFieldId(def, "firstName");
+  if (firstNameId !== undefined) answers[firstNameId] = first.firstName;
+  const lastNameId = systemFieldId(def, "lastName");
+  if (lastNameId !== undefined) answers[lastNameId] = first.lastName;
+  const emailId = systemFieldId(def, "email");
+  if (emailId !== undefined && first.email !== undefined) {
+    answers[emailId] = first.email.trim().toLowerCase();
+  }
+  const now = Date.now();
+  const proposalId = await ctx.db.insert("proposals", {
+    eventId: caller.event._id,
+    submitterUserId: caller.user._id,
+    status: "pending",
+    title,
+    answers,
+    formVersion: form.version,
+    submittedAt: now,
+    updatedAt: now,
+  });
+  await Promise.all(
+    args.speakers.map((s, i) =>
+      ctx.db.insert("proposalSpeakers", {
+        proposalId,
+        eventId: caller.event._id,
+        order: i,
+        firstName: assertText(s.firstName, { label: "First name", max: 80 }),
+        lastName: assertText(s.lastName, { label: "Last name", max: 80 }),
+        email: s.email?.trim().toLowerCase() || undefined,
+        isPrimary: i === 0,
+      }),
+    ),
+  );
+  await logAudit(ctx, {
+    orgId: caller.org._id,
+    eventId: caller.event._id,
+    actorUserId: caller.user._id,
+    action: "cfp.manualAdd",
+    targetType: "proposal",
+    targetId: proposalId,
+    meta: { title },
+  });
+  return proposalId;
+}
+
+export type FileAnswerRow = {
+  proposalId: Id<"proposals">;
+  proposalTitle: string;
+  fieldLabel: string;
+  storageId: string;
+  url: string | null;
+};
+
+/** Every uploaded file across the event's proposals (file-bundle download). */
+export async function listFileAnswers(
+  ctx: QueryCtx,
+  caller: EventCaller,
+): Promise<FileAnswerRow[]> {
+  requireOrganizer(caller);
+  const form = await findForm(ctx, caller.event._id);
+  const def = form?.published ?? form?.working;
+  if (def === undefined) return [];
+  const fileFields = allFields(def).filter((f) => f.kind === "file");
+  if (fileFields.length === 0) return [];
+  const proposals = await ctx.db
+    .query("proposals")
+    .withIndex("by_eventId_and_status", (q) => q.eq("eventId", caller.event._id))
+    .take(500);
+  const rows: FileAnswerRow[] = [];
+  await Promise.all(
+    proposals.flatMap((p) =>
+      fileFields.map(async (f) => {
+        const answer = p.answers[f.id];
+        if (typeof answer === "string" && answer.length > 0) {
+          rows.push({
+            proposalId: p._id,
+            proposalTitle: p.title,
+            fieldLabel: f.label,
+            storageId: answer,
+            url: await ctx.storage.getUrl(answer as Id<"_storage">),
+          });
+        }
+      }),
+    ),
+  );
+  return rows;
 }
 
 /** Organizer grants one submitter an edit window past cfpCloseAt. */

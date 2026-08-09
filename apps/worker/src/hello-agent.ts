@@ -4,7 +4,7 @@
 // (node_modules/@flue/runtime/docs) — see CLAUDE.md "Fresh-docs-first".
 
 import { defineTool, init, useModel, useTool } from "@flue/runtime";
-import { start } from "@flue/runtime/node";
+import { ensureFlue } from "./flue";
 
 const MODEL = "openrouter/openai/gpt-5.6-luna";
 
@@ -27,15 +27,6 @@ export function HelloAgent() {
     "You are the StageStack hello agent. When asked about the current time " +
     "you MUST call the get_server_time tool and report its result verbatim."
   );
-}
-
-// Boot the embedded Flue runtime once per process, lazily, so a Flue/LLM
-// problem cannot take down the rest of the worker (e.g. ping jobs).
-// In-memory db is fine: hello-agent conversations are throwaway.
-let fluePromise: ReturnType<typeof start> | null = null;
-function ensureFlue() {
-  fluePromise ??= start({ agents: [HelloAgent] });
-  return fluePromise;
 }
 
 export async function runHelloAgent(jobId: string): Promise<unknown> {

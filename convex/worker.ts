@@ -2,6 +2,9 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { isJobType } from "./shared/jobTypes";
 import { enqueueJob } from "./model/jobs";
+import * as Imports from "./model/imports";
+import { listLibrary } from "./model/library";
+import { vPlannedRecord } from "./shared/importPlan";
 
 // Worker-facing functions, guarded by a shared secret (WORKER_SECRET env var on
 // the deployment). V1 judgment call per docs/ARCHITECTURE.md; upgrade path is a
@@ -70,6 +73,95 @@ export const finish = mutation({
       finishedAt: Date.now(),
     });
     return null;
+  },
+});
+
+// ── Import agent endpoints (secret-guarded; authority resolved from the
+// job's initiating user server-side — the worker never names a user) ──────
+
+export const importContext = query({
+  args: { secret: v.string(), jobId: v.id("jobs") },
+  returns: v.any(),
+  handler: async (ctx, args) => {
+    assertWorker(args.secret);
+    const job = await ctx.db.get("jobs", args.jobId);
+    if (job === null || job.type !== "import-plan") {
+      throw new ConvexError({ code: "not_found", message: "No such job." });
+    }
+    const payload = job.payload as {
+      eventId: string;
+      storageId: string;
+      filename: string;
+      description?: string;
+    };
+    const caller = await Imports.resolveJobCaller(
+      ctx,
+      job,
+      payload.eventId as never,
+    );
+    const [fileUrl, library, contacts, proposals] = await Promise.all([
+      ctx.storage.getUrl(payload.storageId as never),
+      listLibrary(ctx, caller.event._id),
+      ctx.db
+        .query("contacts")
+        .withIndex("by_orgId", (q) => q.eq("orgId", caller.org._id))
+        .take(500),
+      ctx.db
+        .query("proposals")
+        .withIndex("by_eventId_and_status", (q) =>
+          q.eq("eventId", caller.event._id),
+        )
+        .take(500),
+    ]);
+    return {
+      event: {
+        name: caller.event.name,
+        slug: caller.event.slug,
+        timezone: caller.event.timezone,
+      },
+      filename: payload.filename,
+      description: payload.description ?? null,
+      fileUrl,
+      tracks: library.tracks.map((t) => t.name),
+      tags: library.tags.map((t) => t.name),
+      contacts: contacts.map((c) => ({
+        firstName: c.firstName,
+        lastName: c.lastName,
+        email: c.email ?? null,
+      })),
+      proposalTitles: proposals.map((p) => p.title),
+    };
+  },
+});
+
+export const importExecuteBatch = mutation({
+  args: {
+    secret: v.string(),
+    jobId: v.id("jobs"),
+    records: v.array(vPlannedRecord),
+  },
+  returns: v.array(
+    v.object({ id: v.string(), ok: v.boolean(), detail: v.string() }),
+  ),
+  handler: async (ctx, args) => {
+    assertWorker(args.secret);
+    const job = await ctx.db.get("jobs", args.jobId);
+    if (job === null || job.type !== "import-execute") {
+      throw new ConvexError({ code: "not_found", message: "No such job." });
+    }
+    if (job.status !== "claimed" && job.status !== "running") {
+      throw new ConvexError({
+        code: "invalid_status",
+        message: "Job is not being executed.",
+      });
+    }
+    const payload = job.payload as { eventId: string };
+    const caller = await Imports.resolveJobCaller(
+      ctx,
+      job,
+      payload.eventId as never,
+    );
+    return await Imports.executeRecords(ctx, caller, args.records);
   },
 });
 
