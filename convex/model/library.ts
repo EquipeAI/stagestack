@@ -142,10 +142,10 @@ async function getScoped<T extends LibraryKind>(
   table: T,
   id: string,
 ): Promise<Doc<T>> {
-  const row = (await ctx.db.get(
-    table,
-    id as Id<T>,
-  )) as Doc<T> | null;
+  const normalized = ctx.db.normalizeId(table, id);
+  const row = normalized
+    ? ((await ctx.db.get(table, normalized as Id<T>)) as Doc<T> | null)
+    : null;
   if (row === null || row.eventId !== caller.event._id) {
     throw new ConvexError({
       code: "not_found",

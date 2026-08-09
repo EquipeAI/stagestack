@@ -283,11 +283,13 @@ export async function acceptInvitation(
 
 export async function revokeInvitation(
   ctx: MutationCtx,
-  caller: EventCaller | OrgCaller,
+  caller: EventCaller,
   invitationId: Id<"invitations">,
 ): Promise<void> {
   const invite = await ctx.db.get("invitations", invitationId);
-  if (invite === null || invite.orgId !== caller.org._id) {
+  // Scope to the caller's event, not just the org: an organizer of event A
+  // must not be able to revoke event B's invitations.
+  if (invite === null || invite.eventId !== caller.event._id) {
     throw new ConvexError({
       code: "not_found",
       message: "No such invitation.",

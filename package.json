@@ -12,12 +12,18 @@
     "build:web": "npm run build -w apps/web",
     "build:worker": "npm run build -w apps/worker",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "codegen": "convex codegen"
+    "codegen": "convex codegen",
+    "test": "vitest run"
   },
   "dependencies": {
     "@convex-dev/rate-limiter": "0.3.2",
     "@convex-dev/resend": "0.2.6",
     "convex": "1.43.0",
     "convex-helpers": "0.1.122"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "5.0.0",
+    "convex-test": "0.0.55",
+    "vitest": "4.1.10"
   }
 }
