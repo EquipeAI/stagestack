@@ -107,6 +107,22 @@ export const listProposals = eventQuery({
   },
 });
 
+export const getProposalDetail = eventQuery({
+  args: { proposalId: v.id("proposals") },
+  returns: v.object({
+    proposal: vv.doc("proposals"),
+    speakers: v.array(vv.doc("proposalSpeakers")),
+    submitter: v.object({
+      name: v.union(v.string(), v.null()),
+      email: v.union(v.string(), v.null()),
+    }),
+    fileUrls: v.record(v.string(), v.union(v.string(), v.null())),
+  }),
+  handler: async (ctx, args) => {
+    return await Cfp.getProposalDetail(ctx, ctx.caller, args.proposalId);
+  },
+});
+
 export const reopenProposal = eventMutation({
   args: { proposalId: v.id("proposals"), until: v.number() },
   returns: v.null(),

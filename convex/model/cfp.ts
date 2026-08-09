@@ -537,6 +537,51 @@ async function requirePublishedForm(
 
 // ── Proposals: submitter side ────────────────────────────────────────────
 
+/**
+ * Queue placement is an INTERNAL staged decision (MILESTONES M2): "it does not
+ * notify the submitter or reveal the outcome". Every submitter-facing
+ * projection therefore maps acceptQueue/declineQueue back to "pending" — the
+ * last status the submitter was legitimately told about. Organizer-facing
+ * reads (listProposals, reviewProgress, sessions.*) keep the true status.
+ */
+export function publicProposalStatus(status: ProposalStatus): ProposalStatus {
+  return status === "acceptQueue" || status === "declineQueue"
+    ? "pending"
+    : status;
+}
+
+/** A proposal document with its status masked for the submitter. */
+export function maskProposal(proposal: Doc<"proposals">): Doc<"proposals"> {
+  return { ...proposal, status: publicProposalStatus(proposal.status) };
+}
+
+/** Public link to a proposal's submitter-facing page. */
+export function proposalLink(
+  eventSlug: string,
+  proposalId: Id<"proposals">,
+): string {
+  return `${siteUrl()}/cfp/${eventSlug}/proposal/${proposalId}`;
+}
+
+/** The proposal's abstract answer, resolved through the published form's
+ * `abstract` system field. Used when accepting a proposal materialises its
+ * session (M2). */
+export async function proposalAbstract(
+  ctx: QueryCtx,
+  proposal: Doc<"proposals">,
+): Promise<string | undefined> {
+  const form = await findForm(ctx, proposal.eventId);
+  const def = form?.published ?? form?.working;
+  const id =
+    def === undefined
+      ? "abstract"
+      : (systemFieldId(def, "abstract") ?? "abstract");
+  const value = proposal.answers[id];
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 export async function startProposal(
   ctx: MutationCtx,
   user: Doc<"users">,
@@ -595,13 +640,65 @@ export async function requireOwnProposal(
   return proposal;
 }
 
+/** Statuses a submitter may still edit. The decision queues are included on
+ * purpose: staging is internal, so it must not silently lock the submitter out
+ * — editing stays possible right up to the release. */
+const EDITABLE_STATUSES: ReadonlySet<ProposalStatus> = new Set<ProposalStatus>([
+  "draft",
+  "pending",
+  "acceptQueue",
+  "declineQueue",
+]);
+
 function assertEditableStatus(proposal: Doc<"proposals">): void {
-  if (proposal.status !== "draft" && proposal.status !== "pending") {
+  if (!EDITABLE_STATUSES.has(proposal.status)) {
     throw new ConvexError({
       code: "not_editable",
       message: "This proposal can no longer be edited.",
     });
   }
+}
+
+/**
+ * An edit to a queued proposal invalidates the staged decision: the organizer
+ * queued a verdict about a different version of it. Reset to "pending" (which
+ * is what the submitter sees either way) and tell the organizers, so the
+ * proposal reappears in the undecided pile instead of being released on the
+ * strength of a stale read. Returns the status it was reset from, if any.
+ */
+async function unstageOnEdit(
+  ctx: MutationCtx,
+  proposal: Doc<"proposals">,
+  event: Doc<"events">,
+  title: string,
+): Promise<ProposalStatus | null> {
+  if (proposal.status !== "acceptQueue" && proposal.status !== "declineQueue") {
+    return null;
+  }
+  const from = proposal.status;
+  await ctx.db.patch("proposals", proposal._id, { status: "pending" });
+  await notifyOrganizers(ctx, event, {
+    kind: "cfp.adminNotification",
+    subject: `Updated proposal for ${event.name}: ${title}`,
+    html: emailShell(
+      [
+        `<p>A proposal you had staged for a decision was updated by its submitter, so it moved back to <strong>Pending</strong>.</p>`,
+        `<p><strong>${escapeHtml(title)}</strong></p>`,
+        `<p><a href="${eventConsoleLink(event.slug)}">Review it in StageStack</a></p>`,
+      ].join("\n"),
+    ),
+    context: { proposalId: proposal._id, stagedDecisionCleared: true },
+  });
+  await logAudit(ctx, {
+    orgId: event.orgId,
+    eventId: event._id,
+    actorUserId: proposal.submitterUserId,
+    action: "decision.unstaged",
+    targetType: "proposal",
+    targetId: proposal._id,
+    meta: { from, reason: "submitter_edit" },
+  });
+  return from;
 }
 
 /**
@@ -651,7 +748,8 @@ export async function getMyProposal(
   const { def, version } = await requirePublishedForm(ctx, event);
   const speakers = await listSpeakers(ctx, proposal._id);
   return {
-    proposal,
+    // Staged decisions stay invisible to the submitter (see maskProposal).
+    proposal: maskProposal(proposal),
     speakers,
     form: def,
     formVersion: version,
@@ -701,7 +799,11 @@ export async function myProposals(
   for (const proposal of rows) {
     const event = await ctx.db.get("events", proposal.eventId);
     if (event === null) continue;
-    out.push({ proposal, eventName: event.name, eventSlug: event.slug });
+    out.push({
+      proposal: maskProposal(proposal),
+      eventName: event.name,
+      eventSlug: event.slug,
+    });
   }
   return out;
 }
@@ -781,11 +883,13 @@ export async function saveAnswers(
     assertAnswerShape(field, value);
   }
 
+  const title = titleFromAnswers(def, answers);
   await ctx.db.patch("proposals", proposal._id, {
     answers,
-    title: titleFromAnswers(def, answers),
+    title,
     updatedAt: Date.now(),
   });
+  await unstageOnEdit(ctx, proposal, event, title);
 }
 
 // ── Speakers ─────────────────────────────────────────────────────────────
@@ -814,7 +918,7 @@ export async function setSpeakers(
   proposalId: Id<"proposals">,
   speakers: SpeakerInput[],
 ): Promise<void> {
-  const { proposal } = await loadEditableProposal(ctx, user, proposalId);
+  const { proposal, event } = await loadEditableProposal(ctx, user, proposalId);
 
   if (speakers.length > MAX_SPEAKERS) {
     throw new ConvexError({
@@ -859,13 +963,10 @@ export async function setSpeakers(
     });
   }
   await ctx.db.patch("proposals", proposal._id, { updatedAt: Date.now() });
+  await unstageOnEdit(ctx, proposal, event, proposal.title);
 }
 
 // ── Submit ───────────────────────────────────────────────────────────────
-
-function proposalLink(eventSlug: string, proposalId: Id<"proposals">): string {
-  return `${siteUrl()}/cfp/${eventSlug}/proposal/${proposalId}`;
-}
 
 function eventConsoleLink(eventSlug: string): string {
   return `${siteUrl()}/app/e/${eventSlug}`;
@@ -904,7 +1005,21 @@ export async function submitProposal(
   }
 
   const now = Date.now();
-  const isResubmit = proposal.status === "pending";
+  const isResubmit = proposal.status !== "draft";
+  // Resubmitting a queued proposal invalidates the staged decision exactly as
+  // an edit does; the organizer notification below already reads as an update,
+  // so only the audit row is added here.
+  if (proposal.status === "acceptQueue" || proposal.status === "declineQueue") {
+    await logAudit(ctx, {
+      orgId: event.orgId,
+      eventId: event._id,
+      actorUserId: user._id,
+      action: "decision.unstaged",
+      targetType: "proposal",
+      targetId: proposal._id,
+      meta: { from: proposal.status, reason: "submitter_resubmit" },
+    });
+  }
   await ctx.db.patch("proposals", proposal._id, {
     status: "pending",
     // First submission time is the record; resubmits move updatedAt only.
@@ -1081,6 +1196,60 @@ export async function listProposals(
   }));
   // by_eventId_and_status orders by status first; present newest-first overall.
   return out.sort((a, b) => b.proposal._creationTime - a.proposal._creationTime);
+}
+
+export type ProposalDetail = {
+  proposal: Doc<"proposals">;
+  speakers: Array<Doc<"proposalSpeakers">>;
+  submitter: { name: string | null; email: string | null };
+  /** Signed download URLs for file-kind answers, keyed by storage id. */
+  fileUrls: Record<string, string | null>;
+};
+
+/** Organizer view of one proposal: full answers, speakers, submitter, and
+ * download URLs for uploaded files. True (unmasked) status. */
+export async function getProposalDetail(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  proposalId: Id<"proposals">,
+): Promise<ProposalDetail> {
+  requireOrganizer(caller);
+  const proposal = await ctx.db.get("proposals", proposalId);
+  if (proposal === null || proposal.eventId !== caller.event._id) {
+    notFound("proposal", "No such proposal on this event.");
+  }
+  const [speakers, submitterUser, form] = await Promise.all([
+    ctx.db
+      .query("proposalSpeakers")
+      .withIndex("by_proposalId", (q) => q.eq("proposalId", proposalId))
+      .take(20),
+    ctx.db.get("users", proposal.submitterUserId),
+    findForm(ctx, caller.event._id),
+  ]);
+  const def = form?.published ?? form?.working;
+  const fileUrls: Record<string, string | null> = {};
+  if (def !== undefined) {
+    const fileFields = allFields(def).filter((f) => f.kind === "file");
+    await Promise.all(
+      fileFields.map(async (f) => {
+        const answer = proposal.answers[f.id];
+        if (typeof answer === "string" && answer.length > 0) {
+          fileUrls[answer] = await ctx.storage.getUrl(
+            answer as Id<"_storage">,
+          );
+        }
+      }),
+    );
+  }
+  return {
+    proposal,
+    speakers: speakers.sort((a, b) => a.order - b.order),
+    submitter: {
+      name: submitterUser?.name ?? null,
+      email: submitterUser?.email ?? null,
+    },
+    fileUrls,
+  };
 }
 
 /** Organizer grants one submitter an edit window past cfpCloseAt. */
