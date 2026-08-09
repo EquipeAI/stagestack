@@ -38,6 +38,11 @@ export const Route = createRootRouteWithContext<{
       {
         title: 'StageStack',
       },
+      {
+        name: 'theme-color',
+        // eslint-disable-next-line no-restricted-syntax -- <meta> needs a literal; matches --gray-900
+        content: '#131920',
+      },
     ],
     links: [
       { rel: 'stylesheet', href: appCss },
@@ -46,6 +51,7 @@ export const Route = createRootRouteWithContext<{
         sizes: '180x180',
         href: '/apple-touch-icon.png',
       },
+      { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
       {
         rel: 'icon',
         type: 'image/png',
@@ -58,8 +64,8 @@ export const Route = createRootRouteWithContext<{
         sizes: '16x16',
         href: '/favicon-16x16.png',
       },
-      { rel: 'manifest', href: '/site.webmanifest', color: '#fffff' },
-      { rel: 'icon', href: '/favicon.ico' },
+      { rel: 'manifest', href: '/site.webmanifest' },
+      { rel: 'icon', sizes: '48x48', href: '/favicon.ico' },
     ],
   }),
   beforeLoad: async (ctx) => {

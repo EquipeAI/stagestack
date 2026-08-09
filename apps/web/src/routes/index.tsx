@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
 import { Show, SignInButton, UserButton } from '@clerk/tanstack-react-start'
 import { api } from '@convex/_generated/api'
+import { Badge, Button, Card, Logo } from '~/ds'
 
 export const Route = createFileRoute('/')({
   component: Home,
@@ -10,36 +11,49 @@ export const Route = createFileRoute('/')({
 function Home() {
   const viewer = useQuery(api.auth.viewer)
   return (
-    <main className="mx-auto max-w-2xl p-8 space-y-6">
-      <h1 className="text-3xl font-bold">StageStack</h1>
-      <p className="text-neutral-500">
+    <main
+      style={{
+        maxWidth: 'var(--content-max-prose)',
+        margin: '0 auto',
+        padding: 'var(--pad-section) var(--page-gutter)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-6)',
+      }}
+    >
+      <Logo size={24} />
+      <p style={{ color: 'var(--text-secondary)' }}>
         Open source speaker &amp; content management for events.
       </p>
-      <div className="flex items-center gap-4">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-4)' }}>
         <Show when="signed-out">
           <SignInButton mode="modal">
-            <button className="rounded bg-black px-4 py-2 text-white">
-              Sign in
-            </button>
+            <Button variant="primary">Sign in</Button>
           </SignInButton>
         </Show>
         <Show when="signed-in">
           <UserButton />
         </Show>
       </div>
-      <section className="rounded border p-4 text-sm">
-        <h2 className="mb-2 font-semibold">Auth round-trip (walking skeleton)</h2>
+      <Card title="Auth round-trip" subtitle="Walking skeleton">
         {viewer === undefined ? (
-          <p>Loading…</p>
+          <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>
         ) : viewer === null ? (
-          <p>Convex sees you as: anonymous</p>
+          <p>
+            Convex sees you as: <Badge tone="neutral">anonymous</Badge>
+          </p>
         ) : (
           <p>
-            Convex sees you as: {viewer.name ?? viewer.subject}
-            {viewer.email ? ` (${viewer.email})` : null}
+            Convex sees you as:{' '}
+            <Badge tone="success" dot>
+              {viewer.name ?? viewer.subject}
+            </Badge>
+            {viewer.email ? (
+              <span style={{ color: 'var(--text-tertiary)' }}> ({viewer.email})</span>
+            ) : null}
           </p>
         )}
-      </section>
+      </Card>
     </main>
   )
 }

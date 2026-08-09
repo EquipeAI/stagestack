@@ -1,0 +1,16 @@
+/* StageStack Design System — global entry point. Consumers link this one file.
+   (Imports use string form rather than url() so Tailwind v4 / Vite inline them.) */
+@import "./tokens/fonts.css";
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/radius.css";
+@import "./tokens/elevation.css";
+@import "./tokens/motion.css";
+@import "./tokens/layout.css";
+@import "./tokens/base.css";
+@import "./components/core/core.css";
+@import "./components/forms/forms.css";
+@import "./components/layout/layout.css";
+@import "./components/feedback/feedback.css";
+@import "./components/navigation/navigation.css";

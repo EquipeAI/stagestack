@@ -1,0 +1,31 @@
+:root{
+  /* 4px base grid. --space-1 is the smallest step used in product density. */
+  --space-px:1px;
+  --space-0:0px;
+  --space-half:2px;
+  --space-1:4px;
+  --space-2:8px;
+  --space-3:12px;
+  --space-4:16px;
+  --space-5:20px;
+  --space-6:24px;
+  --space-7:28px;
+  --space-8:32px;
+  --space-10:40px;
+  --space-12:48px;
+  --space-16:64px;
+  --space-20:80px;
+  --space-24:96px;
+  --space-32:128px;
+
+  /* Density roles */
+  --pad-control-x:12px;
+  --pad-control-y:7px;
+  --pad-card:20px;
+  --pad-section:32px;
+  --gap-inline:8px;
+  --gap-stack:12px;
+  --row-height-sm:32px;
+  --row-height-md:38px;
+  --row-height-lg:44px;
+}

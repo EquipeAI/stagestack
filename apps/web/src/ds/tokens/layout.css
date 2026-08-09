@@ -1,0 +1,16 @@
+:root{
+  --sidebar-width:236px;
+  --sidebar-width-collapsed:56px;
+  --topbar-height:52px;
+  --subbar-height:44px;
+  --content-max:1180px;
+  --content-max-prose:68ch;
+  --page-gutter:24px;
+  --page-gutter-wide:48px;
+  --z-base:0; /* @kind other */
+  --z-sticky:100; /* @kind other */
+  --z-dropdown:200; /* @kind other */
+  --z-overlay:300; /* @kind other */
+  --z-modal:400; /* @kind other */
+  --z-toast:500; /* @kind other */
+}

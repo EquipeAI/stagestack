@@ -1,0 +1,34 @@
+.ss-callout{display:flex;gap:10px;padding:12px 14px;border-radius:var(--radius-card);border:1px solid;font:var(--type-body)}
+.ss-callout__body{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}
+.ss-callout__title{font-weight:var(--weight-medium)}
+.ss-callout__actions{display:flex;gap:var(--space-2);margin-top:6px}
+.ss-callout--neutral{background:var(--surface-canvas);border-color:var(--border-default);color:var(--text-primary)}
+.ss-callout--info{background:var(--status-info-bg);border-color:var(--beam-100);color:var(--status-info-fg)}
+.ss-callout--success{background:var(--status-success-bg);border-color:var(--jade-100);color:var(--status-success-fg)}
+.ss-callout--attention{background:var(--status-attention-bg);border-color:var(--ember-100);color:var(--status-attention-fg)}
+.ss-callout--blocked{background:var(--status-blocked-bg);border-color:var(--rust-100);color:var(--status-blocked-fg)}
+.ss-callout--agent{background:var(--status-agent-bg);border-color:var(--iris-100);color:var(--status-agent-fg)}
+.ss-toast{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:var(--radius-card);background:var(--gray-900);color:var(--gray-25);box-shadow:var(--shadow-lg);font:var(--type-body);min-width:300px;max-width:420px}
+.ss-toast__title{font-weight:var(--weight-medium)}
+.ss-toast__desc{color:var(--gray-400);font-size:var(--text-sm);margin-top:2px}
+.ss-toast__action{margin-left:auto;background:none;border:0;color:var(--amber-300);font:var(--type-label);cursor:pointer;padding:0}
+.ss-toast__action:hover{color:var(--amber-200)}
+.ss-tooltip{position:relative;display:inline-flex}
+.ss-tooltip__bubble{position:absolute;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);background:var(--gray-900);color:var(--gray-25);font:var(--type-caption);padding:5px 8px;border-radius:var(--radius-sm);white-space:nowrap;box-shadow:var(--shadow-md);opacity:0;pointer-events:none;transition:opacity var(--duration-fast) var(--ease-standard),transform var(--duration-fast) var(--ease-standard);z-index:var(--z-dropdown)}
+.ss-tooltip:hover .ss-tooltip__bubble,.ss-tooltip:focus-within .ss-tooltip__bubble{opacity:1;transform:translateX(-50%) translateY(-1px)}
+.ss-dialog-host{position:relative;transform:translateZ(0);overflow:hidden}
+.ss-dialog-host .ss-dialog__scrim{position:absolute}
+.ss-dialog__scrim{position:fixed;inset:0;background:var(--surface-overlay);display:flex;align-items:center;justify-content:center;padding:var(--space-6);z-index:var(--z-modal);animation:ss-fade var(--duration-normal) var(--ease-out)}
+.ss-dialog{background:var(--surface-card);border-radius:var(--radius-surface);box-shadow:var(--shadow-xl);width:100%;display:flex;flex-direction:column;max-height:86vh;animation:ss-pop var(--duration-normal) var(--ease-out)}
+.ss-dialog__header{display:flex;align-items:flex-start;gap:var(--space-4);padding:var(--space-5) var(--space-5) var(--space-3)}
+.ss-dialog__title{font:var(--type-title-3);letter-spacing:var(--tracking-tight)}
+.ss-dialog__desc{font:var(--type-body);color:var(--text-secondary);margin-top:5px}
+.ss-dialog__body{padding:0 var(--space-5) var(--space-5);overflow:auto}
+.ss-dialog__footer{display:flex;align-items:center;justify-content:flex-end;gap:var(--space-2);padding:14px var(--space-5);border-top:1px solid var(--border-subtle);background:var(--surface-canvas);border-radius:0 0 var(--radius-surface) var(--radius-surface)}
+@keyframes ss-fade{from{opacity:0}to{opacity:1}}
+@keyframes ss-pop{from{opacity:0;transform:translateY(6px) scale(0.985)}to{opacity:1;transform:none}}
+.ss-meter{display:flex;flex-direction:column;gap:6px}
+.ss-meter__head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);font:var(--type-caption);color:var(--text-tertiary)}
+.ss-meter__value{font-family:var(--font-mono);font-variant-numeric:tabular-nums;color:var(--text-secondary)}
+.ss-meter__track{height:6px;border-radius:var(--radius-full);background:var(--surface-sunken);overflow:hidden;display:flex}
+.ss-meter__seg{height:100%;transition:width var(--duration-slow) var(--ease-out)}

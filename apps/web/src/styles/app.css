@@ -1,11 +1,10 @@
 @import 'tailwindcss';
 
-@layer base {
-  html,
-  body {
-    @apply text-gray-900 bg-gray-50 dark:bg-gray-950 dark:text-gray-200;
-  }
+/* StageStack Design System — tokens, base styles and component CSS.
+   Unlayered, so it wins over Tailwind's layered preflight. */
+@import '../ds/styles.css';
 
+@layer base {
   .using-mouse * {
     outline: none !important;
   }
