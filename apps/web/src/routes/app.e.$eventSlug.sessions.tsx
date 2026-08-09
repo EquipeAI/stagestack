@@ -19,6 +19,7 @@ import {
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
+import { SessionPortalDialog } from '~/components/portal/SessionPortalDialog'
 
 // The event's sessions (M2). A session is what a proposal becomes once it is
 // accepted, or what a directly invited speaker is invited to — scheduling
@@ -49,6 +50,7 @@ function Sessions() {
     isOrganizer ? { eventSlug } : 'skip',
   )
   const [inviting, setInviting] = useState(false)
+  const [portalFor, setPortalFor] = useState<string | null>(null)
   const archived = event?.event.archivedAt !== undefined
 
   if (event === undefined) {
@@ -72,6 +74,7 @@ function Sessions() {
     ...row,
     id: row.session._id,
   }))
+  const portalRow = rows.find((row) => row.session._id === portalFor) ?? null
   const inviteButton = (
     <Button
       variant="primary"
@@ -218,10 +221,37 @@ function Sessions() {
                     </span>
                   ),
               },
+              {
+                key: 'portal',
+                header: 'Speaker portal',
+                width: '10rem',
+                cell: (row: Row) => (
+                  <Button
+                    size="sm"
+                    iconLeft="mic-vocal"
+                    onClick={() => {
+                      setPortalFor(row.session._id)
+                    }}
+                  >
+                    Manage
+                  </Button>
+                ),
+              },
             ]}
             rows={rows}
           />
         </Card>
+      )}
+
+      {portalRow === null ? null : (
+        <SessionPortalDialog
+          eventSlug={eventSlug}
+          row={portalRow}
+          archived={archived}
+          onClose={() => {
+            setPortalFor(null)
+          }}
+        />
       )}
 
       {inviting ? (

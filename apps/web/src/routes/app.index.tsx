@@ -20,6 +20,7 @@ import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
 import { browserTimezone, formatDateTime } from '~/lib/datetime'
 import { PROPOSAL_STATUS_LABEL } from '~/components/cfp/model'
+import { PARTICIPANT_STATE_LABEL } from '~/components/portal/model'
 
 export const Route = createFileRoute('/app/')({
   component: Home,
@@ -42,6 +43,7 @@ function Home() {
       <PageBody narrow>
         <Onboarding />
         <MyProposals />
+        <MySpeaking />
       </PageBody>
     )
   }
@@ -114,6 +116,7 @@ function Home() {
         </section>
       ))}
       <MyProposals />
+      <MySpeaking />
       {creating ? <NewOrgDialog onClose={() => setCreating(false)} /> : null}
     </PageBody>
   )
@@ -186,6 +189,72 @@ function MyProposals() {
                 }}
               >
                 Updated {formatDateTime(row.proposal.updatedAt, zone)}
+              </span>
+            </Card>
+          </Link>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+/**
+ * Sessions this person is speaking at, across every event — the other half of
+ * the speaker's hat. Same rule as My proposals: it only appears when there is
+ * something in it, so an organizer never sees an empty band.
+ */
+function MySpeaking() {
+  const speaking = useQuery(api.portal.mySpeaking, {})
+
+  if (speaking === undefined || speaking.length === 0) return null
+
+  return (
+    <section
+      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+        <h2
+          style={{
+            font: 'var(--type-heading)',
+            color: 'var(--text-primary)',
+            margin: 'var(--space-0)',
+          }}
+        >
+          Speaking
+        </h2>
+        <span
+          style={{
+            marginLeft: 'auto',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--text-xs)',
+            color: 'var(--text-tertiary)',
+          }}
+        >
+          {speaking.length} session{speaking.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      <div
+        style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}
+      >
+        {speaking.map((row, index) => (
+          <Link
+            key={`${row.eventSlug}-${row.sessionTitle}-${index}`}
+            to="/portal/$eventSlug"
+            params={{ eventSlug: row.eventSlug }}
+            style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
+          >
+            <Card
+              variant="interactive"
+              title={row.sessionTitle}
+              subtitle={row.eventName}
+              actions={
+                <StatusPill status={PARTICIPANT_STATE_LABEL[row.state]} />
+              }
+            >
+              <span style={{ color: 'var(--text-tertiary)' }}>
+                {row.state === 'awaiting'
+                  ? 'The organizers are waiting for your answer — open your speaker portal.'
+                  : 'Open your speaker portal to update your profile or answer.'}
               </span>
             </Card>
           </Link>

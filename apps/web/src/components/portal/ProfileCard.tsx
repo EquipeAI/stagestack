@@ -1,0 +1,390 @@
+import { useEffect, useState } from 'react'
+import { useMutation } from 'convex/react'
+import { api } from '@convex/_generated/api'
+import { optionalText, personName } from './model'
+import type { Id } from '@convex/_generated/dataModel'
+import type * as React from 'react'
+import type { PortalProfile } from './model'
+import {
+  Avatar,
+  Button,
+  Callout,
+  Card,
+  Field,
+  Input,
+  Textarea,
+} from '~/ds'
+import { usePending } from '~/lib/usePending'
+import { errorMessage } from '~/lib/errors'
+import { pushToast } from '~/components/toast'
+import {
+  ActionError,
+  ButtonRow,
+  FieldRow,
+  PreviewLock,
+} from '~/components/portal/PortalChrome'
+
+// Self-editing the publishable profile — the portal's second job, and the one
+// organizers otherwise do by hand from email threads.
+//
+// `portal.updateMyProfile` takes the WHOLE profile: an omitted optional is a
+// removal, so every field is prefilled from the current snapshot and every
+// save sends all of them.
+
+type Draft = {
+  firstName: string
+  lastName: string
+  tagline: string
+  bio: string
+  website: string
+  twitter: string
+  linkedin: string
+  github: string
+}
+
+function draftFrom(profile: PortalProfile): Draft {
+  return {
+    firstName: profile.firstName,
+    lastName: profile.lastName,
+    tagline: profile.tagline ?? '',
+    bio: profile.bio ?? '',
+    website: profile.links?.website ?? '',
+    twitter: profile.links?.twitter ?? '',
+    linkedin: profile.links?.linkedin ?? '',
+    github: profile.links?.github ?? '',
+  }
+}
+
+/** Server identity of the row, so a reactive update re-seeds the form. */
+function serverKey(profile: PortalProfile): string {
+  return JSON.stringify([
+    profile._id,
+    profile.firstName,
+    profile.lastName,
+    profile.tagline,
+    profile.bio,
+    profile.headshotId,
+    profile.links,
+  ])
+}
+
+export function ProfileCard({
+  eventSlug,
+  profile,
+  readOnly,
+  children,
+}: {
+  eventSlug: string
+  profile: PortalProfile
+  readOnly: boolean
+  /** The sessions this snapshot speaks at — listed so the scope is obvious. */
+  children?: React.ReactNode
+}) {
+  const updateProfile = useMutation(api.portal.updateMyProfile)
+  const generateUploadUrl = useMutation(api.portal.generateHeadshotUploadUrl)
+  const { pending, error, setError, run } = usePending()
+
+  const key = serverKey(profile)
+  const [draft, setDraft] = useState<Draft>(() => draftFrom(profile))
+  const [headshotId, setHeadshotId] = useState<Id<'_storage'> | undefined>(
+    profile.headshotId,
+  )
+  const [localPhoto, setLocalPhoto] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+
+  // The snapshot is live: an organizer edit, or our own save, re-seeds the form.
+  useEffect(() => {
+    setDraft(draftFrom(profile))
+    setHeadshotId(profile.headshotId)
+    setLocalPhoto(null)
+  }, [key])
+
+  const patch = (values: Partial<Draft>) => {
+    setDraft((current) => ({ ...current, ...values }))
+  }
+
+  const dirty =
+    JSON.stringify(draft) !== JSON.stringify(draftFrom(profile)) ||
+    headshotId !== profile.headshotId
+
+  const upload = async (file: File) => {
+    setUploading(true)
+    setError(null)
+    try {
+      const url = await generateUploadUrl({
+        eventSlug,
+        eventContactId: profile._id,
+      })
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      })
+      if (!res.ok) throw new Error('Upload failed.')
+      const { storageId } = (await res.json()) as { storageId: Id<'_storage'> }
+      setHeadshotId(storageId)
+      setLocalPhoto(URL.createObjectURL(file))
+    } catch (err) {
+      setError(errorMessage(err, 'That photo could not be uploaded.'))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const save = () => {
+    if (draft.firstName.trim().length === 0) {
+      return setError('Your first name is required — it is how you are listed.')
+    }
+    const links = {
+      website: optionalText(draft.website),
+      twitter: optionalText(draft.twitter),
+      linkedin: optionalText(draft.linkedin),
+      github: optionalText(draft.github),
+    }
+    const anyLink = Object.values(links).some((value) => value !== undefined)
+    void run(async () => {
+      await updateProfile({
+        eventSlug,
+        eventContactId: profile._id,
+        profile: {
+          firstName: draft.firstName.trim(),
+          lastName: draft.lastName.trim(),
+          tagline: optionalText(draft.tagline),
+          bio: optionalText(draft.bio),
+          links: anyLink ? links : undefined,
+          headshotId,
+        },
+      })
+      pushToast(
+        'Profile saved',
+        'The organizers see this version now, and your reusable profile was refreshed.',
+        'check',
+      )
+    })
+  }
+
+  const idBase = `profile-${profile._id}`
+  const disabled = readOnly || pending || uploading
+  const photo = localPhoto ?? profile.headshotUrl ?? undefined
+
+  return (
+    <Card
+      title={personName(profile) || 'Your speaker profile'}
+      subtitle="This is exactly what the organizers can publish for this event. It also updates your reusable profile for future events."
+      actions={<Avatar name={personName(profile)} src={photo} size={44} />}
+      footer={
+        <ButtonRow>
+          <span
+            style={{
+              font: 'var(--type-caption)',
+              color: 'var(--text-tertiary)',
+              marginRight: 'auto',
+            }}
+          >
+            {readOnly
+              ? 'Read-only preview'
+              : dirty
+                ? 'Unsaved changes'
+                : 'Saved'}
+          </span>
+          {readOnly ? (
+            <PreviewLock>
+              <Button variant="primary" disabled>
+                Save profile
+              </Button>
+            </PreviewLock>
+          ) : (
+            <Button
+              variant="primary"
+              disabled={disabled || !dirty}
+              onClick={save}
+            >
+              {pending ? 'Saving…' : 'Save profile'}
+            </Button>
+          )}
+        </ButtonRow>
+      }
+    >
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
+      >
+        <ActionError error={error} />
+
+        {children}
+
+        <FieldRow>
+          <Field label="First name" htmlFor={`${idBase}-first`} required>
+            <Input
+              id={`${idBase}-first`}
+              value={draft.firstName}
+              disabled={disabled}
+              autoComplete="given-name"
+              onChange={(e) => {
+                patch({ firstName: e.target.value })
+              }}
+            />
+          </Field>
+          <Field label="Last name" htmlFor={`${idBase}-last`}>
+            <Input
+              id={`${idBase}-last`}
+              value={draft.lastName}
+              disabled={disabled}
+              autoComplete="family-name"
+              onChange={(e) => {
+                patch({ lastName: e.target.value })
+              }}
+            />
+          </Field>
+        </FieldRow>
+
+        <Field
+          label="Tagline"
+          htmlFor={`${idBase}-tagline`}
+          hint="One line: role and company, as it should appear in the program."
+        >
+          <Input
+            id={`${idBase}-tagline`}
+            value={draft.tagline}
+            disabled={disabled}
+            autoComplete="off"
+            placeholder="Head of Platform, Example"
+            onChange={(e) => {
+              patch({ tagline: e.target.value })
+            }}
+          />
+        </Field>
+
+        <Field
+          label="Bio"
+          htmlFor={`${idBase}-bio`}
+          hint="Written in the third person reads best in a program."
+        >
+          <Textarea
+            id={`${idBase}-bio`}
+            rows={6}
+            value={draft.bio}
+            disabled={disabled}
+            onChange={(e) => {
+              patch({ bio: e.target.value })
+            }}
+          />
+        </Field>
+
+        <Field
+          label="Headshot"
+          hint="Square images crop best. Where a headshot is missing, your initials are used."
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-4)',
+              flexWrap: 'wrap',
+            }}
+          >
+            <Avatar name={personName(profile)} src={photo} size={64} />
+            {readOnly ? (
+              <PreviewLock>
+                <Button size="sm" iconLeft="upload" disabled>
+                  Upload a photo
+                </Button>
+              </PreviewLock>
+            ) : uploading || pending ? (
+              <Button size="sm" iconLeft="upload" disabled>
+                {uploading ? 'Uploading…' : 'Upload a photo'}
+              </Button>
+            ) : (
+              <Button as="label" size="sm" iconLeft="upload">
+                <input
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    e.target.value = ''
+                    if (file !== undefined) void upload(file)
+                  }}
+                />
+                {photo === undefined ? 'Upload a photo' : 'Replace photo'}
+              </Button>
+            )}
+            {photo !== undefined && !readOnly ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                iconLeft="trash-2"
+                disabled={disabled}
+                onClick={() => {
+                  setHeadshotId(undefined)
+                  setLocalPhoto(null)
+                }}
+              >
+                Remove photo
+              </Button>
+            ) : null}
+          </div>
+        </Field>
+
+        {localPhoto !== null ? (
+          <Callout tone="info" title="Photo ready to save">
+            The new photo is uploaded but not attached yet — save the profile to
+            put it in front of the organizers.
+          </Callout>
+        ) : null}
+
+        <FieldRow>
+          <Field label="Website" htmlFor={`${idBase}-website`}>
+            <Input
+              id={`${idBase}-website`}
+              type="url"
+              placeholder="https://"
+              value={draft.website}
+              disabled={disabled}
+              autoComplete="off"
+              onChange={(e) => {
+                patch({ website: e.target.value })
+              }}
+            />
+          </Field>
+          <Field label="LinkedIn" htmlFor={`${idBase}-linkedin`}>
+            <Input
+              id={`${idBase}-linkedin`}
+              value={draft.linkedin}
+              disabled={disabled}
+              autoComplete="off"
+              onChange={(e) => {
+                patch({ linkedin: e.target.value })
+              }}
+            />
+          </Field>
+          <Field label="X" htmlFor={`${idBase}-twitter`}>
+            <Input
+              id={`${idBase}-twitter`}
+              value={draft.twitter}
+              disabled={disabled}
+              autoComplete="off"
+              onChange={(e) => {
+                patch({ twitter: e.target.value })
+              }}
+            />
+          </Field>
+          <Field label="GitHub" htmlFor={`${idBase}-github`}>
+            <Input
+              id={`${idBase}-github`}
+              value={draft.github}
+              disabled={disabled}
+              autoComplete="off"
+              onChange={(e) => {
+                patch({ github: e.target.value })
+              }}
+            />
+          </Field>
+        </FieldRow>
+      </div>
+    </Card>
+  )
+}
