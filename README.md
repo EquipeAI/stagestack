@@ -84,8 +84,8 @@ Three setup notes:
 
 Tests: `npm test` (Vitest against the Convex functions via `convex-test`).
 
-Deploying: a push to `main` builds the frontend and pushes the Convex backend
-in one step. The live topology, env-var matrix and the deploy gotchas worth
+Deploying: work on `develop`, merge to `staging`, then to `main`. Each branch
+builds the frontend and pushes its own Convex backend in one step. The live topology, env-var matrix and the deploy gotchas worth
 knowing before you touch prod are in
 [ARCHITECTURE.md → Deploying](docs/ARCHITECTURE.md#deploying).
 

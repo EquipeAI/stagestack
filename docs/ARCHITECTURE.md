@@ -108,11 +108,27 @@ stagestack/
 
   **Live topology** (verified Aug 2026 — deployment names are not secrets, the keys behind them are):
 
-  | Vercel env | Convex deployment | Clerk instance | Notes |
-  |---|---|---|---|
-  | Production (`stagestack.dev`) | `prod:healthy-lynx-620` | production (`pk_live`, issuer `https://clerk.stagestack.dev`) | The real thing. |
-  | Preview (PR builds) | `dev:scintillating-heron-597` | development (`pk_test`) | Deliberately *not* prod: a preview build must never write to production data. |
-  | Development (`vercel dev`) | `dev:scintillating-heron-597` | development (`pk_test`) | Matches local `.env.local`. |
+  | Branch | Vercel env | Convex deployment | Clerk | URL |
+  |---|---|---|---|---|
+  | `main` | Production | `prod:healthy-lynx-620` | production (`pk_live`, issuer `https://clerk.stagestack.dev`) | `stagestack.dev` |
+  | `staging` | `staging` (custom env) | `staging` = `charming-mosquito-897` | development (`pk_test`) | `staging.stagestack.dev` |
+  | `develop` | Preview, pinned to the branch | `develop` = `marvelous-snail-907` | development (`pk_test`) | `stagestack-git-develop-equipe-ai.vercel.app` |
+  | any other branch | Preview | *none* — frontend only, reads `dev:scintillating-heron-597` | development (`pk_test`) | per-deployment URL |
+  | — | Development (`vercel dev`) | `dev:scintillating-heron-597` | development (`pk_test`) | localhost |
+
+  `staging` and `develop` are **prod-type Convex deployments inside the same
+  project** (`npx convex deployment create <name> --type prod`), not preview
+  deployments: preview deployments are beta and temporary, and staging is
+  supposed to be the thing you trust right before prod. They have their own
+  data, their own env vars, and nothing expires them.
+
+  Staging and develop share the **development** Clerk instance, so they also
+  share its user pool with local dev — a test user created on staging shows up
+  in dev. That is the trade for not paying for a third Clerk instance.
+
+  `staging.stagestack.dev` is behind Vercel's deployment protection (team SSO).
+  Automation gets through with the `x-vercel-protection-bypass` header; the
+  token is in the project's Protection Bypass settings.
 
   Local `npm run dev` uses the dev deployment via root `.env.local`; nothing local touches prod.
 - Env vars — the authoritative, commented list is [`.env.example`](../.env.example) (every variable the code actually reads, grouped by where it has to be set). Summary:
@@ -120,7 +136,7 @@ stagestack/
   | Where | Variables | Notes |
   |---|---|---|
   | Convex deployment (`npx convex env set`) | `CLERK_JWT_ISSUER_DOMAIN`, `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `RESEND_TEST_MODE`, `MAIL_FROM`, `SITE_URL`, `WORKER_SECRET` | `RESEND_TEST_MODE`/`MAIL_FROM` per the Email section above. Without `SITE_URL` every emailed link points at `https://stagestack.dev`. |
-  | Vercel project | `VITE_CONVEX_URL`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` (all three scopes) + `CONVEX_DEPLOY_KEY` (Production only) | Set per-scope. `CLERK_SECRET_KEY` used to be one entry spanning Production+Preview — replacing it for one scope silently deletes the other, so always re-check all three after editing. |
+  | Vercel project | `VITE_CONVEX_URL`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` per scope + `CONVEX_DEPLOY_KEY` on Production, `staging` and Preview@`develop` | Scopes are Production / `staging` (custom env) / Preview / Preview pinned to a branch / Development. A var spanning two scopes is ONE entry — replacing it for one scope silently deletes the other, so re-audit every scope after editing. Branch-pinned Preview vars can't be added by `vercel env add` (its branch prompt ignores piped input); use `POST /v10/projects/{id}/env` with `target` + `gitBranch`. |
   | Web (root `.env.local`, mirrored to `apps/web/.env.local`) | `VITE_CONVEX_URL`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, optionally `SITE_URL` | On Vercel these are project env vars. |
   | Worker VM (`EnvironmentFile=`) | `CONVEX_URL`, `WORKER_SECRET`, `OPENROUTER_API_KEY` | Import agent only. |
   | `scripts/deploy-worker.sh` | `WORKER_SSH_HOST` (required), `WORKER_SSH_IDENTITY`, `WORKER_APP_DIR`, `WORKER_SERVICE` | The script refuses to run rather than guess a host/key. |
@@ -135,38 +151,78 @@ stagestack/
 
 ## Deploying
 
-`git push` to `main` is the whole deploy: Vercel builds the frontend **and**
-pushes the Convex backend in the same step, so code and schema can't drift
-apart. GitHub Actions (`.github/workflows/ci.yml`) runs typecheck + both test
-suites on every push; it gates nothing on Vercel's side, so a red CI run and a
-green deploy can coexist — read CI before assuming a push was safe.
-
-Vercel build command:
+Work on `develop`, merge to `staging`, merge to `main`. Each branch deploys its
+own frontend *and its own Convex backend* in one step, so code and schema never
+drift apart:
 
 ```
-cd ../.. && npx convex deploy --typecheck=disable --cmd 'npm run build --workspace apps/web'
+develop ──▶ develop backend      (look at your work)
+staging ──▶ staging backend      (rehearse the release)
+main    ──▶ production           (the real thing)
 ```
 
-Three things in that line are load-bearing, and each one cost a broken deploy:
+GitHub Actions (`.github/workflows/ci.yml`) runs typecheck + both test suites on
+every push, but it gates nothing on Vercel's side — a red CI run and a green
+deploy can coexist. Read CI before assuming a push was safe.
+
+Vercel build command (one command, all environments):
+
+```
+cd ../.. && if [ -n "$CONVEX_DEPLOY_KEY" ]; then \
+  npx convex deploy --typecheck=disable --check-build-environment disable \
+    --cmd-url-env-var-name VITE_CONVEX_URL --cmd 'npm run build --workspace apps/web'; \
+else npm run build --workspace apps/web; fi
+```
+
+Every part of it is load-bearing, and most were learned by breaking something:
 
 - **`cd ../..` is not optional.** Vercel's Root Directory is `apps/web`, but
   `convex/` lives at the repo root. Run `convex deploy` from `apps/web` and it
   finds no functions, concludes you deleted them all, and **unmounts every
-  component and drops every index on production** — a successful-looking build
-  that empties the backend. This happened once; the recovery is
-  `npx convex deploy` from the repo root, which remounts everything (documents
-  are untouched — only functions and indexes are lost).
+  component and drops every index on the target deployment** — a
+  successful-looking build that empties the backend. This happened once, to
+  production; the recovery is `npx convex deploy` from the repo root, which
+  remounts everything (documents are untouched — only functions and indexes are
+  lost).
+- **The `if` guard** is what lets an ordinary feature branch build at all. The
+  deploy key only exists on Production, `staging` and `develop`; without the
+  guard every other branch fails at the Convex step. With it, such a branch
+  builds frontend-only against the shared dev deployment.
+- **`--check-build-environment disable`** turns off Convex's refusal to push a
+  prod-*type* key from a non-production build environment. That guard exists to
+  stop a preview build from writing to prod, and it is right to have — but
+  `staging` and `develop` are prod-type deployments used from non-production
+  Vercel environments on purpose. The cost of disabling it: if the *production*
+  key were ever pasted into a preview scope, nothing would catch it. Check the
+  scope, not the guard.
+- **`--cmd-url-env-var-name VITE_CONVEX_URL`** makes the frontend point at
+  whichever backend this build just deployed to, instead of trusting a
+  hand-set env var to agree. Without it, `convex deploy` run from the repo root
+  exports `CONVEX_URL` (no `VITE_` prefix), Vite ignores it, and you can ship a
+  staging frontend wired to the dev backend.
 - **`--typecheck=disable`** skips a *duplicate* check, not a real one. Vercel
   installs from `apps/web`, so the convex test files' types are missing and
   `tsc` fails there. CI already typechecks the whole repo on the same commit.
-- **`CONVEX_DEPLOY_KEY`** (Production env var) needs `deployment:deploy` **and**
-  `deployment:data:view` — deploy reads existing data to validate the schema, so
-  a deploy-only key fails with a permissions error.
+- **Deploy keys** need `deployment:deploy` **and** `deployment:data:view` —
+  deploy reads existing data to validate the schema, so a deploy-only key fails
+  with a permissions error. Create them with
+  `npx convex deployment token create <name> --deployment <ref>`; there is no
+  need to visit the dashboard.
+
+Verifying a deploy — a green build is not proof:
+
+```bash
+vercel inspect --logs <url> | grep -E "Unmounted component|Deleted table indexes"   # must be empty
+npx convex function-spec --deployment <prod|staging|develop> | grep -c '"identifier"'  # expect 134
+```
 
 **No backups are configured.** Convex snapshots are opt-in (dashboard →
-Backup & Restore); with the deploy now automatic, a bad schema change reaches
-prod without a human, so this is worth turning on before real data lands.
+Backup & Restore); a bad schema change now reaches prod without a human, so this
+is worth turning on before real data lands.
 
+**Branch protection is not enabled** — GitHub rulesets need Pro for a private
+repo, so nothing mechanically stops a push straight to `main`. The
+develop → staging → main order is currently a convention, not a rule.
 
 ## Walking-skeleton validation checklist (before real feature work)
 
