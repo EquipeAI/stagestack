@@ -35,6 +35,20 @@ Several of our dependencies are **newer than any model's training data or move f
 - Vite loads env from `apps/web/.env.local` (mirrored from root `.env.local`); root file is the source of truth.
 - Dev server: killing the root `npm run dev` can orphan the Vite child on port 3000 — `lsof -ti :3000 | xargs kill` before restarting.
 
+## Deploy targets
+
+| Target | What | How |
+|---|---|---|
+| **Convex** (backend) | dev deployment `scintillating-heron-597` (team equipeai, project stagestack) | `npx convex dev` while coding; `npx convex dev --once` to push once; env vars via `npx convex env set` |
+| **Vercel** (web) | scope `equipe-ai`, project `stagestack`, root dir `apps/web`, prod = **https://stagestack.dev** | git push to `main` auto-deploys; manual: `vercel deploy --prod --yes` from repo root. Requires `nitro()` in vite.config (already there) |
+| **exe.dev VM** (worker) | VM `stagestackdev` — `ssh -i ~/.ssh/pedro_exe_dev -o IdentitiesOnly=yes stagestackdev.exe.xyz` | `scripts/deploy-worker.sh` (pull → npm ci → restart). Service: `stagestack-worker.service` (systemd, Restart=always); logs: `journalctl -u stagestack-worker` |
+
+Worker VM facts: repo at `/home/exedev/stagestack/app` (read-only GitHub deploy key — VM can pull, never push); secrets in `/home/exedev/stagestack/worker.env` (`CONVEX_URL`, `WORKER_SECRET`, `OPENROUTER_API_KEY`; systemd reads via `EnvironmentFile=`); Node 24.19.
+
+Test the queue end-to-end: `npx convex run worker:enqueueTest '{"type":"ping"}'` locally, then check the VM journal for `claimed`/`done` lines.
+
+Secrets flow: root `.env.local` is the source of truth (never committed); mirrored to `apps/web/.env.local` for Vite, to Convex via `env set`, to the VM env file via SSH stdin (never in argv/output), to Vercel via `vercel env add`.
+
 ## Conventions
 
 - Monorepo: `convex/` at root (shared types), `apps/web` (TanStack Start), `apps/worker` (tsx runtime, exe.dev). Web imports Convex via the `@convex/*` alias.
