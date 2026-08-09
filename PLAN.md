@@ -2,9 +2,35 @@
 
 Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) · [docs/CHALLENGE.md](docs/CHALLENGE.md) · milestones: [docs/MILESTONES.md](docs/MILESTONES.md)
 
-## Now: Final wrap-up — acceptance pass, repo sweep, submission
+## STATUS: SUBMISSION-READY
 
-All 8 milestones (M0-M7) built, browser + prod verified, deployed. 220 tests green. Remaining: full CHALLENGE.md acceptance walkthrough on stagestack.dev, secret/history sweep, submission summary. Before-submission list below still stands (Clerk prod instance is the key hand item).
+All 8 milestones (M0-M7) built, tested (220 convex-test, incl. negative authz),
+browser-verified as a signed-in user, prod-verified on https://stagestack.dev,
+simplified, codex-reviewed + triaged, committed and deployed. Repo clean of
+secrets (full-history scan) and submission-ready. The six challenge
+requirements are all live and were each walked on prod — see the acceptance
+map in the session log (Aug 9 final).
+
+The ONE hand item before public launch (not a blocker for judging — the
+deployed site is fully testable now): switch Clerk from its dev instance to a
+production instance. See "Must-do by hand" below.
+
+## Must-do by hand (Alvaro)
+
+1. **Clerk production instance** — prod currently runs Clerk's DEV instance
+   (orange "Development mode" watermark on the sign-in modal; dev instances
+   cap total users and use shared OAuth creds). Judges CAN fully test on it,
+   but for a real launch: create a Clerk production instance in the Clerk
+   dashboard, add its DNS records (Vercel DNS, zero-config domain), then set
+   the new `VITE_CLERK_PUBLISHABLE_KEY` (pk_live_…) + `CLERK_SECRET_KEY`
+   (sk_live_…) on Vercel prod, and the prod `CLERK_JWT_ISSUER_DOMAIN` on the
+   Convex deployment. Requires your Clerk dashboard — I can't create it.
+2. **Promote Convex dev → prod deployment** (optional hardening): everything
+   runs on the `scintillating-heron-597` dev deployment today (stable, fine
+   for judging). For launch, `npx convex deploy` to a prod deployment and
+   repoint `VITE_CONVEX_URL` + the worker's `CONVEX_URL`.
+3. Nothing else. Vercel git auto-deploy, the worker VM, Resend, and the domain
+   are all wired and working.
 
 ## Done: M7 — Public content out — Aug 9
 
@@ -107,6 +133,15 @@ All 8 milestones (M0-M7) built, browser + prod verified, deployed. 220 tests gre
 
 - Aug 8 (Sat night): docs frozen pending Sun video; stack researched & decided; scaffold + walking skeleton pt 1 + prod deploy done. Lessons captured in CLAUDE.md ("fresh-docs-first", landmines). Next session: design system integration + walking skeleton pt 2 + M0.
 - Aug 8 (later): scaffold architecture review → fixed `enqueueTest` (public→internal; was an unauthenticated OpenRouter-credit spend vector), dev-gated prod stack traces, loud-fail on missing `VITE_CONVEX_URL`, DS adherence allowlists extended for event handlers (was blocking M0 UI work), `cfp.startDraft` input validation + limiter order, shared `convex/env.d.ts`. Deferred items above.
+- Aug 9 (final): **ALL MILESTONES DONE.** Acceptance map (each walked on prod https://stagestack.dev):
+  1. **Custom CFP forms** — builder w/ conditional logic (verified: Workshop-format field appears on selection), locked system fields, versioned publish; public wizard Welcome→Account→Submission→Participants→Review w/ autosave, file upload, submitter confirmation + admin notification emails delivered.
+  2. **Speaker portal** — verified-email auto-claim, confirm/decline (fields-preview dialog), profile edit propagating to snapshot + directory, manager handoff, organizer read-only preview.
+  3. **Templated comms + calendar invites** — 13 editable templates, personalized one-off delivered to a real inbox + comms log w/ webhook Delivered; reminder sweep; .ics REQUEST/CANCEL (RFC-correct) sent on slot release, rendered natively in Gmail (walking-skeleton confirmed).
+  4. **Review & scoring + Import** — assign → Submit&Next → stage → release (accept/decline) creating sessions + awaiting participants + decision emails; queue masked from submitters; **Import-with-AI ran on the exe.dev VM** (Flue/gpt-5.6-luna): CSV → plan (reuse/dup/uncertainty/skip) → approve → 5/5 records via authorized capabilities.
+  5. **Drag-and-drop agenda + conflict detection** — 5 views, pixel time-grid DnD, room-clash + speaker-double-book blockers (verified in lanes), same-track warning; release refused while clashed → resolved → released w/ .ics.
+  6. **Real-time speaker-ops dashboard** — "N accepted speakers are missing a bio or headshot" verbatim, per-speaker state/claim/missing/outstanding/overdue, derived session readiness w/ reasons.
+  Plus M7: public event page + read API + embed serving one privacy-filtered projection (confirmed-only, no contact/host data — verified on prod API).
+  Repo: no secrets in history; .env files ignored; 220 tests + 3 workspaces typecheck + DS lint all green.
 - Aug 8-9 (overnight, autonomous): **M0 complete + M1 backend complete.**
   - Test suite caught a real authz hole (event-A organizer could revoke event-B invitations) — fixed; also made invitation tokens organizer-only in team lists (a reviewer could have copied an organizer-invite link and escalated).
   - M1 backend: cfpForms (working/published FormDef, conditional visibility), proposals + speakers + submit/resubmit/withdraw/reopen, per-user limits, submission window, comms log (`messages` table fed by Resend webhook), starter form on event creation. 72 tests.
