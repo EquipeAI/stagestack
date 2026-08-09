@@ -35,7 +35,7 @@ A speaker can submit a proposal; the organizer controls the form.
 - Before a decision is externally released, the primary manager may explicitly withdraw the proposal. Notify organizers, remove it from active review/decision queues, and preserve it as Withdrawn. After acceptance, use participant/session withdrawal instead.
 - My StageStack adds drafts and submitted proposals across events.
 - Form settings: open/close dates, per-user submission limits, drafts, custom success page.
-- Fixed transactional emails through Cloudflare Email Service: automatic confirmation to the submitter and admin notification on new/updated submission. Each message and its context are recorded by StageStack.
+- Fixed transactional emails through Resend (Convex Resend component): automatic confirmation to the submitter and admin notification on new/updated submission. Each message, its context, and its delivery state are recorded by StageStack.
 - One active CFP form per event in v1. Organizer-defined choices and conditional sections can cover different submission types inside it; multiple independently active forms with separate URLs/deadlines are post-v1.
 
 ## M2 — Review: evaluation & decisions
@@ -100,7 +100,7 @@ The organizer always knows who owes what. (The anti-"5 spreadsheets" milestone.)
 
 Nobody misses their talk because of a lost email.
 
-- Cloudflare Email Service is the replaceable transactional delivery provider; Clerk continues to own authentication messages. StageStack owns communication intent, rendered content, event context, business history, and delivery state.
+- Resend (via the Convex Resend component) is the replaceable transactional delivery provider; Clerk continues to own authentication messages. StageStack owns communication intent, rendered content, event context, business history, and delivery state (fed by Resend delivery webhooks).
 - Email templates with variables ({{speaker.name}}, {{session.title}}, …) and event branding/themes.
 - Organizer-managed templates and settings for lifecycle sends already introduced by earlier workflows (submitted, accepted, declined, invited, task assigned).
 - Operational audiences derived only from event relationships and state (for example, unconfirmed speakers, overdue tasks, assigned reviewers, or people affected by a schedule change).

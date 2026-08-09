@@ -1,4 +1,11 @@
 .DS_Store
 .env
+.env.*
+!.env.example
+node_modules/
+.output/
+dist/
+.vercel/
+*.log
 # Walkthrough videos are too large for git (~35MB each); keep local copies only
 walkthrough-*.mp4

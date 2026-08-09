@@ -167,7 +167,7 @@ The StageStack application is open source and self-hostable in v1, but authentic
 
 ### Email channel boundary in v1
 
-Clerk sends authentication and email-verification messages. Cloudflare Email Service sends StageStack's transactional product email for the challenge and hosted v1. Cloudflare is a replaceable delivery provider, not the communication system of record; its Email Sending product is currently a public beta and self-hosters must supply a compatible Cloudflare account, domain, and configuration.
+Clerk sends authentication and email-verification messages. Resend (via the Convex Resend component) sends StageStack's transactional product email for the challenge and hosted v1, including delivery-event tracking that feeds StageStack's communication history. Resend is a replaceable delivery provider, not the communication system of record; self-hosters must supply their own Resend account and verified sending domain.
 
 StageStack owns why each communication was sent, its recipient and event context, rendered content, secure destination, send and delivery state, and the resulting business action. Required messages ship with the workflows that need them; the later communications milestone makes the channel configurable through templates, audiences, scheduling, reminders, and searchable history.
 
@@ -175,7 +175,7 @@ StageStack communications are strictly event-operational. Every recipient must a
 
 Organizers may also send a one-off operational message to one event contact or to an event-scoped audience derived from workflow state, such as accepted speakers who have not confirmed. Each send is recorded with its recipients, rendered content, event context, sender, time, and delivery state; this does not permit arbitrary lists or marketing audiences.
 
-Each event has a reply-to address that inherits an organization default. Cloudflare routes replies to the team's existing inbox; StageStack does not ingest, display, or thread inbound messages in v1. Its communication history covers outbound content and delivery state. An in-product operational inbox can be reconsidered later if real customer use justifies it.
+Each event has a reply-to address that inherits an organization default. Replies route to the team's existing inbox via that reply-to address; StageStack does not ingest, display, or thread inbound messages in v1. Its communication history covers outbound content and delivery state. An in-product operational inbox can be reconsidered later if real customer use justifies it.
 
 An email link safely opens the relevant StageStack workflow. Merely following a `GET` link never accepts, declines, confirms, completes, or otherwise mutates business state: StageStack verifies identity and access, then requires an explicit confirmation for state-changing actions. This protects against email scanners and automatic link previews.
 
@@ -184,5 +184,5 @@ An email link safely opens the relevant StageStack workflow. Merely following a 
 1. **Single source of truth** — speakers, submissions, sessions, rooms, and schedule live in one place; exports/embeds derive from it.
 2. **Post-acceptance is half the product** — tasks, chasing, and readiness tracking get first-class treatment.
 3. **Fast** — lean pages, no heavy-SPA sluggishness, minimal setup, sensible defaults, and bulk actions for repetitive work. This is a startup-focused product: speed to operate is as important as page performance.
-4. **Open source & self-hostable application** — cheap to run forever; no per-event ransom pricing. V1 uses explicitly disclosed external Clerk authentication and Cloudflare email-delivery dependencies; fully local replacements are post-v1.
+4. **Open source & self-hostable application** — cheap to run forever; no per-event ransom pricing. V1 uses explicitly disclosed external dependencies (Clerk authentication, Convex backend, Resend email delivery); fully local replacements are post-v1.
 5. **API- and tool-first** — every meaningful read or action in the UI is implemented once as an authorized domain capability that can also back APIs, integrations, embeds, and agent tools. Agents orchestrate those same validated product capabilities rather than bypassing business rules or writing directly to data. V1 ships the public read API and makes authorized actions agent-callable; it does not need to productize a public mutation API, developer portal, API-key management, webhooks, or SDKs yet.
