@@ -3,6 +3,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
+import * as Agenda from "./agenda";
 import { logAudit } from "./audit";
 import {
   emailShell,
@@ -164,6 +165,14 @@ function fullName(contact: Doc<"eventContacts">): string {
 
 // ── Portal context ───────────────────────────────────────────────────────
 
+/** What a speaker was TOLD (M6). Times are the authoritative event-time
+ * instants; the portal additionally renders the viewer's local equivalent. */
+export type PortalSlot = {
+  startsAt: number;
+  endsAt: number;
+  roomName?: string;
+};
+
 export type PortalSpeakingItem = {
   participantId: Id<"sessionParticipants">;
   sessionId: Id<"sessions">;
@@ -172,6 +181,11 @@ export type PortalSpeakingItem = {
   format?: string;
   state: ParticipantState;
   eventContact: PortalProfileView;
+  /** Present only once an organizer has released the slot (M6). */
+  releasedSlot?: PortalSlot;
+  ack?: NonNullable<Doc<"sessionParticipants">["ack"]>;
+  /** Speaker/backstage link — confirmed participants only (M6 audiences). */
+  backstageUrl?: string;
 };
 
 /** The managed-session view deliberately exposes only a name and a state per
@@ -193,6 +207,9 @@ export type PortalManagingItem = {
   status: Doc<"sessions">["status"];
   viaProposalId?: Id<"proposals">;
   participants: PortalManagedParticipant[];
+  releasedSlot?: PortalSlot;
+  /** Primary managers reach backstage links too (M6 audiences). */
+  backstageUrl?: string;
 };
 
 export type PortalProposalSummary = {
@@ -231,6 +248,29 @@ async function buildContext(
   event: Doc<"events">,
   subject: { contacts: Array<Doc<"eventContacts">>; userId?: Id<"users"> },
 ): Promise<PortalContext> {
+  // Room names are resolved lazily and memoised: most portals show one or two
+  // sessions, so a full library read would be wasted work.
+  const roomNames = new Map<Id<"rooms">, string | null>();
+  const slotOf = async (
+    session: Doc<"sessions">,
+  ): Promise<PortalSlot | undefined> => {
+    const released = session.releasedSlot;
+    if (released === undefined) return undefined;
+    let roomName: string | undefined;
+    if (released.roomId !== undefined) {
+      if (!roomNames.has(released.roomId)) {
+        const room = await ctx.db.get("rooms", released.roomId);
+        roomNames.set(released.roomId, room?.name ?? null);
+      }
+      roomName = roomNames.get(released.roomId) ?? undefined;
+    }
+    return {
+      startsAt: released.startsAt,
+      endsAt: released.endsAt,
+      roomName,
+    };
+  };
+
   const speaking: PortalSpeakingItem[] = [];
   for (const contact of subject.contacts) {
     const view = await profileView(ctx, contact);
@@ -250,6 +290,14 @@ async function buildContext(
         format: session.format,
         state: row.state,
         eventContact: view,
+        releasedSlot: await slotOf(session),
+        ack: row.ack,
+        // "Confirmed participants and their primary managers can access
+        // backstage links" — an awaiting or declined speaker does not.
+        backstageUrl:
+          row.state === "confirmed"
+            ? session.virtualLinks?.backstage
+            : undefined,
       });
     }
   }
@@ -329,6 +377,8 @@ async function buildContext(
         status: session.status,
         viaProposalId: session.proposalId,
         participants: rows,
+        releasedSlot: await slotOf(session),
+        backstageUrl: session.virtualLinks?.backstage,
       });
     }
   }
@@ -693,6 +743,37 @@ export async function confirmParticipation(
 }
 
 /**
+ * Answer a released slot from the portal (M6): the claimed speaker themself, or
+ * their primary manager on their behalf — the same ownership guard the
+ * participation decision uses, so the actor and timestamp are captured
+ * identically. "Conflict" flags the session for the organizer; it never
+ * declines participation.
+ */
+export async function acknowledgeSlot(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  args: {
+    eventSlug: string;
+    participantId: Id<"sessionParticipants">;
+    response: Agenda.AckResponse;
+  },
+): Promise<void> {
+  const event = await eventBySlug(ctx, args.eventSlug);
+  const participant = await requireOwnParticipation(
+    ctx,
+    user,
+    event,
+    args.participantId,
+  );
+  await Agenda.setAcknowledgement(ctx, {
+    event,
+    participant,
+    actorUserId: user._id,
+    response: args.response,
+  });
+}
+
+/**
  * Withdraw a participation (M3). The session is deliberately NOT cancelled:
  * "keep the session visible with other confirmed speakers or a speaker to be
  * announced placeholder and flag it for attention rather than cancelling it
@@ -719,6 +800,14 @@ export async function withdrawParticipation(
     state: "withdrawn",
     stateSetBy: user._id,
     stateSetAt: now,
+  });
+  // "Withdrawal ... cancels only that person's calendar participation" (M3).
+  // The session and every other speaker's invitation stay exactly as they were.
+  await Agenda.cancelParticipantSlot(ctx, {
+    event,
+    participant,
+    actorUserId: user._id,
+    reason: "withdrawn",
   });
 
   const session = await ctx.db.get("sessions", participant.sessionId);

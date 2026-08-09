@@ -153,6 +153,42 @@ export const DEFAULT_TEMPLATES: Record<string, TemplateBody> = {
     ].join("\n"),
   },
 
+  // ── Schedule release (M6) ──────────────────────────────────────────────
+  // These three ride WITH the .ics attachment (convex/emails.ts), so the body
+  // is the human half of the same message the calendar entry arrives in.
+  "schedule.released": {
+    name: "Schedule — slot released",
+    subject: "Your slot at {{event.name}}: {{session.title}}",
+    html: [
+      `<p>Hi {{speaker.firstName}},</p>`,
+      `<p>Your session at <strong>{{event.name}}</strong> is scheduled.</p>`,
+      `<p><strong>{{session.title}}</strong><br />{{slot.when}}<br />{{slot.room}}</p>`,
+      `<p>The calendar invitation is attached. Please confirm the time works:</p>`,
+      `<p><a href="{{link}}">Acknowledge your slot</a></p>`,
+    ].join("\n"),
+  },
+  "schedule.updated": {
+    name: "Schedule — slot changed",
+    subject: "Schedule change at {{event.name}}: {{session.title}}",
+    html: [
+      `<p>Hi {{speaker.firstName}},</p>`,
+      `<p>Your slot at <strong>{{event.name}}</strong> has changed.</p>`,
+      `<p><strong>{{session.title}}</strong><br />{{slot.when}}<br />{{slot.room}}</p>`,
+      `<p>The updated calendar invitation is attached and replaces the previous one.</p>`,
+      `<p><a href="{{link}}">Review and acknowledge</a></p>`,
+    ].join("\n"),
+  },
+  "schedule.cancelled": {
+    name: "Schedule — slot cancelled",
+    subject: "Cancelled at {{event.name}}: {{session.title}}",
+    html: [
+      `<p>Hi {{speaker.firstName}},</p>`,
+      `<p>The scheduled slot for <strong>{{session.title}}</strong> at <strong>{{event.name}}</strong> has been cancelled, and the attached calendar cancellation removes it from your calendar.</p>`,
+      `<p>{{slot.when}}</p>`,
+      `<p><a href="{{link}}">Open your speaker portal</a></p>`,
+    ].join("\n"),
+  },
+
   // ── Scheduled reminders (M5) ───────────────────────────────────────────
   // `{{tasks}}` / `{{body}}` are pre-rendered HTML lists (RAW_KEYS): one
   // consolidated message per recipient, never one email per outstanding item.
@@ -300,6 +336,10 @@ export function sampleVars(event: Doc<"events"> | null): TemplateVars {
       email: "ada@example.com",
     },
     session: { title: "Analytical engines in production" },
+    slot: {
+      when: "Tue, Sep 1, 2:00 PM – Tue, Sep 1, 2:45 PM (America/Los_Angeles)",
+      room: "Main Stage",
+    },
     proposal: {
       title: "Analytical engines in production",
       speakers: "Ada Lovelace",

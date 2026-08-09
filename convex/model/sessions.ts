@@ -3,6 +3,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
+import * as Agenda from "./agenda";
 import { logAudit } from "./audit";
 import { sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
@@ -459,14 +460,22 @@ export async function correctDecision(
 
   if (to === "declined") {
     // Cancel, never delete: "retain it as restorable history, remove it from
-    // active scheduling and public views". Calendar cancellations are N/A
-    // until M5 distributes invitations.
+    // active scheduling and public views ... and send calendar cancellations if
+    // invitations were already distributed" (M2).
     const session = await sessionForProposal(ctx, proposalId);
     if (session !== null && session.status !== "cancelled") {
       await ctx.db.patch("sessions", session._id, {
         status: "cancelled",
         cancelledAt: now,
       });
+      if (session.releasedSlot !== undefined) {
+        await Agenda.cancelReleasedSlot(ctx, {
+          event,
+          session,
+          actorUserId: caller.user._id,
+          reason: "sessionCancelled",
+        });
+      }
     }
     // Participants are intentionally left in place so a later correction back
     // to accepted restores the line-up.
@@ -739,6 +748,16 @@ export async function setParticipationState(
     stateSetBy: args.actorUserId,
     stateSetAt: Date.now(),
   });
+  if (args.to === "declined") {
+    // A speaker who drops out must not keep a calendar entry for a slot they
+    // are no longer speaking in — only THEIR invitation is cancelled (M3/M6).
+    await Agenda.cancelParticipantSlot(ctx, {
+      event: args.event,
+      participant: args.participant,
+      actorUserId: args.actorUserId,
+      reason: "declined",
+    });
+  }
   await logAudit(ctx, {
     orgId: args.event.orgId,
     eventId: args.event._id,

@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as agenda from "../agenda.js";
 import type * as auth from "../auth.js";
 import type * as cfp from "../cfp.js";
 import type * as cfpPublic from "../cfpPublic.js";
@@ -21,6 +22,7 @@ import type * as imports from "../imports.js";
 import type * as lib_functions from "../lib/functions.js";
 import type * as lib_validators from "../lib/validators.js";
 import type * as library from "../library.js";
+import type * as model_agenda from "../model/agenda.js";
 import type * as model_audiences from "../model/audiences.js";
 import type * as model_audit from "../model/audit.js";
 import type * as model_cfp from "../model/cfp.js";
@@ -62,6 +64,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  agenda: typeof agenda;
   auth: typeof auth;
   cfp: typeof cfp;
   cfpPublic: typeof cfpPublic;
@@ -75,6 +78,7 @@ declare const fullApi: ApiFromModules<{
   "lib/functions": typeof lib_functions;
   "lib/validators": typeof lib_validators;
   library: typeof library;
+  "model/agenda": typeof model_agenda;
   "model/audiences": typeof model_audiences;
   "model/audit": typeof model_audit;
   "model/cfp": typeof model_cfp;

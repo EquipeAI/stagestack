@@ -2,6 +2,7 @@ import type { QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { requireOrganizer } from "../lib/functions";
+import { conflictsFor, toScheduledThings, type Conflict } from "./agenda";
 import { isOpen, isOverdue } from "./tasks";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -21,6 +22,7 @@ const SESSION_SCAN = 1000;
 const PARTICIPANT_SCAN = 5000;
 const INSTANCE_SCAN = 8000;
 const CONTACT_SCAN = 2000;
+const ITEM_SCAN = 1000;
 
 export type ReadinessStatus = "ready" | "needsAttention" | "blocked";
 
@@ -40,16 +42,21 @@ function plural(n: number, one: string, many: string): string {
  * caller does the reading, which keeps the dashboard to a single bounded pass
  * over the event.
  *
- * Blocked = an unresolved withdrawal still sitting on the session, or nobody
- * left to present. Needs Attention = outstanding/overdue work or an unanswered
- * participation. Ready = everyone confirmed and every obligation settled.
+ * Blocked = an unresolved withdrawal still sitting on the session, nobody left
+ * to present, a speaker who reported a schedule conflict, or an impossible
+ * schedule collision. Needs Attention = outstanding/overdue work, an unanswered
+ * participation, or an unacknowledged slot. Ready = everyone confirmed and
+ * every obligation settled.
  */
 export function sessionReadiness(args: {
   participants: Array<Doc<"sessionParticipants">>;
   instances: Array<Doc<"taskInstances">>;
   now: number;
+  /** Derived room/speaker/track collisions for this session (M6). */
+  conflicts?: ReadonlyArray<Conflict>;
 }): Readiness {
   const { participants, instances, now } = args;
+  const conflicts = args.conflicts ?? [];
   const blocking: string[] = [];
   const attention: string[] = [];
 
@@ -75,6 +82,27 @@ export function sessionReadiness(args: {
     attention.push(
       `${declined} ${plural(declined, "speaker has", "speakers have")} declined.`,
     );
+  }
+
+  // ── Schedule (M6) ──
+  // A reported conflict blocks only this session and never touches the
+  // speaker's participation; Awaiting Acknowledgement warns but does not block.
+  const reported = active.filter((p) => p.ack === "conflict").length;
+  if (reported > 0) {
+    blocking.push(
+      `${reported} ${plural(reported, "speaker has", "speakers have")} reported a schedule conflict.`,
+    );
+  }
+  const awaitingAck = active.filter((p) => p.ack === "awaitingAck").length;
+  if (awaitingAck > 0) {
+    attention.push(
+      `${awaitingAck} ${plural(awaitingAck, "speaker has", "speakers have")} not acknowledged their slot.`,
+    );
+  }
+  // Speaker/room collisions are impossible schedule states, not preferences.
+  for (const conflict of conflicts) {
+    if (conflict.level === "blocker") blocking.push(conflict.message);
+    else attention.push(conflict.message);
   }
 
   const open = instances.filter(isOpen);
@@ -169,24 +197,29 @@ export async function dashboard(
 ): Promise<Dashboard> {
   requireOrganizer(caller);
   const eventId = caller.event._id;
-  const [sessions, participants, instances, contacts] = await Promise.all([
-    ctx.db
-      .query("sessions")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(SESSION_SCAN),
-    ctx.db
-      .query("sessionParticipants")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(PARTICIPANT_SCAN),
-    ctx.db
-      .query("taskInstances")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(INSTANCE_SCAN),
-    ctx.db
-      .query("eventContacts")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(CONTACT_SCAN),
-  ]);
+  const [sessions, participants, instances, contacts, agendaItems] =
+    await Promise.all([
+      ctx.db
+        .query("sessions")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+        .take(SESSION_SCAN),
+      ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+        .take(PARTICIPANT_SCAN),
+      ctx.db
+        .query("taskInstances")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+        .take(INSTANCE_SCAN),
+      ctx.db
+        .query("eventContacts")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+        .take(CONTACT_SCAN),
+      ctx.db
+        .query("agendaItems")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+        .take(ITEM_SCAN),
+    ]);
   const contactById = new Map(contacts.map((c) => [c._id, c]));
 
   // ── Per speaker ──
@@ -252,15 +285,32 @@ export async function dashboard(
   speakers.sort((a, b) => a.name.localeCompare(b.name));
 
   // ── Per session ──
+  // Schedule collisions are derived from the same pure function the agenda
+  // board uses (M6), so "Blocked — impossible schedule collision" and the red
+  // card on the board can never disagree.
+  const participantsBySession = new Map<
+    Id<"sessions">,
+    Array<Doc<"sessionParticipants">>
+  >();
+  for (const participant of participants) {
+    const list = participantsBySession.get(participant.sessionId) ?? [];
+    list.push(participant);
+    participantsBySession.set(participant.sessionId, list);
+  }
+  const conflicts = conflictsFor(
+    toScheduledThings({ sessions, agendaItems, participantsBySession }),
+  );
+
   const sessionRows: SessionReadinessRow[] = sessions
     .filter((session) => session.status === "planned")
     .map((session) => ({
       sessionId: session._id,
       title: session.title,
       readiness: sessionReadiness({
-        participants: participants.filter((p) => p.sessionId === session._id),
+        participants: participantsBySession.get(session._id) ?? [],
         instances: instances.filter((i) => i.sessionId === session._id),
         now,
+        conflicts: conflicts.get(session._id) ?? [],
       }),
     }));
 

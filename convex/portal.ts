@@ -59,6 +59,20 @@ const vProfileView = v.object({
   links: v.optional(vLinks),
 });
 
+const vAck = v.union(
+  v.literal("awaitingAck"),
+  v.literal("acknowledged"),
+  v.literal("conflict"),
+);
+
+/** The released slot as the speaker sees it (M6). Absent until an organizer
+ * explicitly releases the schedule. */
+const vPortalSlot = v.object({
+  startsAt: v.number(),
+  endsAt: v.number(),
+  roomName: v.optional(v.string()),
+});
+
 /** Shared with convex/sessions.ts, whose organizer preview returns this shape
  * plus the previewed speaker's name for the banner. */
 export const vPortalContext = v.object({
@@ -79,6 +93,10 @@ export const vPortalContext = v.object({
       format: v.optional(v.string()),
       state: vParticipantState,
       eventContact: vProfileView,
+      releasedSlot: v.optional(vPortalSlot),
+      ack: v.optional(vAck),
+      // Confirmed participants only — the audience rule lives in the model.
+      backstageUrl: v.optional(v.string()),
     }),
   ),
   managing: v.array(
@@ -99,6 +117,8 @@ export const vPortalContext = v.object({
           state: vParticipantState,
         }),
       ),
+      releasedSlot: v.optional(vPortalSlot),
+      backstageUrl: v.optional(v.string()),
     }),
   ),
   myProposalsSummary: v.array(
@@ -299,6 +319,23 @@ export const confirmParticipation = authedMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await Portal.confirmParticipation(ctx, ctx.user, args);
+    return null;
+  },
+});
+
+/**
+ * Answer a released slot (M6). Tracked separately from participation: a
+ * reported conflict flags the session for the organizer and never declines.
+ */
+export const acknowledgeSlot = authedMutation({
+  args: {
+    eventSlug: v.string(),
+    participantId: v.id("sessionParticipants"),
+    response: v.union(v.literal("acknowledged"), v.literal("conflict")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Portal.acknowledgeSlot(ctx, ctx.user, args);
     return null;
   },
 });
