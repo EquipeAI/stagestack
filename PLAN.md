@@ -2,9 +2,18 @@
 
 Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) · [docs/CHALLENGE.md](docs/CHALLENGE.md) · milestones: [docs/MILESTONES.md](docs/MILESTONES.md)
 
-## Now: M4/M5 — Speaker ops UI + comms UI
+## Now: M5 comms UI + M6 agenda (backend + UI)
 
-Backends for both are done and tested (M4: requirements/instances/uploads/readiness dashboard, 131 tests; M5 backend agent finishing: templates/audiences/one-off/reminder sweep/.ics machinery). Remaining: tasks admin UI + speaker-tracking dashboard + portal tasks section (M4), templates editor + audience one-off send + per-contact comms log UI (M5), browser + prod verification, combined simplify + codex pass.
+M5 backend done (181 tests: templates/audiences/one-off/reminders/.ics). M5 comms UI agent running. M6 backend agent running (scheduling, release → .ics, acknowledgements, conflicts). Remaining: M5 comms UI verify, M6 board UI, browser + prod verification, combined simplify + codex pass across M3-M6.
+
+## Done: M4 — Speaker ops: tasks & readiness — Aug 9
+
+- [x] Requirements (participant/session scope; manual/file/profileField evidence; optional review gate; due dates) instantiate on create for existing accepted speakers/sessions AND on every future acceptance
+- [x] Task instances: mark provided (organizer/speaker/manager, actor recorded), versioned file uploads with retained history, approve / request-changes(note) / mark N/A(reason) / reopen, due-date overrides; profile-field evidence auto-observed from the snapshot
+- [x] **Speaker-tracking dashboard (requirement #6)**: live stat tiles incl. "N accepted speakers are missing a bio or headshot" (verbatim phrasing), per-speaker participation/portal-claim/missing-profile/outstanding/overdue, drill-down, session readiness derived (ready/needsAttention/blocked) with reasons always exposed
+- [x] Portal tasks section (yours vs managed), speaker-friendly labels, upload/replace
+- [x] Reminders backend (M5): consolidated cadence sweep, unconfirmed→participation not task chasing, per-requirement override/disable
+- [x] Browser-verified (dashboard, requirement create → per-speaker instances, readiness reasons); 131→181 tests through the window; prod live
 
 ## Done: M3 — Speaker portal — Aug 9
 
