@@ -333,7 +333,28 @@ export default defineSchema({
     source: v.union(v.literal("cfp"), v.literal("direct")),
     status: v.union(v.literal("planned"), v.literal("cancelled")),
     cancelledAt: v.optional(v.number()),
-    // Scheduling fields arrive in M6 (roomId/startsAt/endsAt/releasedSlot).
+    // ── Scheduling (M6). Draft placement is internal; releasedSlot is what
+    // speakers were told (its sequence drives .ics updates).
+    roomId: v.optional(v.id("rooms")),
+    startsAt: v.optional(v.number()),
+    endsAt: v.optional(v.number()),
+    releasedSlot: v.optional(
+      v.object({
+        startsAt: v.number(),
+        endsAt: v.number(),
+        roomId: v.optional(v.id("rooms")),
+        releasedAt: v.number(),
+        sequence: v.number(),
+      }),
+    ),
+    // Manually entered virtual/hybrid links with explicit audiences (M6).
+    virtualLinks: v.optional(
+      v.object({
+        attendee: v.optional(v.string()),
+        backstage: v.optional(v.string()),
+        host: v.optional(v.string()),
+      }),
+    ),
   })
     .index("by_eventId", ["eventId"])
     .index("by_proposalId", ["proposalId"]),
@@ -357,6 +378,18 @@ export default defineSchema({
     // Participation-reminder bookkeeping (M5; unconfirmed speakers get
     // participation reminders, never task chasing).
     lastRemindedAt: v.optional(v.number()),
+    // Schedule acknowledgement (M6), tracked separately from participation.
+    // Set to awaitingAck when a slot is first released or its date/start
+    // changes; room/track/wording changes don't reset it.
+    ack: v.optional(
+      v.union(
+        v.literal("awaitingAck"),
+        v.literal("acknowledged"),
+        v.literal("conflict"),
+      ),
+    ),
+    ackSetBy: v.optional(v.id("users")),
+    ackSetAt: v.optional(v.number()),
   })
     .index("by_sessionId", ["sessionId"])
     .index("by_eventId", ["eventId"])
@@ -454,6 +487,18 @@ export default defineSchema({
     approvedAt: v.optional(v.number()),
     approvedBy: v.optional(v.id("users")),
   }).index("by_taskInstanceId", ["taskInstanceId"]),
+
+  // ── Agenda items (M6): non-session blocks (breaks, registration, meals).
+  // They share drafting/overlap checks/publication but bypass CFP, review,
+  // speakers, tasks and calendar invitations (decision log #7).
+  agendaItems: defineTable({
+    eventId: v.id("events"),
+    title: v.string(),
+    startsAt: v.number(),
+    endsAt: v.number(),
+    roomId: v.optional(v.id("rooms")),
+    description: v.optional(v.string()),
+  }).index("by_eventId", ["eventId"]),
 
   // ── Email templates (M5) ─────────────────────────────────────────────
   // Organizer-editable templates for lifecycle sends + custom one-offs.
