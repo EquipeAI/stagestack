@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { nullable } from "convex-helpers/validators";
 import {
   eventMutation,
   eventQuery,
@@ -28,22 +29,7 @@ export const listForOrg = orgQuery({
   args: {},
   returns: v.array(vv.doc("events")),
   handler: async (ctx) => {
-    const { caller } = ctx;
-    const all = await ctx.db
-      .query("events")
-      .withIndex("by_orgId", (q) => q.eq("orgId", caller.org._id))
-      .take(200);
-    if (caller.orgRole !== null) return all;
-    const memberships = await ctx.db
-      .query("eventMembers")
-      .withIndex("by_userId", (q) => q.eq("userId", caller.user._id))
-      .take(200);
-    const mine = new Set(
-      memberships
-        .filter((m) => m.orgId === caller.org._id)
-        .map((m) => m.eventId),
-    );
-    return all.filter((e) => mine.has(e._id));
+    return await Events.listVisible(ctx, ctx.caller);
   },
 });
 
@@ -65,9 +51,6 @@ export const get = eventQuery({
   },
 });
 
-const vNullable = <T extends Parameters<typeof v.union>[0]>(x: T) =>
-  v.union(x, v.null());
-
 export const updateSettings = eventMutation({
   args: {
     patch: v.object({
@@ -76,14 +59,14 @@ export const updateSettings = eventMutation({
       startsAt: v.optional(v.number()),
       endsAt: v.optional(v.number()),
       timezone: v.optional(v.string()),
-      type: v.optional(vNullable(v.string())),
-      location: v.optional(vNullable(v.string())),
-      website: v.optional(vNullable(v.string())),
-      description: v.optional(vNullable(v.string())),
-      logoId: v.optional(vNullable(v.id("_storage"))),
-      bannerId: v.optional(vNullable(v.id("_storage"))),
-      cfpOpenAt: v.optional(vNullable(v.number())),
-      cfpCloseAt: v.optional(vNullable(v.number())),
+      type: v.optional(nullable(v.string())),
+      location: v.optional(nullable(v.string())),
+      website: v.optional(nullable(v.string())),
+      description: v.optional(nullable(v.string())),
+      logoId: v.optional(nullable(v.id("_storage"))),
+      bannerId: v.optional(nullable(v.id("_storage"))),
+      cfpOpenAt: v.optional(nullable(v.number())),
+      cfpCloseAt: v.optional(nullable(v.number())),
       cfpPublished: v.optional(v.boolean()),
     }),
   },

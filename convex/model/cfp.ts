@@ -2,10 +2,17 @@ import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
-import { forbidden } from "../lib/functions";
+import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
-import { escapeHtml, emailShell, sendLoggedEmail, siteUrl } from "./comms";
+import {
+  escapeHtml,
+  emailShell,
+  notifyOrganizers,
+  sendLoggedEmail,
+  siteUrl,
+} from "./comms";
 import { slugify } from "./slugs";
+import { assertText, isEmail, normalizeEmail } from "./validation";
 import {
   allFields,
   visibleFields,
@@ -29,7 +36,6 @@ import {
 // ─────────────────────────────────────────────────────────────────────────
 
 const ID_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,40}$/;
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const MAX_SECTIONS = 30;
 const MAX_FIELDS = 60;
 const MAX_OPTIONS = 50;
@@ -63,7 +69,7 @@ function invalidForm(message: string): never {
 }
 
 function notFoundProposal(): never {
-  throw new ConvexError({ code: "not_found", message: "No such proposal." });
+  notFound("proposal");
 }
 
 // ── Starter form ─────────────────────────────────────────────────────────
@@ -213,18 +219,12 @@ function formView(row: Doc<"cfpForms"> | null): CfpFormView {
   };
 }
 
-function requireOrganizerRole(caller: EventCaller): void {
-  if (caller.role !== "organizer") {
-    forbidden("Only event organizers can do this.");
-  }
-}
-
 /** Organizer view of the form builder: working + published + settings. */
 export async function getForm(
   ctx: QueryCtx,
   caller: EventCaller,
 ): Promise<CfpFormView> {
-  requireOrganizerRole(caller);
+  requireOrganizer(caller);
   return formView(await findForm(ctx, caller.event._id));
 }
 
@@ -338,7 +338,7 @@ export async function updateWorkingForm(
   caller: EventCaller,
   def: FormDef,
 ): Promise<void> {
-  requireOrganizerRole(caller);
+  requireOrganizer(caller);
   validateFormDef(def);
   const form = await ensureForm(ctx, caller.event._id);
   await ctx.db.patch("cfpForms", form._id, {
@@ -357,7 +357,7 @@ export async function updateFormSettings(
   caller: EventCaller,
   patch: FormSettingsPatch,
 ): Promise<void> {
-  requireOrganizerRole(caller);
+  requireOrganizer(caller);
   const form = await ensureForm(ctx, caller.event._id);
   const update: Record<string, unknown> = { updatedAt: Date.now() };
   if (patch.maxSubmissionsPerUser !== undefined) {
@@ -395,7 +395,7 @@ export async function publishForm(
   ctx: MutationCtx,
   caller: EventCaller,
 ): Promise<number> {
-  requireOrganizerRole(caller);
+  requireOrganizer(caller);
   const form = await ensureForm(ctx, caller.event._id);
   validateFormDef(form.working);
   const version = form.version + 1;
@@ -453,17 +453,22 @@ function assertWindowOpen(
 
 // ── Public CFP page ──────────────────────────────────────────────────────
 
+async function findEventBySlug(
+  ctx: QueryCtx,
+  eventSlug: string,
+): Promise<Doc<"events"> | null> {
+  return await ctx.db
+    .query("events")
+    .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+    .unique();
+}
+
 async function eventBySlug(
   ctx: QueryCtx,
   eventSlug: string,
 ): Promise<Doc<"events">> {
-  const event = await ctx.db
-    .query("events")
-    .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
-    .unique();
-  if (event === null) {
-    throw new ConvexError({ code: "not_found", message: "No such event." });
-  }
+  const event = await findEventBySlug(ctx, eventSlug);
+  if (event === null) notFound("event");
   return event;
 }
 
@@ -491,10 +496,7 @@ export async function getPublicCfp(
   ctx: QueryCtx,
   eventSlug: string,
 ): Promise<PublicCfp | null> {
-  const event = await ctx.db
-    .query("events")
-    .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
-    .unique();
+  const event = await findEventBySlug(ctx, eventSlug);
   if (event === null) return null;
   if (!event.cfpPublished || event.archivedAt !== undefined) return null;
   const form = await findForm(ctx, event._id);
@@ -551,13 +553,15 @@ export async function startProposal(
   assertWindowOpen(event);
 
   if (row.maxSubmissionsPerUser !== undefined) {
+    // Bounded by the cap itself (max 100), so take(100) can never truncate a
+    // count that would have been under the limit.
     const mine = await ctx.db
       .query("proposals")
-      .withIndex("by_submitterUserId", (q) => q.eq("submitterUserId", user._id))
-      .take(500);
-    const active = mine.filter(
-      (p) => p.eventId === event._id && p.status !== "withdrawn",
-    );
+      .withIndex("by_submitterUserId_and_eventId", (q) =>
+        q.eq("submitterUserId", user._id).eq("eventId", event._id),
+      )
+      .take(100);
+    const active = mine.filter((p) => p.status !== "withdrawn");
     if (active.length >= row.maxSubmissionsPerUser) {
       throw new ConvexError({
         code: "submission_limit",
@@ -579,7 +583,7 @@ export async function startProposal(
 
 /** Load a proposal the caller owns. Non-owners get "not_found", never
  * "forbidden": proposal ids must not be probeable. */
-async function requireOwnProposal(
+export async function requireOwnProposal(
   ctx: QueryCtx,
   user: Doc<"users">,
   proposalId: Id<"proposals">,
@@ -598,6 +602,26 @@ function assertEditableStatus(proposal: Doc<"proposals">): void {
       message: "This proposal can no longer be edited.",
     });
   }
+}
+
+/**
+ * The preamble every submitter *write* shares: own it, it's still editable,
+ * its event exists, and the submission window is open.
+ * withdrawProposal deliberately does NOT use this — withdrawing must stay
+ * possible after the CFP closes, so it runs its own status checks with no
+ * window check at all.
+ */
+async function loadEditableProposal(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  proposalId: Id<"proposals">,
+): Promise<{ proposal: Doc<"proposals">; event: Doc<"events"> }> {
+  const proposal = await requireOwnProposal(ctx, user, proposalId);
+  assertEditableStatus(proposal);
+  const event = await ctx.db.get("events", proposal.eventId);
+  if (event === null) notFoundProposal();
+  assertWindowOpen(event, proposal);
+  return { proposal, event };
 }
 
 export type MyProposalView = {
@@ -745,11 +769,7 @@ export async function saveAnswers(
   proposalId: Id<"proposals">,
   answers: Record<string, AnswerValue>,
 ): Promise<void> {
-  const proposal = await requireOwnProposal(ctx, user, proposalId);
-  assertEditableStatus(proposal);
-  const event = await ctx.db.get("events", proposal.eventId);
-  if (event === null) notFoundProposal();
-  assertWindowOpen(event, proposal);
+  const { proposal, event } = await loadEditableProposal(ctx, user, proposalId);
   const { def } = await requirePublishedForm(ctx, event);
 
   const byId = new Map(allFields(def).map((f) => [f.id, f]));
@@ -794,11 +814,7 @@ export async function setSpeakers(
   proposalId: Id<"proposals">,
   speakers: SpeakerInput[],
 ): Promise<void> {
-  const proposal = await requireOwnProposal(ctx, user, proposalId);
-  assertEditableStatus(proposal);
-  const event = await ctx.db.get("events", proposal.eventId);
-  if (event === null) notFoundProposal();
-  assertWindowOpen(event, proposal);
+  const { proposal } = await loadEditableProposal(ctx, user, proposalId);
 
   if (speakers.length > MAX_SPEAKERS) {
     throw new ConvexError({
@@ -807,32 +823,18 @@ export async function setSpeakers(
     });
   }
   const cleaned = speakers.map((s) => {
-    const firstName = s.firstName.trim();
-    const lastName = s.lastName.trim();
-    if (firstName.length === 0 || firstName.length > 80) {
-      throw new ConvexError({
-        code: "invalid_name",
-        message: "Speaker first name must be 1-80 characters.",
-      });
-    }
-    if (lastName.length === 0 || lastName.length > 80) {
-      throw new ConvexError({
-        code: "invalid_name",
-        message: "Speaker last name must be 1-80 characters.",
-      });
-    }
-    const email = s.email?.trim().toLowerCase();
-    if (email !== undefined && email.length > 0 && !EMAIL_RE.test(email)) {
-      throw new ConvexError({
-        code: "invalid_email",
-        message: "That doesn't look like an email address.",
-      });
-    }
+    const rawEmail = s.email?.trim();
     return {
       ...s,
-      firstName,
-      lastName,
-      email: email !== undefined && email.length > 0 ? email : undefined,
+      firstName: assertText(s.firstName, {
+        label: "Speaker first name",
+        max: 80,
+      }),
+      lastName: assertText(s.lastName, { label: "Speaker last name", max: 80 }),
+      email:
+        rawEmail !== undefined && rawEmail.length > 0
+          ? normalizeEmail(rawEmail)
+          : undefined,
     };
   });
 
@@ -859,38 +861,6 @@ export async function setSpeakers(
   await ctx.db.patch("proposals", proposal._id, { updatedAt: Date.now() });
 }
 
-// ── Notification audience ────────────────────────────────────────────────
-
-type Recipient = { email: string; userId: Id<"users"> };
-
-/** Org owners/admins + event organizers, deduped by email. */
-async function organizerRecipients(
-  ctx: QueryCtx,
-  event: Doc<"events">,
-): Promise<Recipient[]> {
-  const byEmail = new Map<string, Recipient>();
-  const orgMembers = await ctx.db
-    .query("members")
-    .withIndex("by_orgId_and_userId", (q) => q.eq("orgId", event.orgId))
-    .take(200);
-  const eventMembers = await ctx.db
-    .query("eventMembers")
-    .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-    .take(200);
-  const userIds: Array<Id<"users">> = [
-    ...orgMembers.map((m) => m.userId),
-    ...eventMembers.filter((m) => m.role === "organizer").map((m) => m.userId),
-  ];
-  for (const userId of userIds) {
-    const user = await ctx.db.get("users", userId);
-    const email = user?.email?.trim().toLowerCase();
-    if (email === undefined || email.length === 0) continue;
-    if (byEmail.has(email)) continue;
-    byEmail.set(email, { email, userId });
-  }
-  return [...byEmail.values()];
-}
-
 // ── Submit ───────────────────────────────────────────────────────────────
 
 function proposalLink(eventSlug: string, proposalId: Id<"proposals">): string {
@@ -910,11 +880,7 @@ export async function submitProposal(
   user: Doc<"users">,
   proposalId: Id<"proposals">,
 ): Promise<{ successMessage: string | null }> {
-  const proposal = await requireOwnProposal(ctx, user, proposalId);
-  assertEditableStatus(proposal);
-  const event = await ctx.db.get("events", proposal.eventId);
-  if (event === null) notFoundProposal();
-  assertWindowOpen(event, proposal);
+  const { proposal, event } = await loadEditableProposal(ctx, user, proposalId);
   const { def, version, row } = await requirePublishedForm(ctx, event);
 
   // Required-field check runs against the CURRENT published form and only over
@@ -927,7 +893,7 @@ export async function submitProposal(
       invalidSubmission(`"${field.label}" is required.`);
     }
     if (field.kind === "email" && typeof value === "string" && value.trim()) {
-      if (!EMAIL_RE.test(value.trim())) {
+      if (!isEmail(value.trim())) {
         invalidSubmission(`"${field.label}" isn't a valid email address.`);
       }
     }
@@ -970,29 +936,22 @@ export async function submitProposal(
     });
   }
 
-  const adminSubject = isResubmit
-    ? `Updated proposal for ${event.name}: ${title}`
-    : `New proposal for ${event.name}: ${title}`;
-  const adminHtml = emailShell(
-    [
-      `<p>${isResubmit ? "A proposal was updated" : "A new proposal arrived"} for <strong>${escapeHtml(event.name)}</strong>.</p>`,
-      `<p><strong>${escapeHtml(title)}</strong><br />by ${escapeHtml(
-        speakers.map((s) => `${s.firstName} ${s.lastName}`).join(", "),
-      )}</p>`,
-      `<p><a href="${eventConsoleLink(event.slug)}">Open the event in StageStack</a></p>`,
-    ].join("\n"),
-  );
-  for (const recipient of await organizerRecipients(ctx, event)) {
-    await sendLoggedEmail(ctx, {
-      orgId: event.orgId,
-      eventId: event._id,
-      toEmail: recipient.email,
-      kind: "cfp.adminNotification",
-      subject: adminSubject,
-      html: adminHtml,
-      context: { proposalId: proposal._id, isResubmit },
-    });
-  }
+  await notifyOrganizers(ctx, event, {
+    kind: "cfp.adminNotification",
+    subject: isResubmit
+      ? `Updated proposal for ${event.name}: ${title}`
+      : `New proposal for ${event.name}: ${title}`,
+    html: emailShell(
+      [
+        `<p>${isResubmit ? "A proposal was updated" : "A new proposal arrived"} for <strong>${escapeHtml(event.name)}</strong>.</p>`,
+        `<p><strong>${escapeHtml(title)}</strong><br />by ${escapeHtml(
+          speakers.map((s) => `${s.firstName} ${s.lastName}`).join(", "),
+        )}</p>`,
+        `<p><a href="${eventConsoleLink(event.slug)}">Open the event in StageStack</a></p>`,
+      ].join("\n"),
+    ),
+    context: { proposalId: proposal._id, isResubmit },
+  });
 
   await logAudit(ctx, {
     orgId: event.orgId,
@@ -1014,6 +973,9 @@ export async function withdrawProposal(
   user: Doc<"users">,
   proposalId: Id<"proposals">,
 ): Promise<void> {
+  // Deliberately NOT loadEditableProposal: withdrawing stays available after
+  // the CFP closes, so there is no submission-window check here — only the
+  // status rules below.
   const proposal = await requireOwnProposal(ctx, user, proposalId);
   const event = await ctx.db.get("events", proposal.eventId);
   if (event === null) notFoundProposal();
@@ -1048,24 +1010,18 @@ export async function withdrawProposal(
       withdrawnAt: Date.now(),
       updatedAt: Date.now(),
     });
-    const html = emailShell(
-      [
-        `<p>A proposal for <strong>${escapeHtml(event.name)}</strong> was withdrawn by its submitter.</p>`,
-        `<p><strong>${escapeHtml(title)}</strong></p>`,
-        `<p><a href="${eventConsoleLink(event.slug)}">Open the event in StageStack</a></p>`,
-      ].join("\n"),
-    );
-    for (const recipient of await organizerRecipients(ctx, event)) {
-      await sendLoggedEmail(ctx, {
-        orgId: event.orgId,
-        eventId: event._id,
-        toEmail: recipient.email,
-        kind: "cfp.withdrawn",
-        subject: `Proposal withdrawn for ${event.name}: ${title}`,
-        html,
-        context: { proposalId: proposal._id },
-      });
-    }
+    await notifyOrganizers(ctx, event, {
+      kind: "cfp.withdrawn",
+      subject: `Proposal withdrawn for ${event.name}: ${title}`,
+      html: emailShell(
+        [
+          `<p>A proposal for <strong>${escapeHtml(event.name)}</strong> was withdrawn by its submitter.</p>`,
+          `<p><strong>${escapeHtml(title)}</strong></p>`,
+          `<p><a href="${eventConsoleLink(event.slug)}">Open the event in StageStack</a></p>`,
+        ].join("\n"),
+      ),
+      context: { proposalId: proposal._id },
+    });
   }
 
   await logAudit(ctx, {
@@ -1095,23 +1051,34 @@ export async function listProposals(
   caller: EventCaller,
   filters?: { status?: ProposalStatus },
 ): Promise<ProposalRow[]> {
-  requireOrganizerRole(caller);
+  requireOrganizer(caller);
   const eventId = caller.event._id;
   const status = filters?.status;
-  const proposals = await ctx.db
-    .query("proposals")
-    .withIndex("by_eventId_and_status", (q) =>
-      status === undefined
-        ? q.eq("eventId", eventId)
-        : q.eq("eventId", eventId).eq("status", status),
-    )
-    .order("desc")
-    .take(500);
-  const out: ProposalRow[] = [];
-  for (const proposal of proposals) {
-    const speakers = await listSpeakers(ctx, proposal._id);
-    out.push({ proposal, speakerCount: speakers.length });
+  const [proposals, speakerRows] = await Promise.all([
+    ctx.db
+      .query("proposals")
+      .withIndex("by_eventId_and_status", (q) =>
+        status === undefined
+          ? q.eq("eventId", eventId)
+          : q.eq("eventId", eventId).eq("status", status),
+      )
+      .order("desc")
+      .take(500),
+    // One event-wide read instead of a speaker query per proposal. 500
+    // proposals × 10 speakers is the hard ceiling, so 2000 is generous.
+    ctx.db
+      .query("proposalSpeakers")
+      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+      .take(2000),
+  ]);
+  const counts = new Map<Id<"proposals">, number>();
+  for (const row of speakerRows) {
+    counts.set(row.proposalId, (counts.get(row.proposalId) ?? 0) + 1);
   }
+  const out: ProposalRow[] = proposals.map((proposal) => ({
+    proposal,
+    speakerCount: counts.get(proposal._id) ?? 0,
+  }));
   // by_eventId_and_status orders by status first; present newest-first overall.
   return out.sort((a, b) => b.proposal._creationTime - a.proposal._creationTime);
 }
@@ -1123,13 +1090,10 @@ export async function reopenProposal(
   proposalId: Id<"proposals">,
   until: number,
 ): Promise<void> {
-  requireOrganizerRole(caller);
+  requireOrganizer(caller);
   const proposal = await ctx.db.get("proposals", proposalId);
   if (proposal === null || proposal.eventId !== caller.event._id) {
-    throw new ConvexError({
-      code: "not_found",
-      message: "No such proposal on this event.",
-    });
+    notFound("proposal", "No such proposal on this event.");
   }
   if (!Number.isFinite(until) || until <= Date.now()) {
     throw new ConvexError({

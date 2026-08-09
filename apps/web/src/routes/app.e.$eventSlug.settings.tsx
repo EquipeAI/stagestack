@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
@@ -13,6 +13,7 @@ import {
   IconButton,
   Input,
   Select,
+  StatusPill,
   Switch,
   Tag,
   Textarea,
@@ -256,7 +257,7 @@ function DatesSection({
     toInputValue(event.startsAt, event.timezone),
   )
   const [endsAt, setEndsAt] = useState(toInputValue(event.endsAt, event.timezone))
-  const zones = timezoneOptions(timezone)
+  const zones = useMemo(() => timezoneOptions(timezone), [timezone])
 
   const save = () => {
     const start = fromInputValue(startsAt, timezone)
@@ -358,7 +359,7 @@ function CfpSection({
     <Card
       title="Call for speakers"
       subtitle="The window and the publication state are independent."
-      actions={<Badge tone={published ? 'success' : 'neutral'} dot>{published ? 'Published' : 'Unpublished'}</Badge>}
+      actions={<StatusPill status={published ? 'Published' : 'Unpublished'} />}
       footer={<SectionFooter pending={pending} error={error} onSave={save} />}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>

@@ -16,6 +16,16 @@ export const Route = createFileRoute('/app/e/$eventSlug')({
   errorComponent: EventError,
 })
 
+// The single source of truth for the sidebar: it maps a tab to its route both
+// ways — pathname → active tab, and selected tab → navigation target.
+const TAB_PATHS = {
+  overview: '/app/e/$eventSlug',
+  settings: '/app/e/$eventSlug/settings',
+  team: '/app/e/$eventSlug/team',
+} as const
+
+type TabId = keyof typeof TAB_PATHS
+
 // Later milestones append to this list — CFP, Proposals, Reviews, Agenda,
 // Speakers — without touching the shell.
 const NAV_GROUPS = [
@@ -34,20 +44,15 @@ function EventLayout() {
   const navigate = useNavigate()
   const pathname = useLocation({ select: (l) => l.pathname })
 
-  const activeId = pathname.endsWith('/settings')
-    ? 'settings'
-    : pathname.endsWith('/team')
-      ? 'team'
-      : 'overview'
+  const current = pathname.replace(/\/$/, '')
+  const activeId =
+    (Object.keys(TAB_PATHS) as Array<TabId>).find(
+      (id) => TAB_PATHS[id].replace('$eventSlug', eventSlug) === current,
+    ) ?? 'overview'
 
   const onSelect = (id: string) => {
-    if (id === 'settings') {
-      void navigate({ to: '/app/e/$eventSlug/settings', params: { eventSlug } })
-    } else if (id === 'team') {
-      void navigate({ to: '/app/e/$eventSlug/team', params: { eventSlug } })
-    } else {
-      void navigate({ to: '/app/e/$eventSlug', params: { eventSlug } })
-    }
+    const to = id in TAB_PATHS ? TAB_PATHS[id as TabId] : TAB_PATHS.overview
+    void navigate({ to, params: { eventSlug } })
   }
 
   return (

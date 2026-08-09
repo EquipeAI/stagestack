@@ -4,6 +4,7 @@ import { useConvexAuth, useMutation } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type * as React from 'react'
 import { Button, Callout, Card } from '~/ds'
+import { PageBody } from '~/components/PageBody'
 import { errorMessage } from '~/lib/errors'
 
 /**
@@ -43,11 +44,11 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       </Show>
       <Show when="signed-in">
         {error !== null ? (
-          <GateShell>
+          <PageBody narrow>
             <Callout tone="blocked" title="Could not load your account">
               {error}
             </Callout>
-          </GateShell>
+          </PageBody>
         ) : provisioned ? (
           children
         ) : (
@@ -60,7 +61,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
 function SignedOutPrompt() {
   return (
-    <GateShell>
+    <PageBody narrow>
       <Card
         title="Sign in to StageStack"
         subtitle="Your organizations, events and speaker operations live behind sign-in."
@@ -75,13 +76,13 @@ function SignedOutPrompt() {
           waiting for you.
         </p>
       </Card>
-    </GateShell>
+    </PageBody>
   )
 }
 
 function GateStatus({ children }: { children: React.ReactNode }) {
   return (
-    <GateShell>
+    <PageBody narrow>
       <p
         style={{
           color: 'var(--text-tertiary)',
@@ -91,20 +92,6 @@ function GateStatus({ children }: { children: React.ReactNode }) {
       >
         {children}
       </p>
-    </GateShell>
-  )
-}
-
-function GateShell({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        maxWidth: 'var(--content-max-prose)',
-        margin: '0 auto',
-        padding: 'var(--pad-section) var(--page-gutter)',
-      }}
-    >
-      {children}
-    </div>
+    </PageBody>
   )
 }

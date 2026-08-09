@@ -19,6 +19,7 @@ import {
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
 import { formatDateTime } from '~/lib/datetime'
+import { ROLE_LABEL } from '~/lib/roles'
 
 export const Route = createFileRoute('/app/e/$eventSlug/team')({
   component: Team,
@@ -32,13 +33,6 @@ type Member = {
   role: 'owner' | 'admin' | 'organizer' | 'reviewer'
   scope: 'organization' | 'event'
   eventMemberId: Id<'eventMembers'> | null
-}
-
-const ROLE_LABEL: Record<Member['role'], string> = {
-  owner: 'Owner',
-  admin: 'Admin',
-  organizer: 'Organizer',
-  reviewer: 'Reviewer',
 }
 
 function Team() {
@@ -221,9 +215,7 @@ function InvitationRow({
       }}
     >
       <span style={{ flex: '1 1 14rem', minWidth: 0 }}>{invitation.email}</span>
-      <Badge tone="neutral">
-        {invitation.role.charAt(0).toUpperCase() + invitation.role.slice(1)}
-      </Badge>
+      <Badge tone="neutral">{ROLE_LABEL[invitation.role]}</Badge>
       {expired ? (
         <Badge tone="attention" dot>
           Expired

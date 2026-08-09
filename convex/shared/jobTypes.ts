@@ -16,8 +16,6 @@ export type JobPayload<T extends JobType> = Infer<
   (typeof jobPayloadValidators)[T]
 >;
 
-export const jobTypes = Object.keys(jobPayloadValidators) as JobType[];
-
 export function isJobType(type: string): type is JobType {
   return type in jobPayloadValidators;
 }

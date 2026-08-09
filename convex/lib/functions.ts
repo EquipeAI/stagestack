@@ -23,8 +23,12 @@ export type OrgCaller = {
   org: Doc<"organizations">;
   /** Org-wide role, null when access comes only from event membership. */
   orgRole: OrgRole | null;
-  /** True when the user is an organizer of at least one event in the org. */
+  /** True when the user is an organizer of at least one event in the org.
+   * Always true for org owner/admins — they organize every event. */
   organizesEvents: boolean;
+  /** This user's event memberships within this org. Empty for org
+   * owner/admins: their access doesn't depend on them, so we never query. */
+  eventMemberships: Array<Doc<"eventMembers">>;
 };
 
 export type EventCaller = {
@@ -40,8 +44,11 @@ export function forbidden(message = "You don't have access to this."): never {
   throw new ConvexError({ code: "forbidden", message });
 }
 
-export function notFound(what = "resource"): never {
-  throw new ConvexError({ code: "not_found", message: `No such ${what}.` });
+export function notFound(what = "resource", message?: string): never {
+  throw new ConvexError({
+    code: "not_found",
+    message: message ?? `No such ${what}.`,
+  });
 }
 
 export async function requireUser(ctx: QueryCtx): Promise<Doc<"users">> {
@@ -85,16 +92,32 @@ async function resolveOrgCaller(
       q.eq("orgId", org._id).eq("userId", user._id),
     )
     .unique();
+  // Org owner/admins already see everything in the org, so their event
+  // memberships change nothing — skip the scan entirely.
+  if (membership !== null) {
+    return {
+      user,
+      org,
+      orgRole: membership.role,
+      organizesEvents: true,
+      eventMemberships: [],
+    };
+  }
   const eventMemberships = await ctx.db
     .query("eventMembers")
     .withIndex("by_userId", (q) => q.eq("userId", user._id))
     .take(200);
   const inOrg = eventMemberships.filter((m) => m.orgId === org._id);
-  const organizesEvents = inOrg.some((m) => m.role === "organizer");
-  if (membership === null && inOrg.length === 0) {
+  if (inOrg.length === 0) {
     forbidden("You are not a member of this organization.");
   }
-  return { user, org, orgRole: membership?.role ?? null, organizesEvents };
+  return {
+    user,
+    org,
+    orgRole: null,
+    organizesEvents: inOrg.some((m) => m.role === "organizer"),
+    eventMemberships: inOrg,
+  };
 }
 
 export async function resolveEventCaller(
@@ -198,7 +221,8 @@ export const eventMutation = customMutation(mutation, {
   },
 });
 
-/** Event-scoped write available to reviewers too (e.g. submitting reviews). */
+/** Event-scoped write available to reviewers too. M2's review submission
+ * (reviewers scoring proposals) is built on this wrapper. */
 export const eventMemberMutation = customMutation(mutation, {
   args: { eventSlug: v.string() },
   input: async (ctx: MutationCtx, args: { eventSlug: string }) => ({

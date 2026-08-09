@@ -69,11 +69,6 @@ export function formatDateTime(ms: number, zone: string) {
   return dt.isValid ? dt.toFormat('d LLL yyyy, HH:mm ZZZZ') : '—'
 }
 
-export function formatDate(ms: number, zone: string) {
-  const dt = DateTime.fromMillis(ms, { zone })
-  return dt.isValid ? dt.toFormat('d LLL yyyy') : '—'
-}
-
 /** "14–16 Apr 2026" · "14 Apr 2026, 09:00–17:00" — always in the event zone. */
 export function formatDateRange(startsAt: number, endsAt: number, zone: string) {
   const start = DateTime.fromMillis(startsAt, { zone })
@@ -87,10 +82,4 @@ export function formatDateRange(startsAt: number, endsAt: number, zone: string) 
     return `${start.toFormat(sameMonth ? 'd' : 'd LLL')}–${end.toFormat('d LLL yyyy')}`
   }
   return `${start.toFormat('d LLL yyyy')} – ${end.toFormat('d LLL yyyy')}`
-}
-
-/** Short zone label for a moment, e.g. PDT. */
-export function zoneAbbreviation(ms: number, zone: string) {
-  const dt = DateTime.fromMillis(ms, { zone })
-  return dt.isValid ? dt.toFormat('ZZZZ') : zone
 }

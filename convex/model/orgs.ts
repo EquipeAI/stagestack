@@ -1,8 +1,8 @@
-import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc } from "../_generated/dataModel";
 import { uniqueSlug } from "./slugs";
 import { logAudit } from "./audit";
+import { assertText } from "./validation";
 
 /**
  * Self-service onboarding (MILESTONES M0): any verified user can create an
@@ -13,13 +13,7 @@ export async function createOrg(
   user: Doc<"users">,
   name: string,
 ): Promise<Doc<"organizations">> {
-  const trimmed = name.trim();
-  if (trimmed.length === 0 || trimmed.length > 100) {
-    throw new ConvexError({
-      code: "invalid_name",
-      message: "Organization name must be 1-100 characters.",
-    });
-  }
+  const trimmed = assertText(name, { label: "Organization name", max: 100 });
   const slug = await uniqueSlug(ctx, "organizations", trimmed);
   const orgId = await ctx.db.insert("organizations", {
     name: trimmed,
@@ -66,19 +60,26 @@ export async function myHome(
     .withIndex("by_userId", (q) => q.eq("userId", user._id))
     .take(200);
 
+  // Org owner/admin see every event in the org.
+  const orgRows = await Promise.all(
+    memberships.map(async (m) => {
+      const [org, events] = await Promise.all([
+        ctx.db.get("organizations", m.orgId),
+        ctx.db
+          .query("events")
+          .withIndex("by_orgId", (q) => q.eq("orgId", m.orgId))
+          .take(100),
+      ]);
+      return org === null ? null : { org, role: m.role, events };
+    }),
+  );
+
   const result: HomeOrg[] = [];
   const seenOrgIds = new Set<string>();
-
-  for (const m of memberships) {
-    const org = await ctx.db.get("organizations", m.orgId);
-    if (org === null) continue;
-    seenOrgIds.add(org._id);
-    // Org owner/admin see every event in the org.
-    const events = await ctx.db
-      .query("events")
-      .withIndex("by_orgId", (q) => q.eq("orgId", org._id))
-      .take(100);
-    result.push({ org, role: m.role, events });
+  for (const row of orgRows) {
+    if (row === null) continue;
+    seenOrgIds.add(row.org._id);
+    result.push(row);
   }
 
   // Event-scoped memberships in orgs the user isn't an org member of.
@@ -89,18 +90,22 @@ export async function myHome(
     list.push(em);
     scopedByOrg.set(em.orgId, list);
   }
-  for (const [orgId, ems] of scopedByOrg) {
-    const org = await ctx.db.get(
-      "organizations",
-      orgId as Doc<"organizations">["_id"],
-    );
-    if (org === null) continue;
-    const events: Array<Doc<"events">> = [];
-    for (const em of ems) {
-      const event = await ctx.db.get("events", em.eventId);
-      if (event !== null) events.push(event);
-    }
-    result.push({ org, role: null, events });
+  const scopedRows = await Promise.all(
+    [...scopedByOrg].map(async ([orgId, ems]) => {
+      const [org, events] = await Promise.all([
+        ctx.db.get("organizations", orgId as Doc<"organizations">["_id"]),
+        Promise.all(ems.map((em) => ctx.db.get("events", em.eventId))),
+      ]);
+      if (org === null) return null;
+      return {
+        org,
+        role: null,
+        events: events.filter((e): e is Doc<"events"> => e !== null),
+      };
+    }),
+  );
+  for (const row of scopedRows) {
+    if (row !== null) result.push(row);
   }
   return result;
 }

@@ -29,6 +29,7 @@ import type * as model_library from "../model/library.js";
 import type * as model_orgs from "../model/orgs.js";
 import type * as model_slugs from "../model/slugs.js";
 import type * as model_team from "../model/team.js";
+import type * as model_validation from "../model/validation.js";
 import type * as orgs from "../orgs.js";
 import type * as shared_formDef from "../shared/formDef.js";
 import type * as shared_jobTypes from "../shared/jobTypes.js";
@@ -64,6 +65,7 @@ declare const fullApi: ApiFromModules<{
   "model/orgs": typeof model_orgs;
   "model/slugs": typeof model_slugs;
   "model/team": typeof model_team;
+  "model/validation": typeof model_validation;
   orgs: typeof orgs;
   "shared/formDef": typeof shared_formDef;
   "shared/jobTypes": typeof shared_jobTypes;

@@ -2,8 +2,9 @@ import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { OrgCaller } from "../lib/functions";
-import { forbidden } from "../lib/functions";
+import { forbidden, notFound } from "../lib/functions";
 import { logAudit } from "./audit";
+import { assertText, normalizeEmail } from "./validation";
 
 // Org contact directory (M0): current reusable profiles. Event snapshots are
 // copied from these when a contact joins an event (M2+); snapshots never
@@ -34,28 +35,22 @@ export function requireDirectoryAccess(caller: OrgCaller): void {
 }
 
 function validateProfile(input: ContactProfileInput): ContactProfileInput {
-  const firstName = input.firstName.trim();
-  const lastName = input.lastName.trim();
-  if (firstName.length === 0 || firstName.length > 80) {
-    throw new ConvexError({
-      code: "invalid_name",
-      message: "First name must be 1-80 characters.",
-    });
-  }
-  if (lastName.length > 80) {
-    throw new ConvexError({
-      code: "invalid_name",
-      message: "Last name must be at most 80 characters.",
-    });
-  }
-  const email = input.email?.trim().toLowerCase();
-  if (email !== undefined && email.length > 0 && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    throw new ConvexError({
-      code: "invalid_email",
-      message: "That doesn't look like an email address.",
-    });
-  }
-  return { ...input, firstName, lastName, email: email || undefined };
+  const firstName = assertText(input.firstName, {
+    label: "First name",
+    max: 80,
+  });
+  // Last name is optional on a contact — bounded, but may be blank.
+  const lastName = assertText(input.lastName, {
+    label: "Last name",
+    max: 80,
+    min: 0,
+  });
+  const rawEmail = input.email?.trim();
+  const email =
+    rawEmail !== undefined && rawEmail.length > 0
+      ? normalizeEmail(rawEmail)
+      : undefined;
+  return { ...input, firstName, lastName, email };
 }
 
 export async function listContacts(
@@ -127,10 +122,7 @@ export async function updateContact(
   requireDirectoryAccess(caller);
   const contact = await ctx.db.get("contacts", contactId);
   if (contact === null || contact.orgId !== caller.org._id) {
-    throw new ConvexError({
-      code: "not_found",
-      message: "No such contact in this organization.",
-    });
+    notFound("contact", "No such contact in this organization.");
   }
   const profile = validateProfile(input);
   if (profile.email !== undefined && profile.email !== contact.email) {

@@ -28,7 +28,17 @@ export const ensure = mutation({
       imageUrl: identity.pictureUrl,
     };
     if (existing !== null) {
-      await ctx.db.patch("users", existing._id, profile);
+      // The client calls this on every auth state change; only write when the
+      // Clerk profile actually moved, so we don't churn the row (and every
+      // query subscribed to it) on each page load.
+      const changed =
+        existing.clerkSubject !== profile.clerkSubject ||
+        existing.email !== profile.email ||
+        existing.name !== profile.name ||
+        existing.imageUrl !== profile.imageUrl;
+      if (changed) {
+        await ctx.db.patch("users", existing._id, profile);
+      }
       return existing._id;
     }
     return await ctx.db.insert("users", {

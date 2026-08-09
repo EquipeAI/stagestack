@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
@@ -30,6 +30,7 @@ import {
   fromInputValue,
   timezoneOptions,
 } from '~/lib/datetime'
+import { ROLE_LABEL } from '~/lib/roles'
 
 export const Route = createFileRoute('/app/org/$orgSlug')({
   component: OrgPage,
@@ -159,7 +160,7 @@ function NewEventDialog({
   const [startsAt, setStartsAt] = useState('')
   const [endsAt, setEndsAt] = useState('')
   const [timezone, setTimezone] = useState(browserTimezone())
-  const zones = timezoneOptions(timezone)
+  const zones = useMemo(() => timezoneOptions(timezone), [timezone])
 
   const submit = () => {
     const start = fromInputValue(startsAt, timezone)
@@ -257,12 +258,22 @@ type ContactDoc = Doc<'contacts'>
 
 function ContactsTab({ orgSlug }: { orgSlug: string }) {
   const [search, setSearch] = useState('')
-  const contacts = useQuery(api.contacts.list, {
-    orgSlug,
-    search: search.trim() === '' ? undefined : search.trim(),
-  })
+  // One subscription for the whole directory; the search box filters locally so
+  // typing never re-subscribes.
+  const contacts = useQuery(api.contacts.list, { orgSlug })
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<ContactDoc | null>(null)
+
+  const needle = search.trim().toLowerCase()
+  const visible = useMemo(() => {
+    if (contacts === undefined) return undefined
+    if (needle === '') return contacts
+    return contacts.filter((contact) =>
+      [contact.firstName, contact.lastName, contact.email, contact.tagline].some(
+        (field) => field !== undefined && field.toLowerCase().includes(needle),
+      ),
+    )
+  }, [contacts, needle])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
@@ -280,9 +291,9 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
           </Button>
         }
       />
-      {contacts === undefined ? (
+      {visible === undefined ? (
         <p style={{ color: 'var(--text-tertiary)' }}>Loading contacts…</p>
-      ) : contacts.length === 0 ? (
+      ) : visible.length === 0 ? (
         <Card>
           <EmptyState
             icon="users"
@@ -334,7 +345,7 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
                 cell: (row: ContactDoc) => row.tagline ?? '—',
               },
             ]}
-            rows={contacts}
+            rows={visible}
           />
         </Card>
       )}
@@ -554,8 +565,7 @@ function OrgTeamTab({ orgSlug }: { orgSlug: string }) {
             {
               key: 'role',
               header: 'Role',
-              cell: (row: OrgTeamMember) =>
-                row.role === 'owner' ? 'Owner' : 'Admin',
+              cell: (row: OrgTeamMember) => ROLE_LABEL[row.role],
             },
           ]}
           rows={team.members}
@@ -582,7 +592,7 @@ function OrgTeamTab({ orgSlug }: { orgSlug: string }) {
               <span>
                 {invitation.email}{' '}
                 <span style={{ color: 'var(--text-tertiary)' }}>
-                  ({invitation.role})
+                  ({ROLE_LABEL[invitation.role]})
                 </span>
               </span>
               <Button

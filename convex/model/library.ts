@@ -1,8 +1,9 @@
-import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
+import { notFound } from "../lib/functions";
 import { logAudit } from "./audit";
+import { assertText } from "./validation";
 
 // Event library (M0): tracks, tags, rooms, custom fields — one generic CRUD
 // over the four tables since they share shape and rules.
@@ -49,14 +50,7 @@ export async function listLibrary(
 }
 
 function assertName(name: string): string {
-  const trimmed = name.trim();
-  if (trimmed.length === 0 || trimmed.length > 80) {
-    throw new ConvexError({
-      code: "invalid_name",
-      message: "Name must be 1-80 characters.",
-    });
-  }
-  return trimmed;
+  return assertText(name, { label: "Name", max: 80 });
 }
 
 async function nextOrder(
@@ -147,10 +141,7 @@ async function getScoped<T extends LibraryKind>(
     ? ((await ctx.db.get(table, normalized as Id<T>)) as Doc<T> | null)
     : null;
   if (row === null || row.eventId !== caller.event._id) {
-    throw new ConvexError({
-      code: "not_found",
-      message: "No such library item in this event.",
-    });
+    notFound("library item", "No such library item in this event.");
   }
   return row;
 }

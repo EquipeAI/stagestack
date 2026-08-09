@@ -1,5 +1,5 @@
-import type { MutationCtx } from "../_generated/server";
-import type { Id } from "../_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "../_generated/server";
+import type { Doc, Id } from "../_generated/dataModel";
 import { resend } from "../emails";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -75,4 +75,59 @@ export async function sendLoggedEmail(
     sentByUserId: args.sentByUserId,
     context: args.context,
   });
+}
+
+// ── Organizer notification audience ──────────────────────────────────────
+
+export type Recipient = { email: string; userId: Id<"users"> };
+
+/** Org owners/admins + event organizers, deduped by email. */
+export async function organizerRecipients(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+): Promise<Recipient[]> {
+  const [orgMembers, eventMembers] = await Promise.all([
+    ctx.db
+      .query("members")
+      .withIndex("by_orgId_and_userId", (q) => q.eq("orgId", event.orgId))
+      .take(200),
+    ctx.db
+      .query("eventMembers")
+      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
+      .take(200),
+  ]);
+  const userIds: Array<Id<"users">> = [
+    ...orgMembers.map((m) => m.userId),
+    ...eventMembers.filter((m) => m.role === "organizer").map((m) => m.userId),
+  ];
+  const users = await Promise.all(
+    userIds.map((userId) => ctx.db.get("users", userId)),
+  );
+  const byEmail = new Map<string, Recipient>();
+  for (const [i, user] of users.entries()) {
+    const email = user?.email?.trim().toLowerCase();
+    if (email === undefined || email.length === 0) continue;
+    if (byEmail.has(email)) continue;
+    byEmail.set(email, { email, userId: userIds[i] });
+  }
+  return [...byEmail.values()];
+}
+
+/** Fan one logged email out to everyone who organizes `event`. */
+export async function notifyOrganizers(
+  ctx: MutationCtx,
+  event: Doc<"events">,
+  args: { kind: string; subject: string; html: string; context?: unknown },
+): Promise<void> {
+  for (const recipient of await organizerRecipients(ctx, event)) {
+    await sendLoggedEmail(ctx, {
+      orgId: event.orgId,
+      eventId: event._id,
+      toEmail: recipient.email,
+      kind: args.kind,
+      subject: args.subject,
+      html: args.html,
+      context: args.context,
+    });
+  }
 }

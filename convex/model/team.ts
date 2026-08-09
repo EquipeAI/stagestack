@@ -2,9 +2,10 @@ import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller, EventRole, OrgCaller, OrgRole } from "../lib/functions";
-import { forbidden, requireOrgAdmin } from "../lib/functions";
+import { forbidden, notFound, requireOrgAdmin } from "../lib/functions";
 import { logAudit } from "./audit";
 import { emailShell, escapeHtml, sendLoggedEmail, siteUrl } from "./comms";
+import { normalizeEmail } from "./validation";
 
 const INVITE_TTL_MS = 14 * 24 * 3600 * 1000;
 
@@ -12,17 +13,6 @@ function inviteToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function normalizeEmail(email: string): string {
-  const normalized = email.trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized)) {
-    throw new ConvexError({
-      code: "invalid_email",
-      message: "That doesn't look like an email address.",
-    });
-  }
-  return normalized;
 }
 
 async function sendInviteEmail(
@@ -299,10 +289,7 @@ export async function revokeInvitation(
   // Scope to the caller's event, not just the org: an organizer of event A
   // must not be able to revoke event B's invitations.
   if (invite === null || invite.eventId !== caller.event._id) {
-    throw new ConvexError({
-      code: "not_found",
-      message: "No such invitation.",
-    });
+    notFound("invitation");
   }
   await ctx.db.patch("invitations", invitationId, { status: "revoked" });
   await logAudit(ctx, {
@@ -326,6 +313,41 @@ export type TeamMember = {
   eventMemberId: Id<"eventMembers"> | null;
 };
 
+/** A membership row from either `members` or `eventMembers`. */
+type MembershipRow = {
+  _id: Id<"members"> | Id<"eventMembers">;
+  userId: Id<"users">;
+  role: OrgRole | EventRole;
+};
+
+/** Hydrate membership rows into TeamMembers, dropping rows whose user is
+ * gone. One parallel batch of gets rather than a serial loop. */
+async function toTeamMembers(
+  ctx: QueryCtx,
+  rows: MembershipRow[],
+  scope: "organization" | "event",
+): Promise<TeamMember[]> {
+  const users = await Promise.all(
+    rows.map((m) => ctx.db.get("users", m.userId)),
+  );
+  const members: TeamMember[] = [];
+  for (const [i, m] of rows.entries()) {
+    const u = users[i];
+    if (u === null) continue;
+    members.push({
+      userId: u._id,
+      name: u.name ?? null,
+      email: u.email ?? null,
+      imageUrl: u.imageUrl ?? null,
+      role: m.role,
+      scope,
+      eventMemberId:
+        scope === "event" ? (m._id as Id<"eventMembers">) : null,
+    });
+  }
+  return members;
+}
+
 /** Everyone with access to an event: org owner/admins + event members.
  * Pending invitations (which carry bearer tokens) are organizer-only: a
  * reviewer who could read an organizer-invite token could accept it and
@@ -337,41 +359,20 @@ export async function listEventTeam(
   members: TeamMember[];
   invitations: Array<Doc<"invitations">>;
 }> {
-  const members: TeamMember[] = [];
-  const orgMembers = await ctx.db
-    .query("members")
-    .withIndex("by_orgId_and_userId", (q) => q.eq("orgId", caller.org._id))
-    .take(100);
-  for (const m of orgMembers) {
-    const u = await ctx.db.get("users", m.userId);
-    if (u === null) continue;
-    members.push({
-      userId: u._id,
-      name: u.name ?? null,
-      email: u.email ?? null,
-      imageUrl: u.imageUrl ?? null,
-      role: m.role,
-      scope: "organization",
-      eventMemberId: null,
-    });
-  }
-  const eventMembers = await ctx.db
-    .query("eventMembers")
-    .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
-    .take(200);
-  for (const m of eventMembers) {
-    const u = await ctx.db.get("users", m.userId);
-    if (u === null) continue;
-    members.push({
-      userId: u._id,
-      name: u.name ?? null,
-      email: u.email ?? null,
-      imageUrl: u.imageUrl ?? null,
-      role: m.role,
-      scope: "event",
-      eventMemberId: m._id,
-    });
-  }
+  const [orgMembers, eventMembers] = await Promise.all([
+    ctx.db
+      .query("members")
+      .withIndex("by_orgId_and_userId", (q) => q.eq("orgId", caller.org._id))
+      .take(100),
+    ctx.db
+      .query("eventMembers")
+      .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+      .take(200),
+  ]);
+  const members = [
+    ...(await toTeamMembers(ctx, orgMembers, "organization")),
+    ...(await toTeamMembers(ctx, eventMembers, "event")),
+  ];
   const invitations =
     caller.role === "organizer"
       ? (
@@ -394,24 +395,11 @@ export async function listOrgTeam(
   invitations: Array<Doc<"invitations">>;
 }> {
   requireOrgAdmin(caller);
-  const members: TeamMember[] = [];
   const orgMembers = await ctx.db
     .query("members")
     .withIndex("by_orgId_and_userId", (q) => q.eq("orgId", caller.org._id))
     .take(100);
-  for (const m of orgMembers) {
-    const u = await ctx.db.get("users", m.userId);
-    if (u === null) continue;
-    members.push({
-      userId: u._id,
-      name: u.name ?? null,
-      email: u.email ?? null,
-      imageUrl: u.imageUrl ?? null,
-      role: m.role,
-      scope: "organization",
-      eventMemberId: null,
-    });
-  }
+  const members = await toTeamMembers(ctx, orgMembers, "organization");
   const invitations = (
     await ctx.db
       .query("invitations")
@@ -439,10 +427,7 @@ export async function revokeOrgInvitation(
     invite.orgId !== caller.org._id ||
     invite.eventId !== undefined
   ) {
-    throw new ConvexError({
-      code: "not_found",
-      message: "No such invitation.",
-    });
+    notFound("invitation");
   }
   await ctx.db.patch("invitations", invitationId, { status: "revoked" });
   await logAudit(ctx, {
@@ -461,10 +446,7 @@ export async function removeEventMember(
 ): Promise<void> {
   const membership = await ctx.db.get("eventMembers", memberDocId);
   if (membership === null || membership.eventId !== caller.event._id) {
-    throw new ConvexError({
-      code: "not_found",
-      message: "No such team member on this event.",
-    });
+    notFound("team member", "No such team member on this event.");
   }
   await ctx.db.delete("eventMembers", memberDocId);
   await logAudit(ctx, {

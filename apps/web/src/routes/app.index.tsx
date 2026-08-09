@@ -109,7 +109,7 @@ function Home() {
           )}
         </section>
       ))}
-      <NewOrgDialog open={creating} onClose={() => setCreating(false)} />
+      {creating ? <NewOrgDialog onClose={() => setCreating(false)} /> : null}
     </PageBody>
   )
 }
@@ -170,15 +170,14 @@ function Onboarding() {
   )
 }
 
-function NewOrgDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+function NewOrgDialog({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('')
   const { pending, error, submit } = useCreateOrg()
-  if (!open) return null
   const disabled = pending || name.trim().length === 0
 
   return (
     <Dialog
-      open={open}
+      open
       title="New organization"
       description="You become its owner. You can invite admins afterwards."
       onClose={pending ? undefined : onClose}

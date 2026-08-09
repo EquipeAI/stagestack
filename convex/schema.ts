@@ -201,15 +201,6 @@ export default defineSchema({
     finishedAt: v.optional(v.number()),
   }).index("by_status", ["status"]),
 
-  // CFP wizard drafts, created unauthenticated (public path, rate-limited).
-  // anonKey is the client-generated session key; the draft is linked to a
-  // real account at the wizard's account step (M1).
-  cfpDrafts: defineTable({
-    talkTitle: v.string(),
-    anonKey: v.string(),
-    status: v.literal("draft"),
-  }).index("by_anonKey", ["anonKey"]),
-
   // ── CFP (M1) ─────────────────────────────────────────────────────────
   // One form per event. `working` is the organizer's private draft;
   // `published` is what the public wizard renders (absent until first
@@ -251,7 +242,9 @@ export default defineSchema({
     reopenedUntil: v.optional(v.number()),
   })
     .index("by_eventId_and_status", ["eventId", "status"])
-    .index("by_submitterUserId", ["submitterUserId"]),
+    .index("by_submitterUserId", ["submitterUserId"])
+    // Scopes the per-user submission-limit count to one event.
+    .index("by_submitterUserId_and_eventId", ["submitterUserId", "eventId"]),
 
   // Speakers entered in the wizard — no accounts required pre-acceptance.
   proposalSpeakers: defineTable({
@@ -275,7 +268,10 @@ export default defineSchema({
     ),
     // True when this row mirrors the submitter themself.
     isPrimary: v.boolean(),
-  }).index("by_proposalId", ["proposalId"]),
+  })
+    .index("by_proposalId", ["proposalId"])
+    // One-query speaker counts for the organizer's proposal list.
+    .index("by_eventId", ["eventId"]),
 
   // ── Comms log (starts M1; grows in M5) ───────────────────────────────
   // Every email StageStack sends is recorded here; the Resend webhook

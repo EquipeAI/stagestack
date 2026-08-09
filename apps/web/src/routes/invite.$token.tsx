@@ -5,17 +5,11 @@ import { api } from '@convex/_generated/api'
 import { Badge, Button, Callout, Card, DescriptionList, Logo } from '~/ds'
 import { PageBody } from '~/components/PageBody'
 import { usePending } from '~/lib/usePending'
+import { ROLE_LABEL } from '~/lib/roles'
 
 export const Route = createFileRoute('/invite/$token')({
   component: InvitePage,
 })
-
-const ROLE_LABEL: Record<string, string> = {
-  owner: 'Owner',
-  admin: 'Admin',
-  organizer: 'Organizer',
-  reviewer: 'Reviewer',
-}
 
 function InvitePage() {
   const { token } = Route.useParams()
@@ -67,6 +61,12 @@ function InvitationCard({
   token: string
   invitation: Invitation
 }) {
+  // The API types `role` loosely, so fall back to the raw slug.
+  const roleLabel =
+    invitation.role in ROLE_LABEL
+      ? ROLE_LABEL[invitation.role as keyof typeof ROLE_LABEL]
+      : invitation.role
+
   return (
     <Card
       title={
@@ -75,7 +75,9 @@ function InvitationCard({
           : `Join ${invitation.eventName}`
       }
       subtitle="You were invited to StageStack."
-      actions={<Badge tone="neutral">{ROLE_LABEL[invitation.role] ?? invitation.role}</Badge>}
+      actions={
+        <Badge tone="neutral">{roleLabel}</Badge>
+      }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
         <DescriptionList
@@ -84,7 +86,7 @@ function InvitationCard({
             { term: 'Event', value: invitation.eventName ?? 'Organization-wide' },
             {
               term: 'Role',
-              value: ROLE_LABEL[invitation.role] ?? invitation.role,
+              value: roleLabel,
             },
           ]}
         />

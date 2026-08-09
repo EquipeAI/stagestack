@@ -36,6 +36,20 @@ async function slugTaken(
   return existing !== null;
 }
 
+/** Throw `slug_taken` when a caller-chosen slug is already in use. */
+export async function assertSlugFree(
+  ctx: QueryCtx,
+  table: SlugTable,
+  slug: string,
+): Promise<void> {
+  if (await slugTaken(ctx, table, slug)) {
+    throw new ConvexError({
+      code: "slug_taken",
+      message: "That slug is already in use.",
+    });
+  }
+}
+
 /** Derive a unique slug from a display name, suffixing -2, -3, … on collision. */
 export async function uniqueSlug(
   ctx: QueryCtx,
