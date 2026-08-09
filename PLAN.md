@@ -2,11 +2,17 @@
 
 Current focus only. Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) · [docs/CHALLENGE.md](docs/CHALLENGE.md) · milestones: [docs/MILESTONES.md](docs/MILESTONES.md)
 
-## Now: M7 — Public content out (page, API, embeds) + M3-M6 codex fixes
+## Now: Final wrap-up — acceptance pass, repo sweep, submission
 
-M0-M6 all built, browser + prod verified, deployed. codex M3-M6 review triaged (fixes agent running): fixing .ics RFC correctness (quoted CN + terminal CRLF), first-reminder cadence baseline, one-email-per-recipient sweep consolidation, task routing stays on manager after portal claim, session-task accountable assignee, audience-truncation visibility, ack idempotency, agenda-item room clear, profile-link validation, executeRecords/listAudiences organizer re-check. Deferred (logged): the M6 publication boundary IS M7 (building now); released-change detection for track/title/description is a v1 limitation (only start/end/room propagate).
+All 8 milestones (M0-M7) built, browser + prod verified, deployed. 220 tests green. Remaining: full CHALLENGE.md acceptance walkthrough on stagestack.dev, secret/history sweep, submission summary. Before-submission list below still stands (Clerk prod instance is the key hand item).
 
-Remaining: M7 backend (publishedPrograms projection, publish/unpublish lineup+agenda independently, public read query + HTTP API + embed), public event page, browser + prod verify, then final acceptance sweep.
+## Done: M7 — Public content out — Aug 9
+
+- [x] One shared published-program projection (model/publish.ts): only Confirmed speakers named, awaiting -> "to be announced", NO contact/backstage/host data in the blob; republish is the sole writer; unpublish = flag flip + rewrite
+- [x] Independent lineup vs agenda publication; per-session + per-agenda-item flags; public page toggle
+- [x] Public read: unauthenticated query (SSR event page) + HTTP API GET /api/events/<slug>/program (CORS, 60s cache) — same blob so page/API/embed can't disagree
+- [x] Public event page /e/<slug> (SSR + OG meta), publish console, embed /embed/<slug>
+- [x] Browser + API verified: publish -> API returns confirmed-only projection (privacy invariant holds) -> page + embed render; 220 tests (7 new)
 
 ## Done: M6 — Agenda builder — Aug 9
 
