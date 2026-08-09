@@ -5,6 +5,7 @@
 import { ConvexClient } from "convex/browser";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
+import { isJobType, type JobType } from "../../../convex/shared/jobTypes";
 import { runHelloAgent } from "./hello-agent";
 
 const CONVEX_URL = process.env.CONVEX_URL;
@@ -21,15 +22,18 @@ const inFlight = new Set<string>();
 
 type PendingJob = { _id: Id<"jobs">; type: string; payload: unknown };
 
+// One handler per registry entry (convex/shared/jobTypes.ts). Adding a job
+// type without a handler here is a compile error.
+const handlers: { [K in JobType]: (job: PendingJob) => Promise<unknown> } = {
+  ping: async (job) => ({ pong: true, at: Date.now(), payload: job.payload }),
+  "hello-agent": async (job) => await runHelloAgent(job._id),
+};
+
 async function runJob(job: PendingJob): Promise<unknown> {
-  switch (job.type) {
-    case "ping":
-      return { pong: true, at: Date.now(), payload: job.payload };
-    case "hello-agent":
-      return await runHelloAgent(job._id);
-    default:
-      throw new Error(`Unknown job type: ${job.type}`);
+  if (!isJobType(job.type)) {
+    throw new Error(`Unknown job type: ${job.type}`);
   }
+  return await handlers[job.type](job);
 }
 
 async function claimAndRun(job: PendingJob) {

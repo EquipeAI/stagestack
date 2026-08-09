@@ -1,5 +1,7 @@
 import { internalMutation, mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import { isJobType } from "./shared/jobTypes";
+import { enqueueJob } from "./model/jobs";
 
 // Worker-facing functions, guarded by a shared secret (WORKER_SECRET env var on
 // the deployment). V1 judgment call per docs/ARCHITECTURE.md; upgrade path is a
@@ -79,10 +81,13 @@ export const enqueueTest = internalMutation({
   args: { type: v.optional(v.string()) },
   returns: v.id("jobs"),
   handler: async (ctx, args) => {
-    return await ctx.db.insert("jobs", {
-      type: args.type ?? "ping",
-      payload: { sentAt: Date.now() },
-      status: "queued",
-    });
+    const type = args.type ?? "ping";
+    if (!isJobType(type)) {
+      throw new ConvexError({
+        code: "unknown_job_type",
+        message: `Unknown job type: ${type}`,
+      });
+    }
+    return await enqueueJob(ctx, type, { sentAt: Date.now() });
   },
 });

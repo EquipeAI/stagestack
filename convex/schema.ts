@@ -1,8 +1,187 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+// Org-level roles: owner manages ownership + billing-ish concerns, admin has
+// org-wide admin powers. Event-scoped access lives in eventMembers.
+export const vOrgRole = v.union(v.literal("owner"), v.literal("admin"));
+export const vEventRole = v.union(
+  v.literal("organizer"),
+  v.literal("reviewer"),
+);
+
+// Contact/profile fields shared by the org directory (current profile) and,
+// later, event-specific publishable snapshots.
+export const contactProfileFields = {
+  firstName: v.string(),
+  lastName: v.string(),
+  email: v.optional(v.string()),
+  phone: v.optional(v.string()),
+  // Short role line, e.g. "CTO, Acme" — shown on public speaker cards.
+  tagline: v.optional(v.string()),
+  bio: v.optional(v.string()),
+  headshotId: v.optional(v.id("_storage")),
+  links: v.optional(
+    v.object({
+      website: v.optional(v.string()),
+      twitter: v.optional(v.string()),
+      linkedin: v.optional(v.string()),
+      github: v.optional(v.string()),
+    }),
+  ),
+};
+
 export default defineSchema({
-  // Queue consumed by the exe.dev worker (see apps/worker and docs/ARCHITECTURE.md).
+  // ── Identity & tenancy ────────────────────────────────────────────────
+  users: defineTable({
+    // Canonical auth link (guidelines: prefer tokenIdentifier over subject).
+    tokenIdentifier: v.string(),
+    clerkSubject: v.string(),
+    email: v.optional(v.string()),
+    name: v.optional(v.string()),
+    imageUrl: v.optional(v.string()),
+  })
+    .index("by_tokenIdentifier", ["tokenIdentifier"])
+    .index("by_email", ["email"]),
+
+  organizations: defineTable({
+    name: v.string(),
+    slug: v.string(),
+    createdBy: v.id("users"),
+  }).index("by_slug", ["slug"]),
+
+  members: defineTable({
+    orgId: v.id("organizations"),
+    userId: v.id("users"),
+    role: vOrgRole,
+  })
+    .index("by_orgId_and_userId", ["orgId", "userId"])
+    .index("by_userId", ["userId"]),
+
+  eventMembers: defineTable({
+    eventId: v.id("events"),
+    orgId: v.id("organizations"),
+    userId: v.id("users"),
+    role: vEventRole,
+  })
+    .index("by_eventId_and_userId", ["eventId", "userId"])
+    .index("by_userId", ["userId"])
+    .index("by_eventId", ["eventId"]),
+
+  invitations: defineTable({
+    orgId: v.id("organizations"),
+    // Absent → org-wide admin invite; present → event-scoped invite.
+    eventId: v.optional(v.id("events")),
+    email: v.string(),
+    role: v.union(vOrgRole, vEventRole),
+    // Unguessable bearer token embedded in the invite link.
+    token: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("accepted"),
+      v.literal("revoked"),
+    ),
+    invitedBy: v.id("users"),
+    expiresAt: v.number(),
+  })
+    .index("by_token", ["token"])
+    .index("by_orgId", ["orgId"])
+    .index("by_eventId", ["eventId"])
+    .index("by_email", ["email"]),
+
+  // ── Events ────────────────────────────────────────────────────────────
+  events: defineTable({
+    orgId: v.id("organizations"),
+    name: v.string(),
+    // Globally unique: public URLs are stagestack.dev/e/<slug>.
+    slug: v.string(),
+    startsAt: v.number(),
+    endsAt: v.number(),
+    // IANA zone, e.g. "America/Los_Angeles" — the authoritative event time.
+    timezone: v.string(),
+    type: v.optional(v.string()),
+    location: v.optional(v.string()),
+    website: v.optional(v.string()),
+    description: v.optional(v.string()),
+    logoId: v.optional(v.id("_storage")),
+    bannerId: v.optional(v.id("_storage")),
+    // CFP window + publication are independent of event dates and of the
+    // public agenda (MILESTONES M0: independent controls).
+    cfpOpenAt: v.optional(v.number()),
+    cfpCloseAt: v.optional(v.number()),
+    cfpPublished: v.boolean(),
+    archivedAt: v.optional(v.number()),
+  })
+    .index("by_orgId", ["orgId"])
+    .index("by_slug", ["slug"]),
+
+  // ── Org contact directory (current profiles) ─────────────────────────
+  contacts: defineTable({
+    orgId: v.id("organizations"),
+    ...contactProfileFields,
+    // Set when a StageStack user claims/links this contact (M3 portal).
+    userId: v.optional(v.id("users")),
+  })
+    .index("by_orgId", ["orgId"])
+    .index("by_orgId_and_email", ["orgId", "email"])
+    .index("by_userId", ["userId"]),
+
+  // ── Event library (event-scoped vocabulary) ──────────────────────────
+  tracks: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    description: v.optional(v.string()),
+    color: v.optional(v.string()),
+    order: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
+  tags: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    color: v.optional(v.string()),
+    order: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
+  rooms: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    capacity: v.optional(v.number()),
+    order: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
+  customFields: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    kind: v.union(
+      v.literal("text"),
+      v.literal("number"),
+      v.literal("select"),
+      v.literal("multiselect"),
+      v.literal("url"),
+    ),
+    options: v.optional(v.array(v.string())),
+    appliesTo: v.union(v.literal("session"), v.literal("speaker")),
+    order: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
+  // ── Audit trail ──────────────────────────────────────────────────────
+  auditLog: defineTable({
+    orgId: v.id("organizations"),
+    eventId: v.optional(v.id("events")),
+    actorUserId: v.id("users"),
+    // True when an agent performed this on the actor's behalf.
+    viaAgent: v.optional(v.boolean()),
+    action: v.string(),
+    targetType: v.optional(v.string()),
+    targetId: v.optional(v.string()),
+    meta: v.optional(v.any()),
+  })
+    .index("by_orgId", ["orgId"])
+    .index("by_eventId", ["eventId"]),
+
+  // ── Worker queue ─────────────────────────────────────────────────────
+  // Types/payloads are validated at the enqueue site against
+  // convex/shared/jobTypes.ts; the table stays permissive so old rows never
+  // block a schema push.
   jobs: defineTable({
     type: v.string(),
     payload: v.any(),
