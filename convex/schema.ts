@@ -197,7 +197,7 @@ export default defineSchema({
       v.literal("failed"),
     ),
     // Who asked for this work; the worker executes with this user's authority.
-    initiatedBy: v.optional(v.string()),
+    initiatedBy: v.optional(v.id("users")),
     result: v.optional(v.any()),
     error: v.optional(v.string()),
     claimedAt: v.optional(v.number()),
@@ -275,6 +275,84 @@ export default defineSchema({
     .index("by_proposalId", ["proposalId"])
     // One-query speaker counts for the organizer's proposal list.
     .index("by_eventId", ["eventId"]),
+
+  // ── Review & sessions (M2) ───────────────────────────────────────────
+  // Assignment + evaluation in one row: created when a reviewer is assigned.
+  reviews: defineTable({
+    eventId: v.id("events"),
+    proposalId: v.id("proposals"),
+    reviewerUserId: v.id("users"),
+    status: v.union(
+      v.literal("assigned"),
+      v.literal("draft"),
+      v.literal("submitted"),
+      v.literal("locked"),
+    ),
+    score: v.optional(v.number()), // 1-5
+    recommendation: v.optional(
+      v.union(v.literal("accept"), v.literal("decline"), v.literal("neutral")),
+    ),
+    comments: v.optional(v.string()),
+    submittedAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  })
+    .index("by_eventId_and_reviewerUserId", ["eventId", "reviewerUserId"])
+    .index("by_proposalId", ["proposalId"])
+    .index("by_reviewerUserId", ["reviewerUserId"]),
+
+  // Event-scoped publishable contact snapshot, copied from the org directory
+  // (or created fresh) when someone becomes a speaker/participant. Snapshots
+  // never change automatically (M0 rule).
+  eventContacts: defineTable({
+    eventId: v.id("events"),
+    orgId: v.id("organizations"),
+    contactId: v.optional(v.id("contacts")),
+    ...contactProfileFields,
+    // Set when a portal user claims this snapshot (M3).
+    userId: v.optional(v.id("users")),
+  })
+    .index("by_eventId", ["eventId"])
+    .index("by_contactId", ["contactId"])
+    .index("by_userId", ["userId"])
+    .index("by_eventId_and_email", ["eventId", "email"]),
+
+  // A planned talk: created by accepting a proposal or by direct invitation.
+  sessions: defineTable({
+    eventId: v.id("events"),
+    title: v.string(),
+    description: v.optional(v.string()),
+    format: v.optional(v.string()),
+    trackId: v.optional(v.id("tracks")),
+    tagIds: v.optional(v.array(v.id("tags"))),
+    proposalId: v.optional(v.id("proposals")),
+    source: v.union(v.literal("cfp"), v.literal("direct")),
+    status: v.union(v.literal("planned"), v.literal("cancelled")),
+    cancelledAt: v.optional(v.number()),
+    // Scheduling fields arrive in M6 (roomId/startsAt/endsAt/releasedSlot).
+  })
+    .index("by_eventId", ["eventId"])
+    .index("by_proposalId", ["proposalId"]),
+
+  sessionParticipants: defineTable({
+    sessionId: v.id("sessions"),
+    eventId: v.id("events"),
+    eventContactId: v.id("eventContacts"),
+    role: v.string(), // "speaker" in v1
+    state: v.union(
+      v.literal("awaiting"),
+      v.literal("confirmed"),
+      v.literal("declined"),
+      v.literal("withdrawn"),
+    ),
+    // Who recorded the state change (speaker/manager/organizer) and when.
+    stateSetBy: v.optional(v.id("users")),
+    stateSetAt: v.optional(v.number()),
+    // The proposal's primary manager, when this came via CFP.
+    managerUserId: v.optional(v.id("users")),
+  })
+    .index("by_sessionId", ["sessionId"])
+    .index("by_eventId", ["eventId"])
+    .index("by_eventContactId", ["eventContactId"]),
 
   // ── Comms log (starts M1; grows in M5) ───────────────────────────────
   // Every email StageStack sends is recorded here; the Resend webhook
