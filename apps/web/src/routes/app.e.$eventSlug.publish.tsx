@@ -9,8 +9,13 @@ import {
   Button,
   Callout,
   Card,
+  Checkbox,
+  Dialog,
   EmptyState,
+  Field,
   Icon,
+  Input,
+  Select,
   StatusPill,
   Switch,
 } from '~/ds'
@@ -24,6 +29,8 @@ import {
   embedSnippet,
   publicLinks,
 } from '~/components/public/ProgramView'
+import { distinct } from '~/components/public/widgets/shared'
+import { siteOrigin } from '~/lib/origin'
 
 // The organizer's publication console (M7). Two independent master switches
 // (lineup / agenda), per-session and per-item controls, share links, and a
@@ -48,10 +55,7 @@ function PublishConsole() {
     api.publish.preview,
     isOrganizer ? { eventSlug } : 'skip',
   )
-  const board = useQuery(
-    api.agenda.board,
-    isOrganizer ? { eventSlug } : 'skip',
-  )
+  const board = useQuery(api.agenda.board, isOrganizer ? { eventSlug } : 'skip')
 
   if (data === undefined) {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>
@@ -73,9 +77,16 @@ function PublishConsole() {
   const links = publicLinks(slug, import.meta.env.VITE_CONVEX_URL)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-6)',
+      }}
+    >
       <MastersCard eventSlug={eventSlug} state={state} zone={zone} />
       <ShareCard slug={slug} links={links} />
+      <EmbedsCard eventSlug={eventSlug} preview={preview} />
       <SessionsCard
         eventSlug={eventSlug}
         sessions={board.sessions}
@@ -147,7 +158,13 @@ function MastersCard({
         )
       }
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-5)',
+        }}
+      >
         <MasterRow
           title="Public event page"
           published={state.lineupPublished}
@@ -206,18 +223,43 @@ function MasterRow({
         flexWrap: 'wrap',
       }}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)', maxWidth: 'var(--content-max-prose)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-          <span style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-1)',
+          maxWidth: 'var(--content-max-prose)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-3)',
+          }}
+        >
+          <span
+            style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}
+          >
             {title}
           </span>
-          <StatusPill status={published ? 'Published' : 'Unpublished'} size="sm" />
+          <StatusPill
+            status={published ? 'Published' : 'Unpublished'}
+            size="sm"
+          />
         </div>
-        <span style={{ font: 'var(--type-caption)', color: 'var(--text-secondary)' }}>
+        <span
+          style={{
+            font: 'var(--type-caption)',
+            color: 'var(--text-secondary)',
+          }}
+        >
           {description}
         </span>
         {error !== null ? (
-          <span style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}>
+          <span
+            style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}
+          >
             {error}
           </span>
         ) : null}
@@ -245,13 +287,28 @@ function ShareCard({
       title="Share"
       subtitle="The same published program, three ways: a page to link, a JSON API to read, and an embed for an external site."
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
+      >
         <CopyLinkRow
           label="Public link"
           value={links.pageUrl}
           toast="Public link copied"
         />
-        <CopyLinkRow label="API URL" value={links.apiUrl} toast="API URL copied" />
+        <CopyLinkRow
+          label="API URL"
+          value={links.apiUrl}
+          toast="API URL copied"
+        />
+        <CopyLinkRow
+          label="iCal feed"
+          value={links.apiUrl !== '' ? `${links.apiUrl}.ics` : ''}
+          toast="iCal feed URL copied"
+        />
         <div>
           <Button
             variant="ghost"
@@ -262,7 +319,14 @@ function ShareCard({
             {showEmbed ? 'Hide embed snippet' : 'Embed snippet'}
           </Button>
           {showEmbed ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', marginTop: 'var(--space-3)' }}>
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--space-3)',
+                marginTop: 'var(--space-3)',
+              }}
+            >
               <EmbedRow slug={slug} section="lineup" />
               <EmbedRow slug={slug} section="agenda" />
             </div>
@@ -282,8 +346,21 @@ function EmbedRow({
 }) {
   const snippet = embedSnippet(slug, section)
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--space-2)' }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-2)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 'var(--space-2)',
+        }}
+      >
         <Badge tone="neutral">{section}</Badge>
         <Button
           variant="ghost"
@@ -315,6 +392,435 @@ function EmbedRow({
   )
 }
 
+// ── embeds ───────────────────────────────────────────────────────────────────
+type EmbedWidgetId =
+  'sessions' | 'speakers' | 'agenda' | 'itinerary' | 'gallery'
+
+const WIDGET_LABELS: Record<EmbedWidgetId, string> = {
+  sessions: 'Sessions list',
+  speakers: 'Speakers list',
+  agenda: 'Agenda',
+  itinerary: 'Schedule itinerary',
+  gallery: 'Speaker gallery',
+}
+
+const HIDEABLE_FIELDS = [
+  { id: 'description', label: 'Descriptions' },
+  { id: 'speakers', label: 'Speakers' },
+  { id: 'room', label: 'Rooms' },
+] as const
+
+type EmbedConfig = {
+  trackName?: string
+  brandColor?: string
+  hiddenFields?: Array<string>
+}
+
+type EmbedRowData = {
+  embedId: Id<'embeds'>
+  name: string
+  widget: EmbedWidgetId
+  enabled: boolean
+  config: EmbedConfig
+  updatedAt: number
+}
+
+/** Every URL an embed exposes: the page/iframe on this site plus the two feed
+ * formats served by the Convex HTTP router (same origin derivation as the
+ * program API URL above). */
+function embedUrls(embedId: string) {
+  const convexSite = (import.meta.env.VITE_CONVEX_URL ?? '').replace(
+    '.convex.cloud',
+    '.convex.site',
+  )
+  const pageUrl = `${siteOrigin()}/embed/w/${embedId}`
+  return {
+    pageUrl,
+    iframe: `<iframe src="${pageUrl}" style="width:100%;height:640px;border:0" loading="lazy"></iframe>`,
+    jsonUrl: convexSite ? `${convexSite}/api/embeds/${embedId}` : '',
+    icsUrl: convexSite ? `${convexSite}/api/embeds/${embedId}.ics` : '',
+  }
+}
+
+/** Track names that actually appear in the published projection — the only
+ * values a track filter can match. */
+function previewTrackNames(preview: PublicProgram): Array<string> {
+  return distinct([
+    ...preview.lineup.map((s) => s.trackName),
+    ...preview.agenda.map((e) =>
+      e.kind === 'session' ? e.trackName : undefined,
+    ),
+  ])
+}
+
+function EmbedsCard({
+  eventSlug,
+  preview,
+}: {
+  eventSlug: string
+  preview: PublicProgram
+}) {
+  const embeds = useQuery(api.embeds.list, { eventSlug })
+  const [creating, setCreating] = useState(false)
+  const trackOptions = previewTrackNames(preview)
+
+  return (
+    <Card
+      title="Embeds"
+      subtitle="Configured widgets an external site can drop in: each one gets an iframe snippet, a page URL, and JSON + iCal feeds, all serving only the published program."
+      actions={
+        <Button
+          variant="secondary"
+          size="sm"
+          iconLeft="plus"
+          onClick={() => setCreating(true)}
+        >
+          New embed
+        </Button>
+      }
+    >
+      {embeds === undefined ? (
+        <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>
+      ) : embeds.length === 0 ? (
+        <EmptyState
+          icon="globe"
+          title="No embeds yet"
+          description="Create one to hand an external site a widget scoped to exactly what you want shown."
+        />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {embeds.map((embed) => (
+            <EmbedListRow
+              key={embed.embedId}
+              eventSlug={eventSlug}
+              embed={embed}
+            />
+          ))}
+        </div>
+      )}
+      {creating ? (
+        <NewEmbedDialog
+          eventSlug={eventSlug}
+          trackOptions={trackOptions}
+          onClose={() => setCreating(false)}
+        />
+      ) : null}
+    </Card>
+  )
+}
+
+function EmbedListRow({
+  eventSlug,
+  embed,
+}: {
+  eventSlug: string
+  embed: EmbedRowData
+}) {
+  const updateEmbed = useMutation(api.embeds.update)
+  const removeEmbed = useMutation(api.embeds.remove)
+  const toggle = usePending()
+  const removal = usePending()
+  const [showCode, setShowCode] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const urls = embedUrls(embed.embedId)
+  const error = toggle.error ?? removal.error
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-3)',
+        padding: 'var(--space-4) var(--space-0)',
+        borderTop: 'var(--space-px) solid var(--border-subtle)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          gap: 'var(--space-4)',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-1)',
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
+          <span
+            style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}
+          >
+            {embed.name}
+          </span>
+          <div
+            style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}
+          >
+            <Badge tone="neutral">{WIDGET_LABELS[embed.widget]}</Badge>
+            {embed.config.trackName !== undefined ? (
+              <Badge tone="info">Track: {embed.config.trackName}</Badge>
+            ) : null}
+            {(embed.config.hiddenFields?.length ?? 0) > 0 ? (
+              <Badge tone="neutral">
+                Hides {embed.config.hiddenFields?.join(', ')}
+              </Badge>
+            ) : null}
+          </div>
+          {error !== null ? (
+            <span
+              style={{
+                font: 'var(--type-caption)',
+                color: 'var(--text-danger)',
+              }}
+            >
+              {error}
+            </span>
+          ) : null}
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          iconLeft={showCode ? 'chevron-down' : 'chevron-right'}
+          onClick={() => setShowCode((v) => !v)}
+        >
+          Get code
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          iconLeft="trash-2"
+          disabled={removal.pending}
+          onClick={() => setConfirmingDelete(true)}
+        >
+          Delete
+        </Button>
+        <Switch
+          checked={embed.enabled}
+          disabled={toggle.pending}
+          onChange={(e) =>
+            void toggle.run(async () => {
+              await updateEmbed({
+                eventSlug,
+                embedId: embed.embedId,
+                enabled: e.target.checked,
+              })
+              pushToast(e.target.checked ? 'Embed enabled' : 'Embed disabled')
+            })
+          }
+        />
+      </div>
+      {showCode ? (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-3)',
+            padding: 'var(--space-3)',
+            background: 'var(--surface-sunken)',
+            borderRadius: 'var(--radius-md)',
+          }}
+        >
+          <CopyLinkRow
+            label="Iframe"
+            value={urls.iframe}
+            toast="Iframe snippet copied"
+          />
+          <CopyLinkRow
+            label="Page URL"
+            value={urls.pageUrl}
+            toast="Embed page URL copied"
+          />
+          <CopyLinkRow
+            label="JSON feed"
+            value={urls.jsonUrl}
+            toast="JSON feed URL copied"
+          />
+          <CopyLinkRow
+            label="iCal feed"
+            value={urls.icsUrl}
+            toast="iCal feed URL copied"
+          />
+        </div>
+      ) : null}
+      {confirmingDelete ? (
+        <Dialog
+          title="Delete this embed?"
+          description="Sites embedding it will show an unavailable card, and deleting cannot be undone."
+          width={480}
+          onClose={() => setConfirmingDelete(false)}
+          footer={
+            <>
+              <Button onClick={() => setConfirmingDelete(false)}>Cancel</Button>
+              <Button
+                variant="danger"
+                disabled={removal.pending}
+                onClick={() => {
+                  setConfirmingDelete(false)
+                  void removal.run(async () => {
+                    await removeEmbed({ eventSlug, embedId: embed.embedId })
+                    pushToast('Embed deleted')
+                  })
+                }}
+              >
+                Delete
+              </Button>
+            </>
+          }
+        >
+          <p style={{ font: 'var(--type-body)' }}>{embed.name}</p>
+        </Dialog>
+      ) : null}
+    </div>
+  )
+}
+
+function NewEmbedDialog({
+  eventSlug,
+  trackOptions,
+  onClose,
+}: {
+  eventSlug: string
+  trackOptions: Array<string>
+  onClose: () => void
+}) {
+  const createEmbed = useMutation(api.embeds.create)
+  const { pending, error, run } = usePending()
+  const [name, setName] = useState('')
+  const [widget, setWidget] = useState<EmbedWidgetId>('sessions')
+  const [trackName, setTrackName] = useState('')
+  const [brandColor, setBrandColor] = useState('')
+  const [hidden, setHidden] = useState<Array<string>>([])
+
+  const toggleHidden = (id: string, on: boolean) =>
+    setHidden((prev) =>
+      on ? distinct([...prev, id]) : prev.filter((v) => v !== id),
+    )
+
+  const submit = () =>
+    void run(async () => {
+      await createEmbed({
+        eventSlug,
+        name: name.trim(),
+        widget,
+        config: {
+          trackName: trackName.trim() === '' ? undefined : trackName.trim(),
+          brandColor: brandColor.trim() === '' ? undefined : brandColor.trim(),
+          hiddenFields: hidden.length > 0 ? hidden : undefined,
+        },
+      })
+      pushToast('Embed created')
+      onClose()
+    })
+
+  return (
+    <Dialog
+      title="New embed"
+      description="A configured widget an external site can drop in; you can disable or delete it later without touching the site."
+      width={640}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            disabled={pending || name.trim() === ''}
+            onClick={submit}
+          >
+            Create embed
+          </Button>
+        </>
+      }
+    >
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
+      >
+        <Field label="Name" required>
+          <Input
+            value={name}
+            placeholder="Homepage speaker wall"
+            onChange={(e) => setName(e.target.value)}
+          />
+        </Field>
+        <Field label="Widget" required>
+          <Select
+            value={widget}
+            options={(Object.keys(WIDGET_LABELS) as Array<EmbedWidgetId>).map(
+              (id) => ({ value: id, label: WIDGET_LABELS[id] }),
+            )}
+            onChange={(e) => setWidget(e.target.value as EmbedWidgetId)}
+          />
+        </Field>
+        <Field
+          label="Track filter"
+          optional
+          hint="Only sessions on this track appear in the embed."
+        >
+          {trackOptions.length > 0 ? (
+            <Select
+              value={trackName}
+              options={[
+                { value: '', label: 'All tracks' },
+                ...trackOptions.map((t) => ({ value: t, label: t })),
+              ]}
+              onChange={(e) => setTrackName(e.target.value)}
+            />
+          ) : (
+            <Input
+              value={trackName}
+              placeholder="Track name (as published)"
+              onChange={(e) => setTrackName(e.target.value)}
+            />
+          )}
+        </Field>
+        <Field
+          label="Brand color"
+          optional
+          hint="Any CSS color; it accents tags, chips and highlights."
+        >
+          <Input
+            value={brandColor}
+            placeholder="Any CSS color, e.g. rebeccapurple"
+            onChange={(e) => setBrandColor(e.target.value)}
+          />
+        </Field>
+        <Field label="Hide fields" optional>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 'var(--space-2)',
+            }}
+          >
+            {HIDEABLE_FIELDS.map((field) => (
+              <Checkbox
+                key={field.id}
+                label={field.label}
+                checked={hidden.includes(field.id)}
+                onChange={(e) => toggleHidden(field.id, e.target.checked)}
+              />
+            ))}
+          </div>
+        </Field>
+        {error !== null ? (
+          <span
+            style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}
+          >
+            {error}
+          </span>
+        ) : null}
+      </div>
+    </Dialog>
+  )
+}
+
 // ── per-session controls ─────────────────────────────────────────────────────
 type BoardSession = {
   sessionId: string
@@ -341,7 +847,8 @@ function SessionsCard({
     >
       {!lineupPublished ? (
         <Callout tone="info" title="The public page is off">
-          These toggles take effect once you publish the public event page above.
+          These toggles take effect once you publish the public event page
+          above.
         </Callout>
       ) : null}
       {sessions.length === 0 ? (
@@ -351,7 +858,13 @@ function SessionsCard({
           description="Accept proposals and build sessions first; they become publishable here."
         />
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', marginTop: lineupPublished ? 'var(--space-0)' : 'var(--space-4)' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            marginTop: lineupPublished ? 'var(--space-0)' : 'var(--space-4)',
+          }}
+        >
           {sessions.map((session) => (
             <SessionRow
               key={session.sessionId}
@@ -380,7 +893,8 @@ function SessionRow({
   const confirmed = session.participants.filter(
     (p) => p.state === 'confirmed',
   ).length
-  const released = session.releasedSlot !== undefined && session.releasedSlot !== null
+  const released =
+    session.releasedSlot !== undefined && session.releasedSlot !== null
 
   return (
     <div
@@ -392,11 +906,23 @@ function SessionRow({
         borderTop: 'var(--space-px) solid var(--border-subtle)',
       }}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', flex: 1, minWidth: 0 }}>
-        <span style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-2)',
+          flex: 1,
+          minWidth: 0,
+        }}
+      >
+        <span
+          style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}
+        >
           {session.title}
         </span>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
+        <div
+          style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}
+        >
           <Badge tone={confirmed > 0 ? 'success' : 'neutral'}>
             {confirmed > 0
               ? `${confirmed} confirmed speaker${confirmed === 1 ? '' : 's'}`
@@ -407,7 +933,9 @@ function SessionRow({
           </Badge>
         </div>
         {error !== null ? (
-          <span style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}>
+          <span
+            style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}
+          >
             {error}
           </span>
         ) : null}
@@ -461,7 +989,13 @@ function AgendaItemsCard({
           These items appear once you publish the agenda above.
         </Callout>
       ) : null}
-      <div style={{ display: 'flex', flexDirection: 'column', marginTop: agendaPublished ? 'var(--space-0)' : 'var(--space-4)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          marginTop: agendaPublished ? 'var(--space-0)' : 'var(--space-4)',
+        }}
+      >
         {items.map((item) => (
           <AgendaItemRow
             key={item.itemId}
@@ -499,15 +1033,29 @@ function AgendaItemRow({
         borderTop: 'var(--space-px) solid var(--border-subtle)',
       }}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)', flex: 1, minWidth: 0 }}>
-        <span style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-1)',
+          flex: 1,
+          minWidth: 0,
+        }}
+      >
+        <span
+          style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}
+        >
           {item.title}
         </span>
-        <span style={{ font: 'var(--type-mono)', color: 'var(--text-tertiary)' }}>
+        <span
+          style={{ font: 'var(--type-mono)', color: 'var(--text-tertiary)' }}
+        >
           {formatDateTime(item.startsAt, zone)}
         </span>
         {error !== null ? (
-          <span style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}>
+          <span
+            style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}
+          >
             {error}
           </span>
         ) : null}
@@ -531,8 +1079,7 @@ function AgendaItemRow({
 
 // ── live preview ──────────────────────────────────────────────────────────
 function PreviewCard({ program }: { program: PublicProgram }) {
-  const empty =
-    program.lineup.length === 0 && program.agenda.length === 0
+  const empty = program.lineup.length === 0 && program.agenda.length === 0
   return (
     <Card
       title="Live preview"

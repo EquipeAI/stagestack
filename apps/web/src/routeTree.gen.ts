@@ -22,6 +22,7 @@ import { Route as AppEEventSlugRouteImport } from './routes/app.e.$eventSlug'
 import { Route as AppOrgOrgSlugRouteImport } from './routes/app.org.$orgSlug'
 import { Route as CfpEventSlugIndexRouteImport } from './routes/cfp.$eventSlug.index'
 import { Route as CfpEventSlugSubmitRouteImport } from './routes/cfp.$eventSlug.submit'
+import { Route as EmbedWEmbedIdRouteImport } from './routes/embed.w.$embedId'
 import { Route as AppEEventSlugIndexRouteImport } from './routes/app.e.$eventSlug.index'
 import { Route as AppEEventSlugAgendaRouteImport } from './routes/app.e.$eventSlug.agenda'
 import { Route as AppEEventSlugCfpRouteImport } from './routes/app.e.$eventSlug.cfp'
@@ -102,6 +103,11 @@ const CfpEventSlugSubmitRoute = CfpEventSlugSubmitRouteImport.update({
   id: '/submit',
   path: '/submit',
   getParentRoute: () => CfpEventSlugRoute,
+} as any)
+const EmbedWEmbedIdRoute = EmbedWEmbedIdRouteImport.update({
+  id: '/embed/w/$embedId',
+  path: '/embed/w/$embedId',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const AppEEventSlugIndexRoute = AppEEventSlugIndexRouteImport.update({
   id: '/',
@@ -193,6 +199,7 @@ export interface FileRoutesByFullPath {
   '/app/e/$eventSlug': typeof AppEEventSlugRouteWithChildren
   '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
   '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
+  '/embed/w/$embedId': typeof EmbedWEmbedIdRoute
   '/cfp/$eventSlug/': typeof CfpEventSlugIndexRoute
   '/app/e/$eventSlug/agenda': typeof AppEEventSlugAgendaRoute
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
@@ -220,6 +227,7 @@ export interface FileRoutesByTo {
   '/app': typeof AppIndexRoute
   '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
   '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
+  '/embed/w/$embedId': typeof EmbedWEmbedIdRoute
   '/cfp/$eventSlug': typeof CfpEventSlugIndexRoute
   '/app/e/$eventSlug/agenda': typeof AppEEventSlugAgendaRoute
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
@@ -251,6 +259,7 @@ export interface FileRoutesById {
   '/app/e/$eventSlug': typeof AppEEventSlugRouteWithChildren
   '/app/org/$orgSlug': typeof AppOrgOrgSlugRoute
   '/cfp/$eventSlug/submit': typeof CfpEventSlugSubmitRoute
+  '/embed/w/$embedId': typeof EmbedWEmbedIdRoute
   '/cfp/$eventSlug/': typeof CfpEventSlugIndexRoute
   '/app/e/$eventSlug/agenda': typeof AppEEventSlugAgendaRoute
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
@@ -283,6 +292,7 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug'
     | '/app/org/$orgSlug'
     | '/cfp/$eventSlug/submit'
+    | '/embed/w/$embedId'
     | '/cfp/$eventSlug/'
     | '/app/e/$eventSlug/agenda'
     | '/app/e/$eventSlug/cfp'
@@ -310,6 +320,7 @@ export interface FileRouteTypes {
     | '/app'
     | '/app/org/$orgSlug'
     | '/cfp/$eventSlug/submit'
+    | '/embed/w/$embedId'
     | '/cfp/$eventSlug'
     | '/app/e/$eventSlug/agenda'
     | '/app/e/$eventSlug/cfp'
@@ -340,6 +351,7 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug'
     | '/app/org/$orgSlug'
     | '/cfp/$eventSlug/submit'
+    | '/embed/w/$embedId'
     | '/cfp/$eventSlug/'
     | '/app/e/$eventSlug/agenda'
     | '/app/e/$eventSlug/cfp'
@@ -366,6 +378,7 @@ export interface RootRouteChildren {
   EmbedSlugRoute: typeof EmbedSlugRoute
   InviteTokenRoute: typeof InviteTokenRoute
   PortalEventSlugRoute: typeof PortalEventSlugRoute
+  EmbedWEmbedIdRoute: typeof EmbedWEmbedIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -460,6 +473,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/cfp/$eventSlug/submit'
       preLoaderRoute: typeof CfpEventSlugSubmitRouteImport
       parentRoute: typeof CfpEventSlugRoute
+    }
+    '/embed/w/$embedId': {
+      id: '/embed/w/$embedId'
+      path: '/embed/w/$embedId'
+      fullPath: '/embed/w/$embedId'
+      preLoaderRoute: typeof EmbedWEmbedIdRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/app/e/$eventSlug/': {
       id: '/app/e/$eventSlug/'
@@ -647,6 +667,7 @@ const rootRouteChildren: RootRouteChildren = {
   EmbedSlugRoute: EmbedSlugRoute,
   InviteTokenRoute: InviteTokenRoute,
   PortalEventSlugRoute: PortalEventSlugRoute,
+  EmbedWEmbedIdRoute: EmbedWEmbedIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
