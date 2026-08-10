@@ -84,10 +84,63 @@ Three setup notes:
 
 Tests: `npm test` (Vitest against the Convex functions via `convex-test`).
 
-Deploying: work on `develop`, merge to `staging`, then to `main`. Each branch
-builds the frontend and pushes its own Convex backend in one step. The live topology, env-var matrix and the deploy gotchas worth
-knowing before you touch prod are in
-[ARCHITECTURE.md → Deploying](docs/ARCHITECTURE.md#deploying).
+## Deploying your own copy
+
+Convex hosts the backend; the frontend is a TanStack Start app that runs
+anywhere Node does. These steps are for Vercel because that's what StageStack
+uses, but only step 3 is Vercel-specific.
+
+**1. Backend.** From the repo root, `npx convex deploy` creates the production
+deployment and pushes schema + functions. Then set its variables — note
+`--prod`, or you'll configure your dev deployment by mistake:
+
+```bash
+npx convex env set --prod CLERK_JWT_ISSUER_DOMAIN https://clerk.yourdomain.com
+npx convex env set --prod SITE_URL https://yourdomain.com
+# …plus RESEND_API_KEY, RESEND_WEBHOOK_SECRET, WORKER_SECRET
+```
+
+**2. Auth.** Clerk's *development* instance only works on `localhost` and
+`*.accounts.dev`, so a real domain needs a **production instance** — a separate
+app with its own keys and its own user pool (accounts do not migrate, so switch
+before real users sign up). It needs: a JWT template named `convex`; the five
+CNAME records Clerk gives you; a Home URL under Paths (leave it blank and the
+OAuth callback strands users on the Account Portal); and, for social login,
+**your own** Google/GitHub OAuth credentials — Clerk's shared ones are
+development-only. Set `CLERK_JWT_ISSUER_DOMAIN` on Convex to that instance's
+issuer, or every authenticated call fails.
+
+**3. Frontend.** Import the repo on Vercel and set **Root Directory =
+`apps/web`**. Then override the build command — the default will not work:
+
+```
+cd ../.. && if [ -n "$CONVEX_DEPLOY_KEY" ]; then \
+  npx convex deploy --typecheck=disable --check-build-environment disable \
+    --cmd-url-env-var-name VITE_CONVEX_URL --cmd 'npm run build --workspace apps/web'; \
+else npm run build --workspace apps/web; fi
+```
+
+> **The `cd ../..` is not optional.** `convex/` lives at the repo root, not in
+> `apps/web`. Run `convex deploy` from the wrong directory and it finds no
+> functions, concludes you deleted them all, and unmounts every component and
+> drops every index on the target backend. The build still reports success.
+
+Project env vars: `VITE_CONVEX_URL`, `VITE_CLERK_PUBLISHABLE_KEY`,
+`CLERK_SECRET_KEY`, and `CONVEX_DEPLOY_KEY` from
+`npx convex deployment token create ci --deployment prod`. Push, then confirm
+the build log says `Deployed Convex functions` and contains no
+`Unmounted component` line.
+
+**4. Email.** Verify your sending domain in Resend, add a webhook pointing at
+`https://<your-deployment>.convex.site/resend-webhook`, and put its signing
+secret in `RESEND_WEBHOOK_SECRET`. Until you set `RESEND_TEST_MODE=false` *and*
+`MAIL_FROM`, the app accepts only Resend's own test addresses — deliberately, so
+a fresh deployment cannot email real speakers.
+
+Multi-environment setups (a `develop` → `staging` → `main` pipeline, each branch
+with its own backend) are described in
+[ARCHITECTURE.md → Deploying](docs/ARCHITECTURE.md#deploying), along with how
+StageStack's own environments are wired.
 
 ## License
 
