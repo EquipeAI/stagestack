@@ -1130,6 +1130,10 @@ export async function sendSubmissionEmails(
 ): Promise<void> {
   const proposal = await ctx.db.get("proposals", args.proposalId);
   if (proposal === null) return;
+  // A withdrawal (or a reopen back to draft) that lands between the commit
+  // and this job must win: no "we received your proposal" mail for a
+  // proposal that is no longer submitted.
+  if (proposal.status === "withdrawn" || proposal.status === "draft") return;
   const event = await ctx.db.get("events", proposal.eventId);
   if (event === null) return;
   const user = await ctx.db.get("users", args.submittedByUserId);

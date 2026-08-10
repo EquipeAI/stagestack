@@ -234,7 +234,9 @@ function Wizard({ eventSlug, cfp }: { eventSlug: string; cfp: PublicCfp }) {
   }
 
   const currentIndex = stepIndex(step)
-  const reachableIndex = proposalId !== null ? STEPS.length - 1 : 1
+  // The stepper only goes BACKWARD: forward moves go through each step's
+  // Continue button, which is where required-field validation gates the move.
+  const reachableIndex = proposalId !== null ? currentIndex : Math.min(currentIndex, 1)
 
   return (
     <PageBody narrow>
@@ -242,7 +244,7 @@ function Wizard({ eventSlug, cfp }: { eventSlug: string; cfp: PublicCfp }) {
         currentIndex={currentIndex}
         reachableIndex={reachableIndex}
         onSelect={(id) => {
-          setStep(id)
+          if (stepIndex(id) <= currentIndex) setStep(id)
         }}
       />
 
