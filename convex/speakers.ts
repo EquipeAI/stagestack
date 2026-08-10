@@ -31,6 +31,14 @@ export const roster = eventQuery({
       jobTitle: v.optional(v.string()),
       company: v.optional(v.string()),
       bio: v.optional(v.string()),
+      links: v.optional(
+        v.object({
+          website: v.optional(v.string()),
+          twitter: v.optional(v.string()),
+          linkedin: v.optional(v.string()),
+          github: v.optional(v.string()),
+        }),
+      ),
       headshotUrl: v.union(v.string(), v.null()),
       claimed: v.boolean(),
       customValues: vCustomValues,

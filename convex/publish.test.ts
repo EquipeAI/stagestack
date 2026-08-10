@@ -604,7 +604,11 @@ describe("publish — production-path projection", () => {
       toBeAnnounced: false,
     });
     expect(program.lineup[0].speakers).toEqual([
-      { name: "Carol Speaker", tagline: "CTO, Acme" },
+      {
+        name: "Carol Speaker",
+        tagline: "CTO, Acme",
+        speakerId: expect.any(String),
+      },
     ]);
     expect(program.agenda).toHaveLength(1);
     expect(program.agenda[0]).toMatchObject({
@@ -811,6 +815,7 @@ describe("publish — projection is built from ONE read of the graph", () => {
         title: "A talk",
         speakers: [
           {
+            speakerId: expect.any(String),
             name: "Grace Hopper",
             tagline: "Rear Admiral",
             headshotUrl,
@@ -824,12 +829,13 @@ describe("publish — projection is built from ONE read of the graph", () => {
         title: "B talk",
         speakers: [
           {
+            speakerId: expect.any(String),
             name: "Grace Hopper",
             tagline: "Rear Admiral",
             headshotUrl,
             links: { website: "https://grace.example" },
           },
-          { name: "Alan Turing" },
+          { speakerId: expect.any(String), name: "Alan Turing" },
         ],
         toBeAnnounced: false,
       },

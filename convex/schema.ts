@@ -189,6 +189,34 @@ export default defineSchema({
     order: v.number(),
   }).index("by_eventId", ["eventId"]),
 
+  // ── Embeds (W3) ──────────────────────────────────────────────────────
+  // Named, enable/disable-able widget embeds an organizer generates from the
+  // publish console. The embed id is the public key: /embed/w/<id> renders
+  // the widget, /api/embeds/<id>(.ics) serves the feed — all reading the same
+  // published-program blob with this row's filters applied.
+  embeds: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    widget: v.union(
+      v.literal("sessions"),
+      v.literal("speakers"),
+      v.literal("agenda"),
+      v.literal("itinerary"),
+      v.literal("gallery"),
+    ),
+    enabled: v.boolean(),
+    config: v.object({
+      /** Restrict to one track (by published track name). */
+      trackName: v.optional(v.string()),
+      /** Accent color for the styled widget (hex). */
+      brandColor: v.optional(v.string()),
+      /** Card fields to hide (e.g. "description", "speakers", "room"). */
+      hiddenFields: v.optional(v.array(v.string())),
+    }),
+    createdBy: v.id("users"),
+    updatedAt: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
   // ── Audit trail ──────────────────────────────────────────────────────
   auditLog: defineTable({
     orgId: v.id("organizations"),
@@ -435,6 +463,12 @@ export default defineSchema({
     source: v.union(v.literal("cfp"), v.literal("direct")),
     status: v.union(v.literal("planned"), v.literal("cancelled")),
     cancelledAt: v.optional(v.number()),
+    // Content approval (W5): draft content never reaches public output.
+    // Absent on legacy rows = approved (they were already being served).
+    // The publish console's per-session toggle approves as it lists.
+    contentStatus: v.optional(v.union(v.literal("draft"), v.literal("approved"))),
+    contentStatusSetBy: v.optional(v.id("users")),
+    contentStatusSetAt: v.optional(v.number()),
     // ── Scheduling (M6). Draft placement is internal; releasedSlot is what
     // speakers were told (its sequence records the release that carried it).
     roomId: v.optional(v.id("rooms")),

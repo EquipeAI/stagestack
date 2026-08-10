@@ -41,8 +41,13 @@ const LIBRARY_SCAN = 500;
 // must never be the fail-silent one, so this file wants `takeAll`.
 
 export type PublicSpeaker = {
+  /** Opaque stable id (the event-contact id) so widgets can group one
+   * person's sessions across the blob. Carries no access. */
+  speakerId: string;
   name: string;
   tagline?: string;
+  jobTitle?: string;
+  company?: string;
   bio?: string;
   headshotUrl?: string;
   links?: {
@@ -233,6 +238,10 @@ export async function computeProgram(
 
   for (const session of sessions) {
     if (session.status !== "planned") continue;
+    // Content approval (W5, CNT-12): a session whose content is still draft
+    // never reaches public output, whatever its publish flag says. Legacy
+    // rows (no contentStatus) count as approved.
+    if (session.contentStatus === "draft") continue;
     // A session is in the public lineup only when explicitly published; its
     // per-session flag defaults to false so nothing leaks by accident.
     const sessionPublic = isPublished(flags, "session", session._id, false);
@@ -249,8 +258,11 @@ export async function computeProgram(
       // organizer publishing the session is what makes it eligible (no
       // separate profile-approval state in v1).
       speakers.push({
+        speakerId: contact._id,
         name: `${contact.firstName} ${contact.lastName}`.trim(),
         tagline: contact.tagline,
+        jobTitle: contact.jobTitle,
+        company: contact.company,
         bio: contact.bio,
         headshotUrl:
           contact.headshotId === undefined
@@ -554,6 +566,16 @@ export async function publish(
         throw new ConvexError({ code: "not_found", message: "No such session." });
       }
       await setFlag(ctx, eventId, "session", action.sessionId, action.published);
+      // Listing a session publicly IS approving its content — one click does
+      // both, so the publish console never strands a session behind a second
+      // gate. Un-listing does NOT un-approve (editorial state is stickier).
+      if (action.published && session.contentStatus === "draft") {
+        await ctx.db.patch("sessions", action.sessionId, {
+          contentStatus: "approved",
+          contentStatusSetBy: caller.user._id,
+          contentStatusSetAt: Date.now(),
+        });
+      }
       break;
     }
     case "agendaItem": {
@@ -678,9 +700,19 @@ export async function publicProgramBySlug(
     .withIndex("by_slug", (q) => q.eq("slug", slug))
     .unique();
   if (event === null || event.archivedAt !== undefined) return null;
+  return await servedProgramForEvent(ctx, event._id);
+}
+
+/** Same served-blob read keyed by event id (embeds resolve by id). */
+export async function servedProgramForEvent(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<PublicProgram | null> {
+  const event = await ctx.db.get("events", eventId);
+  if (event === null || event.archivedAt !== undefined) return null;
   const published = await ctx.db
     .query("publishedPrograms")
-    .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
+    .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
     .unique();
   if (published === null) return null;
   const program = published.program as PublicProgram;

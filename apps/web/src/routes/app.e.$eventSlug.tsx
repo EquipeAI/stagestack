@@ -28,6 +28,7 @@ const TAB_PATHS = {
   proposals: '/app/e/$eventSlug/proposals',
   reviews: '/app/e/$eventSlug/reviews',
   sessions: '/app/e/$eventSlug/sessions',
+  speakers: '/app/e/$eventSlug/speakers',
   agenda: '/app/e/$eventSlug/agenda',
   import: '/app/e/$eventSlug/import',
   publish: '/app/e/$eventSlug/publish',
@@ -77,6 +78,12 @@ const NAV_GROUPS: Array<{ items: Array<NavItem> }> = [
         id: 'sessions',
         label: 'Sessions',
         icon: 'presentation',
+        requires: 'organizer',
+      },
+      {
+        id: 'speakers',
+        label: 'Speakers',
+        icon: 'user-round',
         requires: 'organizer',
       },
       {
@@ -204,7 +211,9 @@ function EventLayout() {
                 )}
                 meta={
                   <span style={{ marginLeft: 'var(--space-3)' }}>
-                    <Badge tone={data.role === 'organizer' ? 'info' : 'neutral'}>
+                    <Badge
+                      tone={data.role === 'organizer' ? 'info' : 'neutral'}
+                    >
                       {data.role === 'organizer' ? 'Organizer' : 'Reviewer'}
                     </Badge>
                   </span>
@@ -212,8 +221,8 @@ function EventLayout() {
               />
               {data.event.archivedAt !== undefined ? (
                 <Callout tone="attention" title="This event is archived">
-                  Archived events are read-only in spirit — nothing is deleted, and
-                  you can unarchive it from Overview.
+                  Archived events are read-only in spirit — nothing is deleted,
+                  and you can unarchive it from Overview.
                 </Callout>
               ) : null}
               <Outlet />

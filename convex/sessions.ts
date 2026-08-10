@@ -49,6 +49,18 @@ export const setStatus = eventMutation({
   },
 });
 
+export const setContentStatus = eventMutation({
+  args: {
+    sessionId: v.id("sessions"),
+    to: v.union(v.literal("draft"), v.literal("approved")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Sessions.setContentStatus(ctx, ctx.caller, args.sessionId, args.to);
+    return null;
+  },
+});
+
 export const release = eventMutation({
   args: { proposalIds: v.array(v.id("proposals")) },
   returns: vBulkResults,

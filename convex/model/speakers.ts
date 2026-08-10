@@ -30,6 +30,12 @@ export type RosterRow = {
   jobTitle?: string;
   company?: string;
   bio?: string;
+  links?: {
+    website?: string;
+    twitter?: string;
+    linkedin?: string;
+    github?: string;
+  };
   headshotUrl: string | null;
   claimed: boolean;
   customValues: Record<string, string | string[]>;
@@ -98,6 +104,7 @@ export async function roster(
       jobTitle: contact.jobTitle,
       company: contact.company,
       bio: contact.bio,
+      links: contact.links,
       headshotUrl:
         contact.headshotId === undefined
           ? null

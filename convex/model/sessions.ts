@@ -269,6 +269,7 @@ async function materializeSession(
       proposalId: proposal._id,
       source: "cfp",
       status: "planned",
+      contentStatus: "draft",
     }));
   const speakers = await ctx.db
     .query("proposalSpeakers")
@@ -637,6 +638,7 @@ export async function createDirectSession(
     trackId: args.trackId,
     source: "direct",
     status: "planned",
+    contentStatus: "draft",
   });
   const eventContactId = await ensureEventContact(ctx, event, profile);
   await ensureParticipant(ctx, {
@@ -727,6 +729,7 @@ export async function importSession(
     description: args.description,
     source: "direct",
     status: "planned",
+    contentStatus: "draft",
   });
   const eventContactId = await ensureEventContact(ctx, caller.event, profile);
   await ensureParticipant(ctx, {
@@ -876,4 +879,37 @@ export async function listSessions(
     session,
     participants: bySession.get(session._id) ?? [],
   }));
+}
+
+/** Content approval (W5, CNT-12): the editorial gate on public output.
+ * Distinct from the publish flag — approving doesn't list a session, but
+ * setting draft pulls it from every public surface immediately. */
+export async function setContentStatus(
+  ctx: MutationCtx,
+  caller: EventCaller,
+  sessionId: Id<"sessions">,
+  to: "draft" | "approved",
+): Promise<void> {
+  requireOrganizer(caller);
+  assertEventActive(caller.event);
+  const session = await ctx.db.get("sessions", sessionId);
+  if (session === null || session.eventId !== caller.event._id) {
+    notFound("session", "No such session on this event.");
+  }
+  if ((session.contentStatus ?? "approved") === to) return;
+  await ctx.db.patch("sessions", sessionId, {
+    contentStatus: to,
+    contentStatusSetBy: caller.user._id,
+    contentStatusSetAt: Date.now(),
+  });
+  await republishIfPublished(ctx, caller.event._id);
+  await logAudit(ctx, {
+    orgId: caller.org._id,
+    eventId: caller.event._id,
+    actorUserId: caller.user._id,
+    action: "sessions.setContentStatus",
+    targetType: "session",
+    targetId: sessionId,
+    meta: { to },
+  });
 }
