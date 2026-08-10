@@ -17,9 +17,11 @@ import {
   SearchInput,
   Select,
   Tabs,
+  Tag,
   Textarea,
   Toolbar,
 } from '~/ds'
+import { ContactDetailDialog } from '~/components/contacts/ContactDetailDialog'
 import { PageBody } from '~/components/PageBody'
 import { EventCard, EventGrid } from '~/components/EventCard'
 import { QueryBoundary } from '~/components/QueryBoundary'
@@ -68,7 +70,12 @@ function OrgPage() {
   const isAdmin = org.role !== null
 
   const tabs = [
-    { id: 'events', label: 'Events', icon: 'calendar-days', count: events.length },
+    {
+      id: 'events',
+      label: 'Events',
+      icon: 'calendar-days',
+      count: events.length,
+    },
     { id: 'contacts', label: 'Contacts', icon: 'users' },
     ...(isAdmin ? [{ id: 'team', label: 'Team', icon: 'user-round' }] : []),
   ]
@@ -77,14 +84,23 @@ function OrgPage() {
     <PageBody>
       <PageHeader
         title={org.org.name}
-        breadcrumbs={[{ label: 'My StageStack', href: '/app/home' }, { label: org.org.name }]}
+        breadcrumbs={[
+          { label: 'My StageStack', href: '/app/home' },
+          { label: org.org.name },
+        ]}
         description={
           org.role === null
             ? 'You have access through event membership.'
             : `You are an ${org.role} of this organization.`
         }
       />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-6)',
+        }}
+      >
         <Tabs tabs={tabs} value={tab} onChange={(id) => setTab(id as TabId)} />
         {tab === 'events' ? (
           <EventsTab
@@ -129,11 +145,21 @@ function EventsTab({
   const [creating, setCreating] = useState(false)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-4)',
+      }}
+    >
       {canCreate ? (
         <Toolbar
           right={
-            <Button variant="primary" iconLeft="plus" onClick={() => setCreating(true)}>
+            <Button
+              variant="primary"
+              iconLeft="plus"
+              onClick={() => setCreating(true)}
+            >
               New event
             </Button>
           }
@@ -153,7 +179,11 @@ function EventsTab({
             }
             action={
               canCreate ? (
-                <Button variant="primary" iconLeft="plus" onClick={() => setCreating(true)}>
+                <Button
+                  variant="primary"
+                  iconLeft="plus"
+                  onClick={() => setCreating(true)}
+                >
                   New event
                 </Button>
               ) : undefined
@@ -228,7 +258,13 @@ function NewEventDialog({
         </>
       }
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
+      >
         {error !== null ? <Callout tone="blocked">{error}</Callout> : null}
         <Field label="Event name" htmlFor="event-name">
           <Input
@@ -242,7 +278,8 @@ function NewEventDialog({
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 14rem), 1fr))',
+            gridTemplateColumns:
+              'repeat(auto-fit, minmax(min(100%, 14rem), 1fr))',
             gap: 'var(--space-4)',
           }}
         >
@@ -286,25 +323,58 @@ type ContactDoc = Doc<'contacts'>
 
 function ContactsTab({ orgSlug }: { orgSlug: string }) {
   const [search, setSearch] = useState('')
-  // One subscription for the whole directory; the search box filters locally so
-  // typing never re-subscribes.
+  // One subscription for the whole directory; search and the attribute
+  // filters all run locally so typing never re-subscribes.
   const contacts = useQuery(api.contacts.list, { orgSlug })
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<ContactDoc | null>(null)
+  const [tagFilter, setTagFilter] = useState('')
+  const [companyFilter, setCompanyFilter] = useState('')
+
+  const { allTags, allCompanies } = useMemo(() => {
+    const tags = new Set<string>()
+    const companies = new Set<string>()
+    for (const contact of contacts ?? []) {
+      for (const tag of contact.tags ?? []) tags.add(tag)
+      if (contact.company !== undefined) companies.add(contact.company)
+    }
+    const sort = (values: Set<string>) =>
+      [...values].sort((a, b) => a.localeCompare(b))
+    return { allTags: sort(tags), allCompanies: sort(companies) }
+  }, [contacts])
 
   const needle = search.trim().toLowerCase()
+  const filtered = tagFilter !== '' || companyFilter !== ''
   const visible = useMemo(() => {
     if (contacts === undefined) return undefined
-    if (needle === '') return contacts
-    return contacts.filter((contact) =>
-      [contact.firstName, contact.lastName, contact.email, contact.tagline].some(
+    return contacts.filter((contact) => {
+      if (tagFilter !== '' && !(contact.tags ?? []).includes(tagFilter)) {
+        return false
+      }
+      if (companyFilter !== '' && contact.company !== companyFilter) {
+        return false
+      }
+      if (needle === '') return true
+      return [
+        contact.firstName,
+        contact.lastName,
+        contact.email,
+        contact.company,
+        contact.tagline,
+      ].some(
         (field) => field !== undefined && field.toLowerCase().includes(needle),
-      ),
-    )
-  }, [contacts, needle])
+      )
+    })
+  }, [contacts, needle, tagFilter, companyFilter])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-4)',
+      }}
+    >
       <Toolbar
         left={
           <SearchInput
@@ -314,26 +384,83 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
           />
         }
         right={
-          <Button variant="primary" iconLeft="plus" onClick={() => setAdding(true)}>
+          <Button
+            variant="primary"
+            iconLeft="plus"
+            onClick={() => setAdding(true)}
+          >
             Add contact
           </Button>
         }
       />
+      {allTags.length > 0 || allCompanies.length > 0 || filtered ? (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-3)',
+            flexWrap: 'wrap',
+          }}
+        >
+          <Select
+            id="contacts-filter-tag"
+            value={tagFilter}
+            options={[
+              { value: '', label: 'All tags' },
+              ...allTags.map((tag) => ({ value: tag, label: tag })),
+            ]}
+            onChange={(e) => setTagFilter(e.target.value)}
+          />
+          <Select
+            id="contacts-filter-company"
+            value={companyFilter}
+            options={[
+              { value: '', label: 'All companies' },
+              ...allCompanies.map((company) => ({
+                value: company,
+                label: company,
+              })),
+            ]}
+            onChange={(e) => setCompanyFilter(e.target.value)}
+          />
+          {filtered ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              iconLeft="x"
+              onClick={() => {
+                setTagFilter('')
+                setCompanyFilter('')
+              }}
+            >
+              Clear filters
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {visible === undefined ? (
         <p style={{ color: 'var(--text-tertiary)' }}>Loading contacts…</p>
       ) : visible.length === 0 ? (
         <Card>
           <EmptyState
             icon="users"
-            title={search === '' ? 'No contacts yet' : 'No contacts match that search'}
+            title={
+              search === '' && !filtered
+                ? 'No contacts yet'
+                : 'No contacts match those filters'
+            }
             description={
-              search === ''
+              search === '' && !filtered
                 ? 'People you add here become available as speakers across every event in this organization.'
-                : 'Clear the search to see the whole directory.'
+                : 'Clear the search and filters to see the whole directory.'
             }
             action={
-              search === '' ? (
-                <Button variant="primary" iconLeft="plus" onClick={() => setAdding(true)}>
+              search === '' && !filtered ? (
+                <Button
+                  variant="primary"
+                  iconLeft="plus"
+                  onClick={() => setAdding(true)}
+                >
                   Add contact
                 </Button>
               ) : undefined
@@ -357,7 +484,10 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
                       gap: 'var(--space-2)',
                     }}
                   >
-                    <Avatar name={`${row.firstName} ${row.lastName}`} size={24} />
+                    <Avatar
+                      name={`${row.firstName} ${row.lastName}`}
+                      size={24}
+                    />
                     {row.firstName} {row.lastName}
                   </span>
                 ),
@@ -368,9 +498,29 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
                 cell: (row: ContactDoc) => row.email ?? '—',
               },
               {
-                key: 'tagline',
-                header: 'Tagline',
-                cell: (row: ContactDoc) => row.tagline ?? '—',
+                key: 'company',
+                header: 'Company',
+                cell: (row: ContactDoc) => row.company ?? '—',
+              },
+              {
+                key: 'tags',
+                header: 'Tags',
+                cell: (row: ContactDoc) =>
+                  row.tags !== undefined && row.tags.length > 0 ? (
+                    <span
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 'var(--space-1)',
+                      }}
+                    >
+                      {row.tags.map((tag) => (
+                        <Tag key={tag}>{tag}</Tag>
+                      ))}
+                    </span>
+                  ) : (
+                    '—'
+                  ),
               },
             ]}
             rows={visible}
@@ -381,7 +531,7 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
         <ContactDialog orgSlug={orgSlug} onClose={() => setAdding(false)} />
       ) : null}
       {editing !== null ? (
-        <ContactDialog
+        <ContactDetailDialog
           orgSlug={orgSlug}
           contact={editing}
           onClose={() => setEditing(null)}
@@ -393,22 +543,21 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
 
 function ContactDialog({
   orgSlug,
-  contact,
   onClose,
 }: {
   orgSlug: string
-  contact?: ContactDoc
   onClose: () => void
 }) {
   const create = useMutation(api.contacts.create)
-  const update = useMutation(api.contacts.update)
   const { pending, error, setError, run } = usePending()
-  const [firstName, setFirstName] = useState(contact?.firstName ?? '')
-  const [lastName, setLastName] = useState(contact?.lastName ?? '')
-  const [email, setEmail] = useState(contact?.email ?? '')
-  const [phone, setPhone] = useState(contact?.phone ?? '')
-  const [tagline, setTagline] = useState(contact?.tagline ?? '')
-  const [bio, setBio] = useState(contact?.bio ?? '')
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [jobTitle, setJobTitle] = useState('')
+  const [company, setCompany] = useState('')
+  const [tagline, setTagline] = useState('')
+  const [bio, setBio] = useState('')
 
   const submit = () => {
     if (firstName.trim() === '' || lastName.trim() === '') {
@@ -419,18 +568,14 @@ function ContactDialog({
       lastName: lastName.trim(),
       email: email.trim() === '' ? undefined : email.trim(),
       phone: phone.trim() === '' ? undefined : phone.trim(),
+      jobTitle: jobTitle.trim() === '' ? undefined : jobTitle.trim(),
+      company: company.trim() === '' ? undefined : company.trim(),
       tagline: tagline.trim() === '' ? undefined : tagline.trim(),
       bio: bio.trim() === '' ? undefined : bio.trim(),
-      links: contact?.links,
     }
     void run(async () => {
-      if (contact === undefined) {
-        await create({ orgSlug, profile })
-        pushToast('Contact added', `${profile.firstName} ${profile.lastName}`)
-      } else {
-        await update({ orgSlug, contactId: contact._id, profile })
-        pushToast('Contact updated', `${profile.firstName} ${profile.lastName}`)
-      }
+      await create({ orgSlug, profile })
+      pushToast('Contact added', `${profile.firstName} ${profile.lastName}`)
       onClose()
     })
   }
@@ -439,7 +584,7 @@ function ContactDialog({
     <Dialog
       open
       width={640}
-      title={contact === undefined ? 'Add contact' : 'Edit contact'}
+      title="Add contact"
       description="Contacts are the org-wide directory of people you may invite to speak."
       onClose={pending ? undefined : onClose}
       footer={
@@ -448,21 +593,24 @@ function ContactDialog({
             Cancel
           </Button>
           <Button variant="primary" onClick={submit} disabled={pending}>
-            {pending
-              ? 'Saving…'
-              : contact === undefined
-                ? 'Add contact'
-                : 'Save contact'}
+            {pending ? 'Saving…' : 'Add contact'}
           </Button>
         </>
       }
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
+      >
         {error !== null ? <Callout tone="blocked">{error}</Callout> : null}
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 12rem), 1fr))',
+            gridTemplateColumns:
+              'repeat(auto-fit, minmax(min(100%, 12rem), 1fr))',
             gap: 'var(--space-4)',
           }}
         >
@@ -494,6 +642,22 @@ function ContactDialog({
               id="c-phone"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
+            />
+          </Field>
+          <Field label="Job title" htmlFor="c-job" optional>
+            <Input
+              id="c-job"
+              value={jobTitle}
+              placeholder="CTO"
+              onChange={(e) => setJobTitle(e.target.value)}
+            />
+          </Field>
+          <Field label="Company" htmlFor="c-company" optional>
+            <Input
+              id="c-company"
+              value={company}
+              placeholder="Acme"
+              onChange={(e) => setCompany(e.target.value)}
             />
           </Field>
         </div>
@@ -573,144 +737,167 @@ function OrgTeamTab({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
-    <Card title="Members" subtitle="Org-wide owners and admins." padded={false}>
-      {team === undefined ? (
-        <p style={{ color: 'var(--text-tertiary)', padding: 'var(--space-4)' }}>
-          Loading members…
-        </p>
-      ) : (
-        <DataTable
-          rowKey="userId"
-          columns={[
-            {
-              key: 'name',
-              header: 'Member',
-              cell: (row: OrgTeamMember) => (
-                <span
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--space-2)',
-                  }}
-                >
-                  <Avatar
-                    name={row.name ?? row.email ?? 'Unknown'}
-                    src={row.imageUrl ?? undefined}
-                    size={24}
-                  />
-                  {row.name ?? '—'}
-                </span>
-              ),
-            },
-            {
-              key: 'email',
-              header: 'Email',
-              cell: (row: OrgTeamMember) => row.email ?? '—',
-            },
-            {
-              key: 'role',
-              header: 'Role',
-              cell: (row: OrgTeamMember) => ROLE_LABEL[row.role],
-            },
-          ]}
-          rows={team.members}
-        />
-      )}
-    </Card>
-    {team !== undefined && team.invitations.length > 0 ? (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-6)',
+      }}
+    >
       <Card
-        title="Pending invitations"
-        subtitle="Org-wide invitations that have not been accepted yet."
+        title="Members"
+        subtitle="Org-wide owners and admins."
+        padded={false}
       >
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-          {team.invitations.map((invitation) => (
-            <li
-              key={invitation._id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 'var(--space-3)',
-                padding: 'var(--space-2) 0',
-              }}
-            >
-              <span>
-                {invitation.email}{' '}
-                <span style={{ color: 'var(--text-tertiary)' }}>
-                  ({ROLE_LABEL[invitation.role]})
-                </span>
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={revokeState.pending}
-                onClick={() => {
-                  void revokeState.run(async () => {
-                    await revoke({ orgSlug, invitationId: invitation._id })
-                    pushToast('Invitation revoked', invitation.email)
-                  })
+        {team === undefined ? (
+          <p
+            style={{ color: 'var(--text-tertiary)', padding: 'var(--space-4)' }}
+          >
+            Loading members…
+          </p>
+        ) : (
+          <DataTable
+            rowKey="userId"
+            columns={[
+              {
+                key: 'name',
+                header: 'Member',
+                cell: (row: OrgTeamMember) => (
+                  <span
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 'var(--space-2)',
+                    }}
+                  >
+                    <Avatar
+                      name={row.name ?? row.email ?? 'Unknown'}
+                      src={row.imageUrl ?? undefined}
+                      size={24}
+                    />
+                    {row.name ?? '—'}
+                  </span>
+                ),
+              },
+              {
+                key: 'email',
+                header: 'Email',
+                cell: (row: OrgTeamMember) => row.email ?? '—',
+              },
+              {
+                key: 'role',
+                header: 'Role',
+                cell: (row: OrgTeamMember) => ROLE_LABEL[row.role],
+              },
+            ]}
+            rows={team.members}
+          />
+        )}
+      </Card>
+      {team !== undefined && team.invitations.length > 0 ? (
+        <Card
+          title="Pending invitations"
+          subtitle="Org-wide invitations that have not been accepted yet."
+        >
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+            {team.invitations.map((invitation) => (
+              <li
+                key={invitation._id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 'var(--space-3)',
+                  padding: 'var(--space-2) 0',
                 }}
               >
-                Revoke
-              </Button>
-            </li>
-          ))}
-        </ul>
-      </Card>
-    ) : null}
-    <Card
-      title="Invite an organization admin"
-      subtitle="Owners and admins can act on every event in this organization."
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        {error !== null ? <Callout tone="blocked">{error}</Callout> : null}
+                <span>
+                  {invitation.email}{' '}
+                  <span style={{ color: 'var(--text-tertiary)' }}>
+                    ({ROLE_LABEL[invitation.role]})
+                  </span>
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={revokeState.pending}
+                  onClick={() => {
+                    void revokeState.run(async () => {
+                      await revoke({ orgSlug, invitationId: invitation._id })
+                      pushToast('Invitation revoked', invitation.email)
+                    })
+                  }}
+                >
+                  Revoke
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
+      <Card
+        title="Invite an organization admin"
+        subtitle="Owners and admins can act on every event in this organization."
+      >
         <div
           style={{
             display: 'flex',
-            gap: 'var(--space-3)',
-            alignItems: 'flex-end',
-            flexWrap: 'wrap',
+            flexDirection: 'column',
+            gap: 'var(--space-4)',
           }}
         >
-          <div style={{ flex: '1 1 16rem' }}>
-            <Field label="Email" htmlFor="org-invite-email">
-              <Input
-                id="org-invite-email"
-                type="email"
-                value={email}
-                placeholder="person@example.com"
-                onChange={(e) => setEmail(e.target.value)}
+          {error !== null ? <Callout tone="blocked">{error}</Callout> : null}
+          <div
+            style={{
+              display: 'flex',
+              gap: 'var(--space-3)',
+              alignItems: 'flex-end',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ flex: '1 1 16rem' }}>
+              <Field label="Email" htmlFor="org-invite-email">
+                <Input
+                  id="org-invite-email"
+                  type="email"
+                  value={email}
+                  placeholder="person@example.com"
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </Field>
+            </div>
+            <Field label="Role" htmlFor="org-invite-role">
+              <Select
+                id="org-invite-role"
+                value={role}
+                // Only an owner can make another owner — offering it to an admin
+                // would be offering a refusal.
+                options={
+                  canGrantOwner
+                    ? [
+                        { value: 'admin', label: 'Admin' },
+                        { value: 'owner', label: 'Owner' },
+                      ]
+                    : [{ value: 'admin', label: 'Admin' }]
+                }
+                onChange={(e) => setRole(e.target.value)}
               />
             </Field>
+            <Button variant="primary" onClick={submit} disabled={pending}>
+              {pending ? 'Sending…' : 'Send invitation'}
+            </Button>
           </div>
-          <Field label="Role" htmlFor="org-invite-role">
-            <Select
-              id="org-invite-role"
-              value={role}
-              // Only an owner can make another owner — offering it to an admin
-              // would be offering a refusal.
-              options={
-                canGrantOwner
-                  ? [
-                      { value: 'admin', label: 'Admin' },
-                      { value: 'owner', label: 'Owner' },
-                    ]
-                  : [{ value: 'admin', label: 'Admin' }]
-              }
-              onChange={(e) => setRole(e.target.value)}
-            />
-          </Field>
-          <Button variant="primary" onClick={submit} disabled={pending}>
-            {pending ? 'Sending…' : 'Send invitation'}
-          </Button>
+          <p
+            style={{
+              color: 'var(--text-tertiary)',
+              font: 'var(--type-caption)',
+            }}
+          >
+            The invitation email carries a link that expires. Event-scoped
+            invitations live on each event&rsquo;s Team page.
+          </p>
         </div>
-        <p style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
-          The invitation email carries a link that expires. Event-scoped
-          invitations live on each event&rsquo;s Team page.
-        </p>
-      </div>
-    </Card>
+      </Card>
     </div>
   )
 }
