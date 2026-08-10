@@ -49,6 +49,53 @@ export const setStatus = eventMutation({
   },
 });
 
+export const updateContent = eventMutation({
+  args: {
+    sessionId: v.id("sessions"),
+    title: v.optional(v.string()),
+    description: v.optional(v.string()),
+    format: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { sessionId, ...patch } = args;
+    await Sessions.updateContent(ctx, ctx.caller, sessionId, patch);
+    return null;
+  },
+});
+
+const vContentFields = v.object({
+  title: v.string(),
+  description: v.optional(v.string()),
+  format: v.optional(v.string()),
+});
+
+export const listRevisions = eventQuery({
+  args: { sessionId: v.id("sessions") },
+  returns: v.array(
+    v.object({
+      revisionId: vv.id("sessionRevisions"),
+      editedAt: v.number(),
+      editorName: v.union(v.string(), v.null()),
+      editorEmail: v.union(v.string(), v.null()),
+      before: vContentFields,
+      after: vContentFields,
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Sessions.listRevisions(ctx, ctx.caller, args.sessionId);
+  },
+});
+
+export const restoreRevision = eventMutation({
+  args: { revisionId: v.id("sessionRevisions") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Sessions.restoreRevision(ctx, ctx.caller, args.revisionId);
+    return null;
+  },
+});
+
 export const setContentStatus = eventMutation({
   args: {
     sessionId: v.id("sessions"),

@@ -308,3 +308,82 @@ export const dashboard = eventQuery({
     return await Readiness.dashboard(ctx, ctx.caller, args.now);
   },
 });
+
+// ── Files library & bulk export (W5: CNT-13/CNT-14) ──────────────────────
+
+export const filesLibrary = eventQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      instanceId: vv.id("taskInstances"),
+      requirementTitle: v.string(),
+      sessionId: vv.id("sessions"),
+      sessionTitle: v.string(),
+      speakerName: v.union(v.string(), v.null()),
+      filename: v.string(),
+      version: v.number(),
+      versionCount: v.number(),
+      uploadedAt: v.number(),
+      url: v.union(v.string(), v.null()),
+      commentCount: v.number(),
+    }),
+  ),
+  handler: async (ctx) => {
+    return await Tasks.filesLibrary(ctx, ctx.caller);
+  },
+});
+
+export const exportBundle = eventQuery({
+  args: { instanceIds: v.array(v.id("taskInstances")) },
+  returns: v.array(
+    v.object({
+      filename: v.string(),
+      url: v.union(v.string(), v.null()),
+      sessionTitle: v.string(),
+      speakerName: v.union(v.string(), v.null()),
+      requirementTitle: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Tasks.exportBundle(ctx, ctx.caller, args.instanceIds);
+  },
+});
+
+// Organizer-side comment thread (same rows the portal reads).
+
+export const taskComments = eventQuery({
+  args: { instanceId: v.id("taskInstances") },
+  returns: v.array(
+    v.object({
+      commentId: vv.id("uploadComments"),
+      authorName: v.union(v.string(), v.null()),
+      authorEmail: v.union(v.string(), v.null()),
+      body: v.string(),
+      createdAt: v.number(),
+      mine: v.boolean(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Tasks.listTaskComments(
+      ctx,
+      ctx.caller.user,
+      ctx.caller.event,
+      args.instanceId,
+    );
+  },
+});
+
+export const commentOnTask = eventMutation({
+  args: { instanceId: v.id("taskInstances"), body: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Tasks.addTaskComment(
+      ctx,
+      ctx.caller.user,
+      ctx.caller.event,
+      args.instanceId,
+      args.body,
+    );
+    return null;
+  },
+});

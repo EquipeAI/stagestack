@@ -1351,3 +1351,181 @@ export async function listInstances(
   }
   return rows;
 }
+
+// ── File comments (W5: CNT-05) ───────────────────────────────────────────
+
+const MAX_COMMENT = 2000;
+const COMMENT_SCAN = 200;
+
+export type TaskCommentRow = {
+  commentId: Id<"uploadComments">;
+  authorName: string | null;
+  authorEmail: string | null;
+  body: string;
+  createdAt: number;
+  mine: boolean;
+};
+
+/** Comment on a task's uploaded evidence. Same access rule as the uploads
+ * themselves: organizers and the task's own speaker/manager. */
+export async function addTaskComment(
+  ctx: MutationCtx,
+  actor: Doc<"users">,
+  event: Doc<"events">,
+  instanceId: Id<"taskInstances">,
+  body: string,
+): Promise<void> {
+  const { instance } = await requireTaskAccess(ctx, actor, event, instanceId);
+  assertEventActive(event);
+  const text = assertText(body, { label: "Comment", max: MAX_COMMENT });
+  await ctx.db.insert("uploadComments", {
+    eventId: event._id,
+    instanceId: instance._id,
+    authorUserId: actor._id,
+    body: text,
+    createdAt: Date.now(),
+  });
+  await logAudit(ctx, {
+    orgId: event.orgId,
+    eventId: event._id,
+    actorUserId: actor._id,
+    action: "task.comment",
+    targetType: "taskInstance",
+    targetId: instance._id,
+    meta: {},
+  });
+}
+
+export async function listTaskComments(
+  ctx: QueryCtx,
+  actor: Doc<"users">,
+  event: Doc<"events">,
+  instanceId: Id<"taskInstances">,
+): Promise<TaskCommentRow[]> {
+  const { instance } = await requireTaskAccess(ctx, actor, event, instanceId);
+  const rows = await ctx.db
+    .query("uploadComments")
+    .withIndex("by_instanceId", (q) => q.eq("instanceId", instance._id))
+    .take(COMMENT_SCAN);
+  const out: TaskCommentRow[] = [];
+  for (const row of rows.sort((a, b) => a.createdAt - b.createdAt)) {
+    const author = await ctx.db.get("users", row.authorUserId);
+    out.push({
+      commentId: row._id,
+      authorName: author?.name ?? null,
+      authorEmail: author?.email ?? null,
+      body: row.body,
+      createdAt: row.createdAt,
+      mine: row.authorUserId === actor._id,
+    });
+  }
+  return out;
+}
+
+// ── Files library & bulk export (W5: CNT-13/CNT-14) ──────────────────────
+
+export type LibraryFileRow = {
+  instanceId: Id<"taskInstances">;
+  requirementTitle: string;
+  sessionId: Id<"sessions">;
+  sessionTitle: string;
+  speakerName: string | null;
+  filename: string;
+  version: number;
+  versionCount: number;
+  uploadedAt: number;
+  url: string | null;
+  commentCount: number;
+};
+
+/** Every uploaded deliverable on the event — latest version per task, with
+ * session/speaker association and the version count (CNT-13). */
+export async function filesLibrary(
+  ctx: QueryCtx,
+  caller: EventCaller,
+): Promise<LibraryFileRow[]> {
+  requireOrganizer(caller);
+  const uploads = await ctx.db
+    .query("uploads")
+    .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+    .take(2000);
+  const byInstance = new Map<Id<"taskInstances">, Array<Doc<"uploads">>>();
+  for (const upload of uploads) {
+    const list = byInstance.get(upload.taskInstanceId) ?? [];
+    list.push(upload);
+    byInstance.set(upload.taskInstanceId, list);
+  }
+  const comments = await ctx.db
+    .query("uploadComments")
+    .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+    .take(2000);
+  const commentCount = new Map<Id<"taskInstances">, number>();
+  for (const comment of comments) {
+    commentCount.set(
+      comment.instanceId,
+      (commentCount.get(comment.instanceId) ?? 0) + 1,
+    );
+  }
+
+  const out: LibraryFileRow[] = [];
+  for (const [instanceId, list] of byInstance) {
+    const instance = await ctx.db.get("taskInstances", instanceId);
+    if (instance === null) continue;
+    const requirement = await ctx.db.get("requirements", instance.requirementId);
+    const session = await ctx.db.get("sessions", instance.sessionId);
+    const contact =
+      instance.eventContactId === undefined
+        ? null
+        : await ctx.db.get("eventContacts", instance.eventContactId);
+    const latest = list.reduce((a, b) => (a.version >= b.version ? a : b));
+    out.push({
+      instanceId,
+      requirementTitle: requirement?.title ?? "(deleted requirement)",
+      sessionId: instance.sessionId,
+      sessionTitle: session?.title ?? "(deleted session)",
+      speakerName:
+        contact === null
+          ? null
+          : `${contact.firstName} ${contact.lastName}`.trim(),
+      filename: latest.filename,
+      version: latest.version,
+      versionCount: list.length,
+      uploadedAt: latest._creationTime,
+      url: await ctx.storage.getUrl(latest.storageId),
+      commentCount: commentCount.get(instanceId) ?? 0,
+    });
+  }
+  return out.sort((a, b) => b.uploadedAt - a.uploadedAt);
+}
+
+export type BundleFile = {
+  filename: string;
+  url: string | null;
+  sessionTitle: string;
+  speakerName: string | null;
+  requirementTitle: string;
+};
+
+/** The latest version of each selected deliverable, for the client-side ZIP
+ * (CNT-14). `instanceIds` empty → everything with an upload. */
+export async function exportBundle(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  instanceIds: Array<Id<"taskInstances">>,
+): Promise<BundleFile[]> {
+  requireOrganizer(caller);
+  const all = await filesLibrary(ctx, caller);
+  const wanted =
+    instanceIds.length === 0
+      ? all
+      : all.filter((row) =>
+          instanceIds.some((id) => id === row.instanceId),
+        );
+  return wanted.map((row) => ({
+    filename: row.filename,
+    url: row.url,
+    sessionTitle: row.sessionTitle,
+    speakerName: row.speakerName,
+    requirementTitle: row.requirementTitle,
+  }));
+}

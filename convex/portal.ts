@@ -365,3 +365,35 @@ export const updateSessionContent = authedMutation({
     return null;
   },
 });
+
+// ── Task file comments (W5: CNT-05) ──────────────────────────────────────
+
+const vTaskComment = v.object({
+  commentId: vv.id("uploadComments"),
+  authorName: v.union(v.string(), v.null()),
+  authorEmail: v.union(v.string(), v.null()),
+  body: v.string(),
+  createdAt: v.number(),
+  mine: v.boolean(),
+});
+
+export const taskComments = authedQuery({
+  args: { eventSlug: v.string(), instanceId: v.id("taskInstances") },
+  returns: v.array(vTaskComment),
+  handler: async (ctx, args) => {
+    return await Portal.taskComments(ctx, ctx.user, args);
+  },
+});
+
+export const commentOnTask = authedMutation({
+  args: {
+    eventSlug: v.string(),
+    instanceId: v.id("taskInstances"),
+    body: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Portal.commentOnTask(ctx, ctx.user, args);
+    return null;
+  },
+});

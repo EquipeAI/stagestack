@@ -950,6 +950,20 @@ export async function updateSessionContent(
   if (args.patch.format !== undefined) {
     patch.format = optionalText(args.patch.format, "Session format", 80);
   }
+  // The change history (W5) records manager edits alongside organizer ones.
+  await Sessions.recordRevision(ctx, {
+    event,
+    session,
+    after: {
+      title: patch.title ?? session.title,
+      description:
+        args.patch.description === undefined
+          ? session.description
+          : patch.description,
+      format: args.patch.format === undefined ? session.format : patch.format,
+    },
+    editedBy: user._id,
+  });
   await ctx.db.patch("sessions", session._id, patch);
   // Title/description/format are exactly what the public program renders —
   // keep an already-published blob current (eval: stale-snapshot finding).
@@ -1343,4 +1357,24 @@ export async function organizerSetParticipationState(
   if (participant.state !== to) {
     await Publish.requestRebuild(ctx, caller.event._id);
   }
+}
+
+// ── Task file comments (W5) ──────────────────────────────────────────────
+
+export async function taskComments(
+  ctx: QueryCtx,
+  user: Doc<"users">,
+  args: { eventSlug: string; instanceId: Id<"taskInstances"> },
+): Promise<Tasks.TaskCommentRow[]> {
+  const event = await eventBySlug(ctx, args.eventSlug);
+  return await Tasks.listTaskComments(ctx, user, event, args.instanceId);
+}
+
+export async function commentOnTask(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  args: { eventSlug: string; instanceId: Id<"taskInstances">; body: string },
+): Promise<void> {
+  const event = await eventBySlug(ctx, args.eventSlug);
+  await Tasks.addTaskComment(ctx, user, event, args.instanceId, args.body);
 }

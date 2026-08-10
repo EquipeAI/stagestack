@@ -189,6 +189,40 @@ export default defineSchema({
     order: v.number(),
   }).index("by_eventId", ["eventId"]),
 
+  // ── Content history & file comments (W5) ─────────────────────────────
+  // One row per content edit of a session (organizer or portal), storing the
+  // values BEFORE the edit so any revision can be restored. CNT-11.
+  sessionRevisions: defineTable({
+    eventId: v.id("events"),
+    sessionId: v.id("sessions"),
+    editedBy: v.id("users"),
+    editedAt: v.number(),
+    /** The fields as they were before this edit (only content fields). */
+    before: v.object({
+      title: v.string(),
+      description: v.optional(v.string()),
+      format: v.optional(v.string()),
+    }),
+    /** What the edit changed them to (for display; restore uses `before`). */
+    after: v.object({
+      title: v.string(),
+      description: v.optional(v.string()),
+      format: v.optional(v.string()),
+    }),
+  }).index("by_sessionId", ["sessionId"]),
+
+  // Comment thread on a task instance's uploaded file(s) — speaker and
+  // organizer both read and write (CNT-05).
+  uploadComments: defineTable({
+    eventId: v.id("events"),
+    instanceId: v.id("taskInstances"),
+    authorUserId: v.id("users"),
+    body: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_instanceId", ["instanceId"])
+    .index("by_eventId", ["eventId"]),
+
   // ── Embeds (W3) ──────────────────────────────────────────────────────
   // Named, enable/disable-able widget embeds an organizer generates from the
   // publish console. The embed id is the public key: /embed/w/<id> renders
@@ -629,7 +663,10 @@ export default defineSchema({
     // task to provided/awaiting review.
     approvedAt: v.optional(v.number()),
     approvedBy: v.optional(v.id("users")),
-  }).index("by_taskInstanceId", ["taskInstanceId"]),
+  })
+    .index("by_taskInstanceId", ["taskInstanceId"])
+    // The files library (W5) reads all of an event's uploads in one scan.
+    .index("by_eventId", ["eventId"]),
 
   // ── Agenda items (M6): non-session blocks (breaks, registration, meals).
   // They share drafting/overlap checks/publication but bypass CFP, review,

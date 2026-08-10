@@ -913,3 +913,157 @@ export async function setContentStatus(
     meta: { to },
   });
 }
+
+// ── Content editing & revision history (W5: CNT-09/CNT-11) ───────────────
+
+type SessionContentFields = {
+  title: string;
+  description?: string;
+  format?: string;
+};
+
+function contentFields(session: Doc<"sessions">): SessionContentFields {
+  return {
+    title: session.title,
+    description: session.description,
+    format: session.format,
+  };
+}
+
+/** Record one edit in the session's history. Exported so the portal's
+ * manager-side edit records through the same trail. */
+export async function recordRevision(
+  ctx: MutationCtx,
+  args: {
+    event: Doc<"events">;
+    session: Doc<"sessions">;
+    after: SessionContentFields;
+    editedBy: Id<"users">;
+  },
+): Promise<void> {
+  await ctx.db.insert("sessionRevisions", {
+    eventId: args.event._id,
+    sessionId: args.session._id,
+    editedBy: args.editedBy,
+    editedAt: Date.now(),
+    before: contentFields(args.session),
+    after: args.after,
+  });
+}
+
+/** Organizer content edit from the central admin view (CNT-09): patches the
+ * content fields, records the revision, keeps public output current. */
+export async function updateContent(
+  ctx: MutationCtx,
+  caller: EventCaller,
+  sessionId: Id<"sessions">,
+  patch: { title?: string; description?: string; format?: string },
+): Promise<void> {
+  requireOrganizer(caller);
+  assertEventActive(caller.event);
+  const session = await ctx.db.get("sessions", sessionId);
+  if (session === null || session.eventId !== caller.event._id) {
+    notFound("session", "No such session on this event.");
+  }
+  const next: SessionContentFields = {
+    title:
+      patch.title === undefined
+        ? session.title
+        : assertText(patch.title, { label: "Session title", max: 200 }),
+    description:
+      patch.description === undefined
+        ? session.description
+        : patch.description.trim() === ""
+          ? undefined
+          : patch.description.slice(0, 10000),
+    format:
+      patch.format === undefined
+        ? session.format
+        : patch.format.trim() === ""
+          ? undefined
+          : patch.format.slice(0, 80),
+  };
+  const unchanged =
+    next.title === session.title &&
+    next.description === session.description &&
+    next.format === session.format;
+  if (unchanged) return;
+  await recordRevision(ctx, {
+    event: caller.event,
+    session,
+    after: next,
+    editedBy: caller.user._id,
+  });
+  await ctx.db.patch("sessions", sessionId, next);
+  await republishIfPublished(ctx, caller.event._id);
+  await logAudit(ctx, {
+    orgId: caller.org._id,
+    eventId: caller.event._id,
+    actorUserId: caller.user._id,
+    action: "sessions.updateContent",
+    targetType: "session",
+    targetId: sessionId,
+    meta: { fields: Object.keys(patch) },
+  });
+}
+
+export type RevisionRow = {
+  revisionId: Id<"sessionRevisions">;
+  editedAt: number;
+  editorName: string | null;
+  editorEmail: string | null;
+  before: SessionContentFields;
+  after: SessionContentFields;
+};
+
+export async function listRevisions(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  sessionId: Id<"sessions">,
+): Promise<RevisionRow[]> {
+  requireOrganizer(caller);
+  const session = await ctx.db.get("sessions", sessionId);
+  if (session === null || session.eventId !== caller.event._id) {
+    notFound("session", "No such session on this event.");
+  }
+  const rows = await ctx.db
+    .query("sessionRevisions")
+    .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+    .take(200);
+  const out: RevisionRow[] = [];
+  for (const row of rows) {
+    const editor = await ctx.db.get("users", row.editedBy);
+    out.push({
+      revisionId: row._id,
+      editedAt: row.editedAt,
+      editorName: editor?.name ?? null,
+      editorEmail: editor?.email ?? null,
+      before: row.before,
+      after: row.after,
+    });
+  }
+  // Newest first — the history panel reads downward into the past.
+  return out.sort((a, b) => b.editedAt - a.editedAt);
+}
+
+/** Restore the content as it was BEFORE the given revision (CNT-11). The
+ * restore itself is recorded as a new revision, so nothing is ever lost. */
+export async function restoreRevision(
+  ctx: MutationCtx,
+  caller: EventCaller,
+  revisionId: Id<"sessionRevisions">,
+): Promise<void> {
+  requireOrganizer(caller);
+  assertEventActive(caller.event);
+  const revision = await ctx.db.get("sessionRevisions", revisionId);
+  if (revision === null || revision.eventId !== caller.event._id) {
+    notFound("revision", "No such revision on this event.");
+  }
+  // Absent fields restore as CLEARED, not as kept-current — "" is
+  // updateContent's explicit clear.
+  await updateContent(ctx, caller, revision.sessionId, {
+    title: revision.before.title,
+    description: revision.before.description ?? "",
+    format: revision.before.format ?? "",
+  });
+}
