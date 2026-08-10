@@ -20,6 +20,10 @@ export const contactProfileFields = {
   phone: v.optional(v.string()),
   // Short role line, e.g. "CTO, Acme" — shown on public speaker cards.
   tagline: v.optional(v.string()),
+  // Structured versions of the tagline (W6): widget cards want "Job title,
+  // Company" as separate fields; tagline stays as the freeform fallback.
+  jobTitle: v.optional(v.string()),
+  company: v.optional(v.string()),
   bio: v.optional(v.string()),
   headshotId: v.optional(v.id("_storage")),
   links: v.optional(
@@ -406,6 +410,12 @@ export default defineSchema({
     ...contactProfileFields,
     // Set when a portal user claims this snapshot (M3).
     userId: v.optional(v.id("users")),
+    // Values for the event's speaker-scoped custom fields (W6: logistics
+    // like travel preferences), keyed by customFields id. Wired through
+    // speakers.setCustomValues; select/multiselect store option strings.
+    customValues: v.optional(
+      v.record(v.string(), v.union(v.string(), v.array(v.string()))),
+    ),
   })
     .index("by_eventId", ["eventId"])
     .index("by_contactId", ["contactId"])

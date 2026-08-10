@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from 'convex/react'
+import { useConvex, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import { MenuItem, MenuLabel, Popover } from './Popover'
 import {
@@ -7,16 +7,24 @@ import {
   BUILT_IN_VIEWS,
   COLUMNS,
   STATUS_ORDER,
+  displayTitle,
   sameView,
 } from './model'
-import { downloadFileBundle, exportCsv, exportXlsx, slug } from './exporters'
+import {
+  downloadFileBundle,
+  exportCsv,
+  exportReviewsCsv,
+  exportXlsx,
+  slug,
+} from './exporters'
+import type { ConvexReactClient } from 'convex/react'
 import type {
   AbstractsSearch,
   ColumnId,
   ProposalStatus,
   ViewDef,
 } from './model'
-import type { ExportInput } from './exporters'
+import type { ExportInput, ReviewExportRow } from './exporters'
 import { Button, Field, Icon, IconButton, Input, Switch } from '~/ds'
 import { pushToast } from '~/components/toast'
 
@@ -307,11 +315,104 @@ export function ExportMenu({
           >
             Export XLSX
           </MenuItem>
+          <ReviewsCsvItem
+            eventSlug={eventSlug}
+            base={base}
+            buildInput={buildInput}
+            onDone={close}
+          />
           <MenuLabel>Attachments</MenuLabel>
           <FileBundleItem eventSlug={eventSlug} base={base} onDone={close} />
         </>
       )}
     </Popover>
+  )
+}
+
+/**
+ * One review row per proposal on screen. Assignment progress is already in
+ * memory (the table subscribes to it); the recommendation split lives in the
+ * per-proposal summary, fetched here in small batches at click time — and only
+ * for proposals that actually have assignments.
+ */
+async function buildReviewRows(
+  convex: ConvexReactClient,
+  eventSlug: string,
+  input: ExportInput,
+): Promise<Array<ReviewExportRow>> {
+  const out: Array<ReviewExportRow> = []
+  const batchSize = 8
+  for (let i = 0; i < input.rows.length; i += batchSize) {
+    const batch = input.rows.slice(i, i + batchSize)
+    out.push(
+      ...(await Promise.all(
+        batch.map(async (row) => {
+          const p = input.progress?.[row.proposal._id]
+          const base = {
+            title: displayTitle(row.proposal),
+            status: ABSTRACT_STATUS_LABEL[row.proposal.status],
+            assigned: p?.assigned ?? 0,
+            submitted: p?.submitted ?? 0,
+            avgScore: p?.avgScore ?? null,
+          }
+          if (p === undefined || p.assigned === 0) {
+            return { ...base, acceptCount: 0, neutralCount: 0, declineCount: 0 }
+          }
+          const summary = await convex.query(api.reviews.summary, {
+            eventSlug,
+            proposalId: row.proposal._id,
+          })
+          return {
+            ...base,
+            avgScore: summary.aggregate.avgScore,
+            acceptCount: summary.aggregate.recommendations.accept,
+            neutralCount: summary.aggregate.recommendations.neutral,
+            declineCount: summary.aggregate.recommendations.decline,
+          }
+        }),
+      )),
+    )
+  }
+  return out
+}
+
+/** The reviews sheet (ABS-13): one row per visible proposal. */
+function ReviewsCsvItem({
+  eventSlug,
+  base,
+  buildInput,
+  onDone,
+}: {
+  eventSlug: string
+  base: string
+  buildInput: () => ExportInput
+  onDone: () => void
+}) {
+  const convex = useConvex()
+  const [busy, setBusy] = useState(false)
+
+  return (
+    <MenuItem
+      disabled={busy}
+      onClick={() => {
+        setBusy(true)
+        void buildReviewRows(convex, eventSlug, buildInput())
+          .then((rows) => {
+            exportReviewsCsv(rows, `${base}-reviews`)
+            pushToast(
+              'Reviews exported',
+              `${rows.length} ${rows.length === 1 ? 'proposal' : 'proposals'}, progress and recommendations.`,
+            )
+          })
+          .catch(() => pushToast('Export failed', 'The review summaries could not be read.'))
+          .finally(() => {
+            setBusy(false)
+            onDone()
+          })
+      }}
+    >
+      {busy ? 'Reading reviews…' : 'Reviews (CSV)'}
+    </MenuItem>
   )
 }
 

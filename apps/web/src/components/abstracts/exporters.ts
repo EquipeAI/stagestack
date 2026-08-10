@@ -153,6 +153,60 @@ export function exportCsv(input: ExportInput, filename: string) {
   downloadBlob(blob, `${filename}.csv`)
 }
 
+// ── Review export (ABS-13) ───────────────────────────────────────────────
+
+export type ReviewExportRow = {
+  title: string
+  status: string
+  assigned: number
+  submitted: number
+  avgScore: number | null
+  acceptCount: number
+  neutralCount: number
+  declineCount: number
+}
+
+/** Two decimals only when the average is fractional — a clean 4 stays "4". */
+export function scoreText(score: number | null): string {
+  if (score === null) return ''
+  return Number.isInteger(score) ? String(score) : score.toFixed(2)
+}
+
+const REVIEW_HEADER = [
+  'Title',
+  'Status',
+  'Assigned',
+  'Submitted',
+  'Avg score',
+  'Accept',
+  'Neutral',
+  'Decline',
+]
+
+/** One row per proposal: assignment progress plus the recommendation split. */
+export function exportReviewsCsv(
+  rows: ReadonlyArray<ReviewExportRow>,
+  filename: string,
+) {
+  const sheet = [
+    REVIEW_HEADER,
+    ...rows.map((row) => [
+      row.title,
+      row.status,
+      String(row.assigned),
+      String(row.submitted),
+      scoreText(row.avgScore),
+      String(row.acceptCount),
+      String(row.neutralCount),
+      String(row.declineCount),
+    ]),
+  ].map((line) => line.map(sheetSafe))
+  const blob = new Blob(['﻿', toCsv(sheet)], {
+    type: 'text/csv;charset=utf-8',
+  })
+  downloadBlob(blob, `${filename}.csv`)
+}
+
 /** Split out from `exportXlsx` so the workbook can be round-tripped in a test
  * without a DOM download. */
 export async function xlsxBytes(

@@ -88,6 +88,8 @@ export type PortalProfileInput = {
   firstName: string;
   lastName: string;
   tagline?: string;
+  jobTitle?: string;
+  company?: string;
   bio?: string;
   links?: PortalLinks;
   headshotId?: Id<"_storage">;
@@ -100,6 +102,8 @@ export type PortalProfileView = {
   firstName: string;
   lastName: string;
   tagline?: string;
+  jobTitle?: string;
+  company?: string;
   bio?: string;
   headshotId?: Id<"_storage">;
   headshotUrl: string | null;
@@ -140,6 +144,8 @@ function validateProfile(input: PortalProfileInput): PortalProfileInput {
       min: 0,
     }),
     tagline: optionalText(input.tagline, "Tagline", 200),
+    jobTitle: optionalText(input.jobTitle, "Job title", 120),
+    company: optionalText(input.company, "Company", 120),
     bio: optionalText(input.bio, "Bio", 4000),
     links:
       input.links === undefined
@@ -163,6 +169,8 @@ async function profileView(
     firstName: contact.firstName,
     lastName: contact.lastName,
     tagline: contact.tagline,
+    jobTitle: contact.jobTitle,
+    company: contact.company,
     bio: contact.bio,
     headshotId: contact.headshotId,
     headshotUrl:

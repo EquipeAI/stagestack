@@ -3,15 +3,21 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Id } from '@convex/_generated/dataModel'
-import { Card, EmptyState, PageHeader } from '~/ds'
+import { Card, EmptyState, PageHeader, Tabs } from '~/ds'
 import { ReviewQueue } from '~/components/reviews/ReviewQueue'
 import { ReviewPanel } from '~/components/reviews/ReviewPanel'
 import { ProposalReadout } from '~/components/reviews/ProposalReadout'
+import { RoundsPanel } from '~/components/reviews/RoundsPanel'
+import { ProgressPanel } from '~/components/reviews/ProgressPanel'
 import { isUnfinished, submittedCount } from '~/components/reviews/model'
 
 // The single screen a reviewer works from: the queue on the left, the proposal
 // in the middle, the review panel on the right. Nothing here navigates away —
 // submitting advances to the next unfinished proposal in place.
+//
+// Organizers get two more views over the same URL: the evaluation plan
+// (rounds, scorecards, pools) and the per-reviewer progress board. Reviewers
+// see only their queue — no tabs.
 
 export const Route = createFileRoute('/app/e/$eventSlug/reviews')({
   component: Reviews,
@@ -20,6 +26,53 @@ export const Route = createFileRoute('/app/e/$eventSlug/reviews')({
 function Reviews() {
   const { eventSlug } = Route.useParams()
   const event = useQuery(api.events.get, { eventSlug })
+  const [tab, setTab] = useState('queue')
+  const isOrganizer = event !== undefined && event.role === 'organizer'
+
+  const view =
+    isOrganizer && tab === 'plan' ? (
+      <RoundsPanel eventSlug={eventSlug} timezone={event.event.timezone} />
+    ) : isOrganizer && tab === 'progress' ? (
+      <ProgressPanel eventSlug={eventSlug} />
+    ) : (
+      <QueueView
+        eventSlug={eventSlug}
+        archived={event?.event.archivedAt !== undefined}
+      />
+    )
+
+  if (!isOrganizer) return view
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-5)',
+      }}
+    >
+      <Tabs
+        variant="underline"
+        tabs={[
+          { id: 'queue', label: 'My queue' },
+          { id: 'plan', label: 'Evaluation plan' },
+          { id: 'progress', label: 'Progress' },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      {view}
+    </div>
+  )
+}
+
+function QueueView({
+  eventSlug,
+  archived,
+}: {
+  eventSlug: string
+  archived: boolean
+}) {
   const assignments = useQuery(api.reviews.myAssignments, { eventSlug })
 
   const [selectedId, setSelectedId] = useState<Id<'reviews'> | null>(null)
@@ -116,7 +169,7 @@ function Reviews() {
                 key={current.reviewId}
                 eventSlug={eventSlug}
                 assignment={current}
-                archived={event?.event.archivedAt !== undefined}
+                archived={archived}
                 isLastUnfinished={
                   unfinished.length <= 1 &&
                   unfinished[0]?.reviewId === current.reviewId

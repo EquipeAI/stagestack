@@ -9,6 +9,7 @@ import {
   isStaged,
 } from './model'
 import { Modal } from './Modal'
+import type { FunctionReturnType } from 'convex/server'
 import type { Doc, Id } from '@convex/_generated/dataModel'
 import type { AnswerValue, FormDef } from '@convex/shared/formDef'
 import type * as React from 'react'
@@ -22,6 +23,7 @@ import {
   Field,
   Input,
   StatusPill,
+  Tag,
   Textarea,
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
@@ -365,6 +367,7 @@ const REVIEW_STATUS_LABEL: Record<string, string> = {
   draft: 'Draft',
   submitted: 'Complete',
   locked: 'Complete',
+  conflict: 'Conflict',
 }
 
 function ReviewPanel({
@@ -437,7 +440,18 @@ function ReviewPanel({
                 <StatusPill
                   status={REVIEW_STATUS_LABEL[review.status] ?? review.status}
                 />
-                {review.score !== undefined ? (
+                <Tag>{review.roundName}</Tag>
+                {review.weightedScore !== undefined ? (
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 'var(--text-sm)',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    Weighted {review.weightedScore.toFixed(2)}
+                  </span>
+                ) : review.score !== undefined ? (
                   <span
                     style={{
                       fontFamily: 'var(--font-mono)',
@@ -467,16 +481,75 @@ function ReviewPanel({
                   </span>
                 ) : null}
               </span>
-              {review.comments !== undefined && review.comments !== '' ? (
-                <span style={{ whiteSpace: 'pre-wrap', color: 'var(--text-secondary)' }}>
-                  {review.comments}
-                </span>
-              ) : null}
+              <ReviewBody review={review} />
             </li>
           ))}
         </ul>
       )}
     </Card>
+  )
+}
+
+type ReviewRow = FunctionReturnType<
+  typeof api.reviews.summary
+>['reviews'][number]
+
+/** One review's content: scorecard answers when the review carries them,
+ * the legacy comments column otherwise, and conflicts called out as such. */
+function ReviewBody({ review }: { review: ReviewRow }) {
+  if (review.status === 'conflict') {
+    return (
+      <span style={{ color: 'var(--text-danger)' }}>
+        <strong>Conflict declared</strong>
+        {review.conflictNote !== undefined && review.conflictNote !== '' ? (
+          <span style={{ whiteSpace: 'pre-wrap' }}>
+            {' — '}
+            {review.conflictNote}
+          </span>
+        ) : null}
+      </span>
+    )
+  }
+
+  if (review.answers === undefined) {
+    // Legacy review row — comments is the only body it ever had.
+    return review.comments !== undefined && review.comments !== '' ? (
+      <span style={{ whiteSpace: 'pre-wrap', color: 'var(--text-secondary)' }}>
+        {review.comments}
+      </span>
+    ) : null
+  }
+
+  const answered = review.scorecard.filter((field) => {
+    const value = review.answers?.[field.id]
+    return value !== undefined && value !== ''
+  })
+  if (answered.length === 0) return null
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-1)',
+      }}
+    >
+      {answered.map((field) => {
+        const value = review.answers?.[field.id]
+        return (
+          <span key={field.id} style={{ color: 'var(--text-secondary)' }}>
+            <span style={{ color: 'var(--text-tertiary)' }}>
+              {field.label}:
+            </span>{' '}
+            {typeof value === 'number' ? (
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{value}</span>
+            ) : (
+              <span style={{ whiteSpace: 'pre-wrap' }}>{value}</span>
+            )}
+          </span>
+        )
+      })}
+    </div>
   )
 }
 
@@ -601,6 +674,9 @@ function SpeakersPanel({
               >
                 <strong>{`${speaker.firstName} ${speaker.lastName}`.trim()}</strong>
                 {speaker.isPrimary ? <Badge tone="info">Primary</Badge> : null}
+                {speaker.role !== undefined && speaker.role !== '' ? (
+                  <Tag>{speaker.role}</Tag>
+                ) : null}
               </span>
               {speaker.email !== undefined ? (
                 <span style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>

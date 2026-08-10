@@ -10,6 +10,8 @@ import {
   Field,
   IconButton,
   Input,
+  Select,
+  Tag,
   Textarea,
 } from '~/ds'
 
@@ -18,6 +20,16 @@ import {
 // so the local draft is the single source of truth while editing.
 
 export const MAX_SPEAKERS = 10
+
+// Role labels a non-primary participant can carry (ABS-11). Empty string is
+// the implicit default, shown as plain "Speaker"; the primary speaker never
+// carries a role at all.
+export const SPEAKER_ROLES = [
+  'Co-speaker',
+  'Co-author',
+  'Panelist',
+  'Moderator',
+] as const
 
 // Social handles are plain text, so the DS Input's per-type mobile defaults do
 // not apply — but iOS still autocapitalises and autocorrects them, which turns
@@ -43,6 +55,8 @@ export type SpeakerDraft = {
   linkedin: string
   github: string
   isPrimary: boolean
+  /** Role label for non-primary speakers; '' means the default "Speaker". */
+  role: string
 }
 
 let keySeq = 0
@@ -65,6 +79,7 @@ export function emptySpeaker(isPrimary: boolean): SpeakerDraft {
     linkedin: '',
     github: '',
     isPrimary,
+    role: '',
   }
 }
 
@@ -85,6 +100,7 @@ export function speakersFromDocs(
     linkedin: doc.links?.linkedin ?? '',
     github: doc.links?.github ?? '',
     isPrimary: doc.isPrimary || index === 0,
+    role: doc.role ?? '',
   }))
 }
 
@@ -102,6 +118,7 @@ type SpeakerInput = {
     github?: string
   }
   isPrimary: boolean
+  role?: string
 }
 
 function trimmed(value: string): string | undefined {
@@ -129,6 +146,8 @@ export function speakersToInput(
       bio: trimmed(draft.bio),
       links: hasLinks ? links : undefined,
       isPrimary: draft.isPrimary,
+      // The primary speaker is implicitly "Speaker" — never carries a label.
+      role: draft.isPrimary ? undefined : trimmed(draft.role),
     }
   })
 }
@@ -351,6 +370,31 @@ function SpeakerCard({
             />
           </Field>
         </TwoUp>
+        {!speaker.isPrimary ? (
+          <TwoUp>
+            <Field
+              label="Role"
+              htmlFor={`${idBase}-role`}
+              hint="How this person appears on the proposal."
+            >
+              <Select
+                id={`${idBase}-role`}
+                value={speaker.role}
+                disabled={disabled}
+                options={[
+                  { value: '', label: 'Speaker' },
+                  ...SPEAKER_ROLES.map((role) => ({
+                    value: role,
+                    label: role,
+                  })),
+                ]}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                  onPatch({ role: e.target.value })
+                }}
+              />
+            </Field>
+          </TwoUp>
+        ) : null}
         <TwoUp>
           <Field
             label="Email"
@@ -495,7 +539,13 @@ export function SpeakersSummary({
             key={speaker.key}
             variant="flat"
             title={named.length > 0 ? named : `Speaker ${index + 1}`}
-            actions={speaker.isPrimary ? <Badge tone="brand">Primary</Badge> : undefined}
+            actions={
+              speaker.isPrimary ? (
+                <Badge tone="brand">Primary</Badge>
+              ) : speaker.role.trim().length > 0 ? (
+                <Tag>{speaker.role.trim()}</Tag>
+              ) : undefined
+            }
           >
             <DescriptionList
               stacked

@@ -6,7 +6,7 @@ import { bulkChunks, bulkErrorMessage, isStaged } from './model'
 import { Modal } from './Modal'
 import type { Id } from '@convex/_generated/dataModel'
 import type { AbstractRow, BulkResult, ProposalId } from './model'
-import { Button, Field, Select } from '~/ds'
+import { Button, Field, Input, Select } from '~/ds'
 import { pushToast } from '~/components/toast'
 import { usePending } from '~/lib/usePending'
 import { useLastLoaded, useNow } from '~/components/tasks/useNow'
@@ -248,9 +248,21 @@ function AssignPanel({
   // result across the once-a-minute re-subscribe so options don't blink away.
   const now = useNow()
   const team = useLastLoaded(useQuery(api.team.listForEvent, { eventSlug, now }))
+  const rounds = useQuery(api.reviews.listRounds, { eventSlug })
   const assign = useMutation(api.reviews.assign)
+  const autoDistribute = useMutation(api.reviews.autoDistribute)
   const { pending, error, setError, run } = usePending()
+  const auto = usePending()
   const [userId, setUserId] = useState('')
+  const [roundChoice, setRoundChoice] = useState('')
+  const [perProposal, setPerProposal] = useState('1')
+
+  // The chosen round, defaulting to the first one — assignments carry a round
+  // from the moment rounds exist, so a review lands under the right scorecard.
+  const round = useMemo(() => {
+    if (rounds === undefined || rounds.length === 0) return undefined
+    return rounds.find((r) => r.roundId === roundChoice) ?? rounds[0]
+  }, [rounds, roundChoice])
 
   const options = useMemo(() => {
     const members = team?.members ?? []
@@ -277,6 +289,7 @@ function AssignPanel({
         eventSlug,
         proposalIds,
         reviewerUserId: userId as Id<'users'>,
+        roundId: round?.roundId,
       })
       pushToast(
         `${result.assigned} ${result.assigned === 1 ? 'assignment' : 'assignments'} created`,
@@ -288,8 +301,50 @@ function AssignPanel({
     })
   }
 
+  const distribute = () => {
+    if (round === undefined) return
+    const per = Math.max(1, Math.floor(Number(perProposal) || 1))
+    void auto.run(async () => {
+      const result = await autoDistribute({
+        eventSlug,
+        roundId: round.roundId,
+        proposalIds,
+        perProposal: per,
+      })
+      pushToast(
+        `Assigned ${result.assigned} · unplaced ${result.unplaced}`,
+        result.unplaced === 0
+          ? undefined
+          : 'The round ran out of eligible reviewers for some slots.',
+      )
+      onDone()
+    })
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+      {rounds !== undefined && rounds.length > 0 ? (
+        <Field
+          label="Round"
+          htmlFor="bulk-round"
+          hint={
+            round === undefined
+              ? undefined
+              : `Pool of ${round.pool.length} · ${
+                  round.reviewerCap === undefined
+                    ? 'no cap'
+                    : `cap ${round.reviewerCap} each`
+                }`
+          }
+        >
+          <Select
+            id="bulk-round"
+            value={round?.roundId ?? ''}
+            options={rounds.map((r) => ({ value: r.roundId, label: r.name }))}
+            onChange={(e) => setRoundChoice(e.target.value)}
+          />
+        </Field>
+      ) : null}
       <Field
         label="Reviewer"
         htmlFor="bulk-reviewer"
@@ -320,6 +375,45 @@ function AssignPanel({
       >
         {pending ? 'Assigning…' : 'Assign reviewer'}
       </Button>
+      {round !== undefined ? (
+        <div
+          style={{
+            paddingTop: 'var(--space-3)',
+            borderTop: 'var(--space-px) solid var(--border-subtle)',
+          }}
+        >
+          <Field
+            label="Auto-distribute"
+            htmlFor="bulk-per-proposal"
+            hint={`Spreads the ${proposalIds.length} selected across the ${round.name} pool, evening out reviewer load.`}
+            error={auto.error ?? undefined}
+          >
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              <span style={{ width: '5rem', flex: 'none' }}>
+                <Input
+                  id="bulk-per-proposal"
+                  type="number"
+                  size="sm"
+                  value={perProposal}
+                  onChange={(e) => setPerProposal(e.target.value)}
+                />
+              </span>
+              <Button
+                size="sm"
+                disabled={auto.pending || round.pool.length === 0}
+                onClick={distribute}
+              >
+                {auto.pending ? 'Distributing…' : 'Auto-distribute'}
+              </Button>
+            </div>
+          </Field>
+          {round.pool.length === 0 ? (
+            <p style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
+              This round has no reviewer pool yet. Add reviewers to it first.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   )
 }

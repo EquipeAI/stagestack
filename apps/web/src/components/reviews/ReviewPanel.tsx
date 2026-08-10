@@ -27,10 +27,10 @@ import { SaveIndicator } from '~/components/cfp/CfpChrome'
 // the scorecard has a single numeric criterion the 1–9 keys set it;
 // Cmd/Ctrl+Enter commits.
 
-function numericOptions(field: ScorecardField): number[] {
+function numericOptions(field: ScorecardField): Array<number> {
   const min = field.min ?? 1
   const max = field.max ?? 5
-  const out: number[] = []
+  const out: Array<number> = []
   for (let value = min; value <= max && out.length <= 20; value += 1) {
     out.push(value)
   }
@@ -86,7 +86,7 @@ export function ReviewPanel({
   const missing = scorecard.filter(
     (field) =>
       field.required === true &&
-      (answers[field.id] === undefined || answers[field.id] === ''),
+      (!(field.id in answers) || answers[field.id] === ''),
   )
   const ready = missing.length === 0
 
