@@ -83,7 +83,7 @@ describe("embeds", () => {
     });
 
     // Anonymous resolve: only the Infra-track session survives the filter.
-    const resolved = await t.query(api.embeds.resolve, { embedId });
+    const resolved = (await t.query(api.embeds.resolve, { embedId }))!;
     expect(resolved.widget).toBe("sessions");
     expect(
       resolved.program.lineup.map((s: { title: string }) => s.title),
@@ -104,7 +104,9 @@ describe("embeds", () => {
     const t = setupTest();
     const { alice, eventSlug, sessionIds } = await seedPublished(t);
 
-    let program = await t.query(api.publish.publicProgram, { slug: eventSlug });
+    let program = (await t.query(api.publish.publicProgram, {
+      slug: eventSlug,
+    }))!;
     expect(program.lineup).toHaveLength(2);
 
     await alice.mutation(api.sessions.setContentStatus, {
@@ -113,7 +115,7 @@ describe("embeds", () => {
       to: "draft",
     });
     await drainScheduled(t);
-    program = await t.query(api.publish.publicProgram, { slug: eventSlug });
+    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
     expect(program.lineup.map((s: { title: string }) => s.title)).toEqual([
       "Infra talk",
     ]);
@@ -124,7 +126,7 @@ describe("embeds", () => {
       to: "approved",
     });
     await drainScheduled(t);
-    program = await t.query(api.publish.publicProgram, { slug: eventSlug });
+    program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
     expect(program.lineup).toHaveLength(2);
   });
 
