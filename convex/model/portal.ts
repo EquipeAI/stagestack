@@ -740,6 +740,10 @@ export async function updateMyProfile(
   // Profile-field requirements observe the snapshot, so filling in a bio here
   // IS the submission — and clearing it takes the task back (M4).
   await Tasks.recomputeProfileEvidence(ctx, contact._id);
+  // A published program renders this profile (name, bio, headshot, links):
+  // the served blob follows the edit without waiting for an organizer
+  // republish (eval finding: published pages served stale speaker data).
+  await Publish.requestRebuild(ctx, event._id);
   await logAudit(ctx, {
     orgId: event.orgId,
     eventId: event._id,
@@ -779,12 +783,13 @@ export async function confirmParticipation(
     actorUserId: user._id,
     to: args.to,
   });
-  // A decline revokes the speaker's public presence, so the served blob must
-  // follow — the privacy exception to explicit-publish. Scheduled, not inline:
-  // the rebuild reads the whole event graph and a speaker's click must not pay
-  // for it. It is queued unconditionally inside this transaction, so it runs as
-  // soon as the decline commits and cannot be skipped.
-  if (args.to === "declined" && participant.state !== "declined") {
+  // Either direction changes what the public program shows: a decline
+  // revokes the speaker's presence, a confirmation names a speaker who was
+  // "to be announced" until now. Scheduled, not inline: the rebuild reads the
+  // whole event graph and a speaker's click must not pay for it. It is queued
+  // unconditionally inside this transaction, so it runs as soon as the state
+  // change commits and cannot be skipped.
+  if (participant.state !== args.to) {
     await Publish.requestRebuild(ctx, event._id);
   }
 }
@@ -938,6 +943,9 @@ export async function updateSessionContent(
     patch.format = optionalText(args.patch.format, "Session format", 80);
   }
   await ctx.db.patch("sessions", session._id, patch);
+  // Title/description/format are exactly what the public program renders —
+  // keep an already-published blob current (eval: stale-snapshot finding).
+  await Publish.requestRebuild(ctx, event._id);
 
   await logAudit(ctx, {
     orgId: event.orgId,
@@ -1320,10 +1328,11 @@ export async function organizerSetParticipationState(
     actorUserId: caller.user._id,
     to,
   });
-  // Same privacy exception as the portal decline: a declined speaker's name
-  // must leave the served blob, whoever recorded the decision — on the same
-  // scheduled path, so the organizer's click doesn't rebuild the program either.
-  if (to === "declined" && participant.state !== "declined") {
+  // Any direction changes what the public program names: a decline removes
+  // the speaker, a confirmation names them, awaiting returns them to "to be
+  // announced" — on the same scheduled path, so the organizer's click doesn't
+  // rebuild the program inline either.
+  if (participant.state !== to) {
     await Publish.requestRebuild(ctx, caller.event._id);
   }
 }

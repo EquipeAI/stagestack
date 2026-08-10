@@ -996,3 +996,48 @@ describe("publish — authorization", () => {
     expect(program.lineup).toHaveLength(1);
   });
 });
+
+describe("publish — freshness (W4)", () => {
+  test("a confirmation recorded through the product refreshes the served blob without a republish", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, sessionId } = await seedProgram(t);
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId: sessionId as Id<"sessions">,
+      published: true,
+    });
+    await drainScheduled(t);
+
+    let program = (await servedProgram(t, eventSlug))!;
+    expect(program.lineup[0].speakers.map((s: { name: string }) => s.name)).toEqual(
+      ["Grace Hopper"],
+    );
+
+    // The organizer records Alan's confirmation through the real mutation —
+    // no explicit republish follows, yet the public blob names him.
+    const alanId = await t.run(async (ctx) => {
+      const participants = await ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_sessionId", (q) =>
+          q.eq("sessionId", sessionId as Id<"sessions">),
+        )
+        .collect();
+      return participants.find((p) => p.state === "awaiting")!._id;
+    });
+    await alice.mutation(api.sessions.setParticipationState, {
+      eventSlug,
+      participantId: alanId,
+      to: "confirmed",
+    });
+
+    program = (await servedProgram(t, eventSlug))!;
+    expect(program.lineup[0].speakers.map((s: { name: string }) => s.name)).toEqual(
+      ["Grace Hopper", "Alan Turing"],
+    );
+    expect(program.lineup[0].toBeAnnounced).toBe(false);
+    expect((await alice.query(api.publish.state, { eventSlug })).stale).toBe(
+      false,
+    );
+  });
+});
