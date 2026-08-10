@@ -16,6 +16,8 @@ export type ContactProfileInput = {
   email?: string;
   phone?: string;
   tagline?: string;
+  jobTitle?: string;
+  company?: string;
   bio?: string;
   headshotId?: Id<"_storage">;
   links?: {
@@ -66,7 +68,15 @@ export async function listContacts(
   const needle = search?.trim().toLowerCase();
   const filtered = needle
     ? all.filter((c) =>
-        [c.firstName, c.lastName, c.email ?? "", c.tagline ?? ""]
+        [
+          c.firstName,
+          c.lastName,
+          c.email ?? "",
+          c.tagline ?? "",
+          c.jobTitle ?? "",
+          c.company ?? "",
+          ...(c.tags ?? []),
+        ]
           .join(" ")
           .toLowerCase()
           .includes(needle),
@@ -147,4 +157,192 @@ export async function updateContact(
     targetType: "contact",
     targetId: contactId,
   });
+}
+
+// ── Light CRM (W8): tags, notes, history, add-to-event ───────────────────
+
+const MAX_TAGS = 20;
+const MAX_NOTE = 4000;
+const NOTE_SCAN = 200;
+
+export async function requireContact(
+  ctx: QueryCtx,
+  caller: OrgCaller,
+  contactId: Id<"contacts">,
+): Promise<Doc<"contacts">> {
+  const contact = await ctx.db.get("contacts", contactId);
+  if (contact === null || contact.orgId !== caller.org._id) {
+    notFound("contact", "No such contact in this organization.");
+  }
+  return contact;
+}
+
+export async function setTags(
+  ctx: MutationCtx,
+  caller: OrgCaller,
+  contactId: Id<"contacts">,
+  tags: string[],
+): Promise<void> {
+  requireDirectoryAccess(caller);
+  const contact = await requireContact(ctx, caller, contactId);
+  const cleaned = [
+    ...new Set(tags.map((t) => t.trim()).filter((t) => t !== "")),
+  ].slice(0, MAX_TAGS);
+  await ctx.db.patch("contacts", contact._id, {
+    tags: cleaned.length === 0 ? undefined : cleaned,
+  });
+}
+
+export type ContactNoteRow = {
+  noteId: Id<"contactNotes">;
+  authorName: string | null;
+  body: string;
+  createdAt: number;
+};
+
+export async function addNote(
+  ctx: MutationCtx,
+  caller: OrgCaller,
+  contactId: Id<"contacts">,
+  body: string,
+): Promise<void> {
+  requireDirectoryAccess(caller);
+  const contact = await requireContact(ctx, caller, contactId);
+  await ctx.db.insert("contactNotes", {
+    orgId: caller.org._id,
+    contactId: contact._id,
+    authorUserId: caller.user._id,
+    body: assertText(body, { label: "Note", max: MAX_NOTE }),
+    createdAt: Date.now(),
+  });
+}
+
+export async function listNotes(
+  ctx: QueryCtx,
+  caller: OrgCaller,
+  contactId: Id<"contacts">,
+): Promise<ContactNoteRow[]> {
+  requireDirectoryAccess(caller);
+  await requireContact(ctx, caller, contactId);
+  const rows = await ctx.db
+    .query("contactNotes")
+    .withIndex("by_contactId", (q) => q.eq("contactId", contactId))
+    .take(NOTE_SCAN);
+  const out: ContactNoteRow[] = [];
+  for (const row of rows.sort((a, b) => b.createdAt - a.createdAt)) {
+    const author = await ctx.db.get("users", row.authorUserId);
+    out.push({
+      noteId: row._id,
+      authorName: author?.name ?? null,
+      body: row.body,
+      createdAt: row.createdAt,
+    });
+  }
+  return out;
+}
+
+export type ContactConnection = {
+  eventId: Id<"events">;
+  eventName: string;
+  eventSlug: string;
+  startsAt: number;
+  sessions: Array<{ title: string; state: string }>;
+};
+
+/** Cross-event history: every event this contact has a snapshot on, with
+ * their sessions and participation states (CRM-03's history surface). */
+export async function connections(
+  ctx: QueryCtx,
+  caller: OrgCaller,
+  contactId: Id<"contacts">,
+): Promise<ContactConnection[]> {
+  requireDirectoryAccess(caller);
+  await requireContact(ctx, caller, contactId);
+  const snapshots = await ctx.db
+    .query("eventContacts")
+    .withIndex("by_contactId", (q) => q.eq("contactId", contactId))
+    .take(100);
+  const out: ContactConnection[] = [];
+  for (const snapshot of snapshots) {
+    const event = await ctx.db.get("events", snapshot.eventId);
+    if (event === null || event.orgId !== caller.org._id) continue;
+    const participants = await ctx.db
+      .query("sessionParticipants")
+      .withIndex("by_eventContactId", (q) =>
+        q.eq("eventContactId", snapshot._id),
+      )
+      .take(100);
+    const sessions: ContactConnection["sessions"] = [];
+    for (const participant of participants) {
+      const session = await ctx.db.get("sessions", participant.sessionId);
+      if (session === null) continue;
+      sessions.push({ title: session.title, state: participant.state });
+    }
+    out.push({
+      eventId: event._id,
+      eventName: event.name,
+      eventSlug: event.slug,
+      startsAt: event.startsAt,
+      sessions,
+    });
+  }
+  return out.sort((a, b) => b.startsAt - a.startsAt);
+}
+
+/** Push a directory contact into an event's roster (CRM-10): creates the
+ * event snapshot with the profile carried over; dedupes on an existing
+ * snapshot for the same contact or email. */
+export async function addToEvent(
+  ctx: MutationCtx,
+  caller: OrgCaller,
+  contactId: Id<"contacts">,
+  eventId: Id<"events">,
+): Promise<{ created: boolean }> {
+  requireDirectoryAccess(caller);
+  const contact = await requireContact(ctx, caller, contactId);
+  const event = await ctx.db.get("events", eventId);
+  if (event === null || event.orgId !== caller.org._id) {
+    notFound("event", "No such event in this organization.");
+  }
+  if (event.archivedAt !== undefined) {
+    throw new ConvexError({
+      code: "event_archived",
+      message: "This event is archived.",
+    });
+  }
+  const existing = await ctx.db
+    .query("eventContacts")
+    .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+    .take(2000);
+  const already = existing.some(
+    (snapshot) =>
+      snapshot.contactId === contact._id ||
+      (contact.email !== undefined && snapshot.email === contact.email),
+  );
+  if (already) return { created: false };
+  await ctx.db.insert("eventContacts", {
+    eventId,
+    orgId: caller.org._id,
+    contactId: contact._id,
+    firstName: contact.firstName,
+    lastName: contact.lastName,
+    email: contact.email,
+    phone: contact.phone,
+    tagline: contact.tagline,
+    jobTitle: contact.jobTitle,
+    company: contact.company,
+    bio: contact.bio,
+    headshotId: contact.headshotId,
+    links: contact.links,
+  });
+  await logAudit(ctx, {
+    orgId: caller.org._id,
+    eventId,
+    actorUserId: caller.user._id,
+    action: "contacts.addToEvent",
+    targetType: "contact",
+    targetId: contact._id,
+    meta: { eventId },
+  });
+  return { created: true };
 }

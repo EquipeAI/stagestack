@@ -147,9 +147,23 @@ export default defineSchema({
   contacts: defineTable({
     orgId: v.id("organizations"),
     ...contactProfileFields,
+    // Light CRM (W8): freeform labels, filterable in the directory. A future
+    // pipeline/segments build layers on these rather than replacing them.
+    tags: v.optional(v.array(v.string())),
   })
     .index("by_orgId", ["orgId"])
     .index("by_orgId_and_email", ["orgId", "email"]),
+
+  // Internal notes on a directory contact (W8) — organizer-only, never
+  // published anywhere. Kept as its own table so activity kinds (stage
+  // moves, outreach) can join it later without a schema rewrite.
+  contactNotes: defineTable({
+    orgId: v.id("organizations"),
+    contactId: v.id("contacts"),
+    authorUserId: v.id("users"),
+    body: v.string(),
+    createdAt: v.number(),
+  }).index("by_contactId", ["contactId"]),
 
   // ── Event library (event-scoped vocabulary) ──────────────────────────
   tracks: defineTable({

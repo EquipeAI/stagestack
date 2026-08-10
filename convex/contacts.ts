@@ -9,6 +9,8 @@ const vProfileInput = v.object({
   email: v.optional(v.string()),
   phone: v.optional(v.string()),
   tagline: v.optional(v.string()),
+  jobTitle: v.optional(v.string()),
+  company: v.optional(v.string()),
   bio: v.optional(v.string()),
   headshotId: v.optional(v.id("_storage")),
   links: v.optional(
@@ -43,5 +45,69 @@ export const update = orgMutation({
   handler: async (ctx, args) => {
     await Contacts.updateContact(ctx, ctx.caller, args.contactId, args.profile);
     return null;
+  },
+});
+
+// ── Light CRM (W8) ───────────────────────────────────────────────────────
+
+export const setTags = orgMutation({
+  args: { contactId: v.id("contacts"), tags: v.array(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Contacts.setTags(ctx, ctx.caller, args.contactId, args.tags);
+    return null;
+  },
+});
+
+export const addNote = orgMutation({
+  args: { contactId: v.id("contacts"), body: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Contacts.addNote(ctx, ctx.caller, args.contactId, args.body);
+    return null;
+  },
+});
+
+export const notes = orgQuery({
+  args: { contactId: v.id("contacts") },
+  returns: v.array(
+    v.object({
+      noteId: vv.id("contactNotes"),
+      authorName: v.union(v.string(), v.null()),
+      body: v.string(),
+      createdAt: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Contacts.listNotes(ctx, ctx.caller, args.contactId);
+  },
+});
+
+export const connections = orgQuery({
+  args: { contactId: v.id("contacts") },
+  returns: v.array(
+    v.object({
+      eventId: vv.id("events"),
+      eventName: v.string(),
+      eventSlug: v.string(),
+      startsAt: v.number(),
+      sessions: v.array(v.object({ title: v.string(), state: v.string() })),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Contacts.connections(ctx, ctx.caller, args.contactId);
+  },
+});
+
+export const addToEvent = orgMutation({
+  args: { contactId: v.id("contacts"), eventId: v.id("events") },
+  returns: v.object({ created: v.boolean() }),
+  handler: async (ctx, args) => {
+    return await Contacts.addToEvent(
+      ctx,
+      ctx.caller,
+      args.contactId,
+      args.eventId,
+    );
   },
 });
