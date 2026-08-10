@@ -47,6 +47,7 @@ const vSpeakerInput = v.object({
     }),
   ),
   isPrimary: v.boolean(),
+  role: v.optional(v.string()),
 });
 
 const vAnswers = v.record(v.string(), vAnswerValue);

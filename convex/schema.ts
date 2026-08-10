@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { vAnswerValue, vFormDef } from "./shared/formDef";
+import { vReviewAnswers, vScorecard } from "./shared/scorecard";
 
 // Org-level roles: owner manages ownership + billing-ish concerns, admin has
 // org-wide admin powers. Event-scoped access lives in eventMembers.
@@ -318,23 +319,67 @@ export default defineSchema({
     ),
     // True when this row mirrors the submitter themself.
     isPrimary: v.boolean(),
+    /** Role label on this proposal: Speaker, Co-speaker, Co-author, Panelist…
+     * Free text so imports can carry whatever the source used. */
+    role: v.optional(v.string()),
   })
     .index("by_proposalId", ["proposalId"])
     // One-query speaker counts for the organizer's proposal list.
     .index("by_eventId", ["eventId"]),
 
-  // ── Review & sessions (M2) ───────────────────────────────────────────
+  // ── Review & sessions (M2, rebuilt W2) ───────────────────────────────
+  // An evaluation plan is one or more rounds per event, each with its own
+  // dates, anonymization flag, reviewer pool and scorecard.
+  reviewRounds: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    /** Display + default-round order (0 = first). */
+    order: v.number(),
+    opensAt: v.optional(v.number()),
+    closesAt: v.optional(v.number()),
+    /** Blind review: reviewers in this round see no author identity. */
+    anonymized: v.boolean(),
+    /** Per-reviewer assignment ceiling for auto-distribute; no cap when unset. */
+    reviewerCap: v.optional(v.number()),
+    scorecard: vScorecard,
+    updatedAt: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
+  // Round membership: who reviews in a given round. Kept separate from
+  // eventMembers so round 2 can have a different pool than round 1.
+  roundReviewers: defineTable({
+    eventId: v.id("events"),
+    roundId: v.id("reviewRounds"),
+    userId: v.id("users"),
+  })
+    .index("by_roundId_and_userId", ["roundId", "userId"])
+    .index("by_eventId_and_userId", ["eventId", "userId"]),
+
   // Assignment + evaluation in one row: created when a reviewer is assigned.
   reviews: defineTable({
     eventId: v.id("events"),
     proposalId: v.id("proposals"),
     reviewerUserId: v.id("users"),
+    /** Absent only on rows that predate rounds; read through the event's
+     * default round (see model/reviews.ts `roundFor`). */
+    roundId: v.optional(v.id("reviewRounds")),
     status: v.union(
       v.literal("assigned"),
       v.literal("draft"),
       v.literal("submitted"),
       v.literal("locked"),
+      // Reviewer declared a conflict of interest; out of their queue,
+      // surfaced to organizers for reassignment.
+      v.literal("conflict"),
     ),
+    /** Scorecard answers keyed by criterion id (W2). */
+    answers: v.optional(vReviewAnswers),
+    /** Weighted mean of this review's numeric criteria, precomputed on
+     * submit so list views never re-derive it. */
+    weightedScore: v.optional(v.number()),
+    conflictNote: v.optional(v.string()),
+    // Pre-W2 columns; still written for the default round so the decision
+    // pipeline's recommendation counts keep working.
     score: v.optional(v.number()), // 1-5
     recommendation: v.optional(
       v.union(v.literal("accept"), v.literal("decline"), v.literal("neutral")),

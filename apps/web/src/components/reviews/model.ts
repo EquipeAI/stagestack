@@ -10,9 +10,10 @@ export type Assignment = FunctionReturnType<
 >[number]
 
 export type ReviewStatus = Assignment['status']
-export type Recommendation = NonNullable<Assignment['recommendation']>
 export type ReviewerSpeaker = Assignment['proposal']['speakers'][number]
 export type Answers = Assignment['proposal']['answers']
+export type ReviewAnswers = Assignment['answers']
+export type ScorecardField = Assignment['round']['scorecard'][number]
 
 /** Review state, written exactly as the product says it. */
 export const REVIEW_STATUS_LABEL: Record<ReviewStatus, string> = {
@@ -20,21 +21,8 @@ export const REVIEW_STATUS_LABEL: Record<ReviewStatus, string> = {
   draft: 'Draft',
   submitted: 'Submitted',
   locked: 'Locked',
+  conflict: 'Conflict declared',
 }
-
-export const RECOMMENDATION_LABEL: Record<Recommendation, string> = {
-  accept: 'Accept',
-  neutral: 'Neutral',
-  decline: 'Decline',
-}
-
-export const RECOMMENDATIONS: ReadonlyArray<Recommendation> = [
-  'accept',
-  'neutral',
-  'decline',
-]
-
-export const SCORES: ReadonlyArray<number> = [1, 2, 3, 4, 5]
 
 /** A review still waiting on this reviewer. Drives "unfinished first". */
 export function isUnfinished(assignment: Assignment): boolean {

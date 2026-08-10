@@ -53,6 +53,7 @@ import type * as sessions from "../sessions.js";
 import type * as shared_formDef from "../shared/formDef.js";
 import type * as shared_importPlan from "../shared/importPlan.js";
 import type * as shared_jobTypes from "../shared/jobTypes.js";
+import type * as shared_scorecard from "../shared/scorecard.js";
 import type * as tasks from "../tasks.js";
 import type * as team from "../team.js";
 import type * as templates from "../templates.js";
@@ -111,6 +112,7 @@ declare const fullApi: ApiFromModules<{
   "shared/formDef": typeof shared_formDef;
   "shared/importPlan": typeof shared_importPlan;
   "shared/jobTypes": typeof shared_jobTypes;
+  "shared/scorecard": typeof shared_scorecard;
   tasks: typeof tasks;
   team: typeof team;
   templates: typeof templates;

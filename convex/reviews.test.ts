@@ -255,8 +255,7 @@ describe("reviews.myAssignments", () => {
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
       reviewId: before[0].reviewId,
-      score: 4,
-      recommendation: "accept",
+      answers: { score: 4, recommendation: "Accept" },
     });
 
     const after = await rita.as.query(api.reviews.myAssignments, { eventSlug });
@@ -293,12 +292,12 @@ describe("reviews.saveDraft / submit", () => {
     await rita.as.mutation(api.reviews.saveDraft, {
       eventSlug,
       reviewId: ritaReview,
-      comments: "Halfway through.",
+      answers: { comments: "Halfway through." },
     });
     let mine = await rita.as.query(api.reviews.myAssignments, { eventSlug });
     expect(mine[0].status).toBe("draft");
-    expect(mine[0].comments).toBe("Halfway through.");
-    expect(mine[0].score).toBeUndefined();
+    expect(mine[0].answers.comments).toBe("Halfway through.");
+    expect(mine[0].answers.score).toBeUndefined();
 
     // The organizer sees an unfinished review's STATUS but not its content.
     const inProgress = await alice.query(api.reviews.summary, {
@@ -309,20 +308,18 @@ describe("reviews.saveDraft / submit", () => {
     expect(inProgress.aggregate.avgScore).toBeNull();
     const draftRow = inProgress.reviews.find((r) => r.status === "draft")!;
     expect(draftRow.comments).toBeUndefined();
+    expect(draftRow.answers).toBeUndefined();
     expect(draftRow.reviewerEmail).toBe("rita@example.com");
 
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
       reviewId: ritaReview,
-      score: 5,
-      recommendation: "accept",
-      comments: "Strong.",
+      answers: { score: 5, recommendation: "Accept", comments: "Strong." },
     });
     await raj.as.mutation(api.reviews.submit, {
       eventSlug,
       reviewId: rajReview,
-      score: 2,
-      recommendation: "decline",
+      answers: { score: 2, recommendation: "Reject" },
     });
 
     const summary = await alice.query(api.reviews.summary, {
@@ -353,8 +350,7 @@ describe("reviews.saveDraft / submit", () => {
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
       reviewId: ritaReview,
-      score: 3,
-      recommendation: "neutral",
+      answers: { score: 3, recommendation: "Maybe" },
     });
     const revised = await alice.query(api.reviews.summary, {
       eventSlug,
@@ -386,38 +382,37 @@ describe("reviews.saveDraft / submit", () => {
       rita.as.mutation(api.reviews.saveDraft, {
         eventSlug,
         reviewId,
-        score: 6,
+        answers: { score: 6 },
       }),
-      "invalid_score",
+      "invalid_answers",
     );
     await expectRejectedWith(
       rita.as.mutation(api.reviews.saveDraft, {
         eventSlug,
         reviewId,
-        score: 3.5,
+        answers: { score: 3.5 },
       }),
-      "invalid_score",
+      "invalid_answers",
     );
     await expectRejectedWith(
       rita.as.mutation(api.reviews.saveDraft, {
         eventSlug,
         reviewId,
-        comments: "x".repeat(5001),
+        answers: { comments: "x".repeat(5001) },
       }),
-      "invalid_comments",
+      "invalid_answers",
     );
 
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
       reviewId,
-      score: 4,
-      recommendation: "accept",
+      answers: { score: 4, recommendation: "Accept" },
     });
     await expectRejectedWith(
       rita.as.mutation(api.reviews.saveDraft, {
         eventSlug,
         reviewId,
-        comments: "sneaky edit",
+        answers: { comments: "sneaky edit" },
       }),
       "invalid_status",
     );
@@ -446,7 +441,7 @@ describe("reviews.saveDraft / submit", () => {
       raj.as.mutation(api.reviews.saveDraft, {
         eventSlug,
         reviewId: ritaReview,
-        comments: "not mine",
+        answers: { comments: "not mine" },
       }),
       "not_found",
     );
@@ -454,8 +449,7 @@ describe("reviews.saveDraft / submit", () => {
       raj.as.mutation(api.reviews.submit, {
         eventSlug,
         reviewId: ritaReview,
-        score: 1,
-        recommendation: "decline",
+        answers: { score: 1, recommendation: "Reject" },
       }),
       "not_found",
     );
@@ -464,8 +458,7 @@ describe("reviews.saveDraft / submit", () => {
       alice.mutation(api.reviews.submit, {
         eventSlug,
         reviewId: ritaReview,
-        score: 5,
-        recommendation: "accept",
+        answers: { score: 5, recommendation: "Accept" },
       }),
       "not_found",
     );
@@ -495,8 +488,7 @@ describe("reviews.unassign", () => {
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
       reviewId: mine[1].reviewId,
-      score: 4,
-      recommendation: "accept",
+      answers: { score: 4, recommendation: "Accept" },
     });
     await expectRejectedWith(
       alice.mutation(api.reviews.unassign, {
@@ -541,5 +533,342 @@ describe("reviews.myAssignments file answers", () => {
     const rows = await rita.as.query(api.reviews.myAssignments, { eventSlug });
     expect(rows).toHaveLength(1);
     expect(rows[0].proposal.fileUrls["not-a-storage-id"]).toBeNull();
+  });
+});
+
+// ── W2: rounds, pools, scorecards, distribution, COI, progress ───────────
+
+describe("reviews.rounds", () => {
+  test("two rounds persist with distinct names, dates, scorecards and pools", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventWithProposals(t, 1);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+
+    const round1 = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Initial Review",
+      opensAt: Date.parse("2026-08-01"),
+      closesAt: Date.parse("2026-10-15"),
+      anonymized: true,
+      scorecard: [
+        { id: "orig", label: "Originality", kind: "numeric", min: 1, max: 5, weight: 2, required: true },
+        { id: "rel", label: "Relevance", kind: "numeric", min: 1, max: 5, weight: 1, required: true },
+        { id: "rec", label: "Recommendation", kind: "dropdown", options: ["Accept", "Maybe", "Reject"], required: true },
+        { id: "comments", label: "Comments", kind: "text" },
+      ],
+    });
+    const round2 = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Final Review",
+      opensAt: Date.parse("2026-10-16"),
+      closesAt: Date.parse("2026-11-30"),
+      anonymized: false,
+      scorecard: [
+        { id: "final", label: "Final Score", kind: "numeric", min: 1, max: 10, required: true },
+        { id: "comments", label: "Comments", kind: "text" },
+      ],
+    });
+    await alice.mutation(api.reviews.addRoundReviewer, {
+      eventSlug,
+      roundId: round1,
+      userId: rita.id,
+    });
+
+    const rounds = await alice.query(api.reviews.listRounds, { eventSlug });
+    expect(rounds).toHaveLength(2);
+    expect(rounds[0]).toMatchObject({ name: "Initial Review", anonymized: true });
+    expect(rounds[0].scorecard.map((f) => f.kind)).toEqual([
+      "numeric", "numeric", "dropdown", "text",
+    ]);
+    expect(rounds[0].scorecard[0].weight).toBe(2);
+    expect(rounds[0].pool.map((m) => m.name)).toEqual(["rita"]);
+    expect(rounds[1]).toMatchObject({ name: "Final Review", anonymized: false });
+    expect(rounds[1].pool).toEqual([]);
+
+    // Round 2's pool is independent of round 1's (ABS-02).
+    const raj = await reviewerFor(t, eventSlug, "raj");
+    await alice.mutation(api.reviews.addRoundReviewer, {
+      eventSlug,
+      roundId: round2,
+      userId: raj.id,
+    });
+    const after = await alice.query(api.reviews.listRounds, { eventSlug });
+    expect(after[0].pool.map((m) => m.name)).toEqual(["rita"]);
+    expect(after[1].pool.map((m) => m.name)).toEqual(["raj"]);
+  });
+
+  test("weighted scorecard: the aggregate reflects the weights (ABS-04)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    const roundId = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Initial Review",
+      anonymized: false,
+      scorecard: [
+        { id: "orig", label: "Originality", kind: "numeric", weight: 2, required: true },
+        { id: "rel", label: "Relevance", kind: "numeric", weight: 1, required: true },
+        { id: "rec", label: "Recommendation", kind: "dropdown", options: ["Accept", "Maybe", "Reject"], required: true },
+        { id: "comments", label: "Comments", kind: "text" },
+      ],
+    });
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: rita.id,
+      roundId,
+    });
+    const reviewId = (
+      await rita.as.query(api.reviews.myAssignments, { eventSlug })
+    )[0].reviewId;
+    await rita.as.mutation(api.reviews.submit, {
+      eventSlug,
+      reviewId,
+      answers: { orig: 4, rel: 2, rec: "Accept", comments: "Solid." },
+    });
+
+    const summary = await alice.query(api.reviews.summary, {
+      eventSlug,
+      proposalId: proposalIds[0],
+    });
+    // (4×2 + 2×1) / 3 = 3.333…
+    expect(summary.aggregate.avgScore).toBeCloseTo(10 / 3, 5);
+    expect(summary.aggregate.recommendations.accept).toBe(1);
+    const row = summary.reviews[0];
+    expect(row.answers).toMatchObject({ orig: 4, rel: 2, rec: "Accept" });
+    expect(row.weightedScore).toBeCloseTo(10 / 3, 5);
+
+    // A required criterion missing refuses the submit.
+    const raj = await reviewerFor(t, eventSlug, "raj");
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: raj.id,
+      roundId,
+    });
+    const rajReview = (
+      await raj.as.query(api.reviews.myAssignments, { eventSlug })
+    )[0].reviewId;
+    await expectRejectedWith(
+      raj.as.mutation(api.reviews.submit, {
+        eventSlug,
+        reviewId: rajReview,
+        answers: { orig: 5 },
+      }),
+      "invalid_answers",
+    );
+  });
+
+  test("anonymized round hides speakers from the reviewer but not the organizer (ABS-07)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    const roundId = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Blind Round",
+      anonymized: true,
+      scorecard: [{ id: "score", label: "Score", kind: "numeric", required: true }],
+    });
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: rita.id,
+      roundId,
+    });
+
+    const mine = await rita.as.query(api.reviews.myAssignments, { eventSlug });
+    expect(mine[0].round.anonymized).toBe(true);
+    expect(mine[0].proposal.speakers).toEqual([]);
+    // Identity answer fields were already stripped pre-W2.
+    expect(mine[0].proposal.answers.firstName).toBeUndefined();
+
+    // The organizer's proposal detail still shows speakers (via cfp views).
+    const detail = await alice.query(api.cfp.getProposalDetail, {
+      eventSlug,
+      proposalId: proposalIds[0],
+    });
+    expect(detail.speakers[0].firstName).toBe("Speaker0");
+  });
+
+  test("autoDistribute spreads load, respects the cap, and never duplicates (ABS-06)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 4);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    const raj = await reviewerFor(t, eventSlug, "raj");
+    const roundId = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Initial",
+      anonymized: false,
+      reviewerCap: 3,
+      scorecard: [{ id: "score", label: "Score", kind: "numeric", required: true }],
+    });
+    await alice.mutation(api.reviews.addRoundReviewer, { eventSlug, roundId, userId: rita.id });
+    await alice.mutation(api.reviews.addRoundReviewer, { eventSlug, roundId, userId: raj.id });
+
+    const result = await alice.mutation(api.reviews.autoDistribute, {
+      eventSlug,
+      roundId,
+    });
+    expect(result.assigned).toBe(4);
+    expect(result.unplaced).toBe(0);
+    const totals = result.perReviewer.map((r) => r.total).sort();
+    expect(totals).toEqual([2, 2]);
+
+    // Re-running assigns nothing new (each proposal already has a reviewer).
+    const again = await alice.mutation(api.reviews.autoDistribute, {
+      eventSlug,
+      roundId,
+    });
+    expect(again.assigned).toBe(0);
+
+    // Asking for 2 reviews per proposal hits the cap of 3 each: 8 slots
+    // wanted, 4 filled already, capacity left = 2 → 2 assigned, 2 unplaced.
+    const second = await alice.mutation(api.reviews.autoDistribute, {
+      eventSlug,
+      roundId,
+      perProposal: 2,
+    });
+    expect(second.assigned).toBe(2);
+    expect(second.unplaced).toBe(2);
+  });
+
+  test("conflict of interest removes the item from the actionable queue (ABS-12)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: rita.id,
+    });
+    const reviewId = (
+      await rita.as.query(api.reviews.myAssignments, { eventSlug })
+    )[0].reviewId;
+    await rita.as.mutation(api.reviews.declareConflict, {
+      eventSlug,
+      reviewId,
+      note: "Former colleague.",
+    });
+
+    const mine = await rita.as.query(api.reviews.myAssignments, { eventSlug });
+    expect(mine[0].status).toBe("conflict");
+    await expectRejectedWith(
+      rita.as.mutation(api.reviews.saveDraft, {
+        eventSlug,
+        reviewId,
+        answers: { score: 3 },
+      }),
+      "invalid_status",
+    );
+
+    // Organizer sees the conflict note and the progress board counts it.
+    const summary = await alice.query(api.reviews.summary, {
+      eventSlug,
+      proposalId: proposalIds[0],
+    });
+    expect(summary.reviews[0]).toMatchObject({
+      status: "conflict",
+      conflictNote: "Former colleague.",
+    });
+    const board = await alice.query(api.reviews.reviewerProgress, { eventSlug });
+    const ritaRow = board.find((r) => r.name === "rita")!;
+    expect(ritaRow.conflicts).toBe(1);
+    expect(ritaRow.assigned).toBe(0);
+  });
+
+  test("reviewerProgress counts and remind emails the laggards (ABS-08/09)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 2);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: rita.id,
+    });
+
+    let board = await alice.query(api.reviews.reviewerProgress, { eventSlug });
+    expect(board.find((r) => r.name === "rita")).toMatchObject({
+      assigned: 2,
+      submitted: 0,
+    });
+
+    const reminded = await alice.mutation(api.reviews.remind, {
+      eventSlug,
+      reviewerUserIds: [rita.id],
+    });
+    expect(reminded).toEqual({ sent: 1, skipped: 0 });
+    const reminder = await t.run(async (ctx) =>
+      ctx.db
+        .query("messages")
+        .collect()
+        .then((rows) => rows.find((m) => m.kind === "review.reminder")),
+    );
+    expect(reminder?.toEmail).toBe("rita@example.com");
+    expect(reminder?.subject).toContain("2 reviews waiting");
+
+    const mine = await rita.as.query(api.reviews.myAssignments, { eventSlug });
+    await rita.as.mutation(api.reviews.submit, {
+      eventSlug,
+      reviewId: mine[0].reviewId,
+      answers: { score: 4, recommendation: "Accept" },
+    });
+    await rita.as.mutation(api.reviews.submit, {
+      eventSlug,
+      reviewId: mine[1].reviewId,
+      answers: { score: 5, recommendation: "Accept" },
+    });
+    board = await alice.query(api.reviews.reviewerProgress, { eventSlug });
+    expect(board.find((r) => r.name === "rita")).toMatchObject({
+      assigned: 2,
+      submitted: 2,
+    });
+    // Nothing outstanding → the nudge is skipped, not sent.
+    expect(
+      await alice.mutation(api.reviews.remind, {
+        eventSlug,
+        reviewerUserIds: [rita.id],
+      }),
+    ).toEqual({ sent: 0, skipped: 1 });
+  });
+
+  test("legacy reviews read through the default round and keep their content", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    // Assignment with no rounds configured materializes the default round.
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: rita.id,
+    });
+    // Plant a pre-W2 row shape: legacy columns, no roundId/answers.
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("reviews")
+        .collect()
+        .then((rows) => rows[0]);
+      await ctx.db.patch("reviews", row._id, {
+        roundId: undefined,
+        answers: undefined,
+        status: "submitted",
+        score: 4,
+        recommendation: "accept",
+        comments: "Looks good.",
+        submittedAt: Date.now(),
+      });
+    });
+
+    const mine = await rita.as.query(api.reviews.myAssignments, { eventSlug });
+    expect(mine[0].round.name).toBe("Initial Review");
+    expect(mine[0].answers).toEqual({
+      score: 4,
+      recommendation: "Accept",
+      comments: "Looks good.",
+    });
+    const summary = await alice.query(api.reviews.summary, {
+      eventSlug,
+      proposalId: proposalIds[0],
+    });
+    expect(summary.aggregate.avgScore).toBe(4);
   });
 });

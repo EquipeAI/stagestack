@@ -962,6 +962,8 @@ export type SpeakerInput = {
     github?: string;
   };
   isPrimary: boolean;
+  /** Role label on this proposal (Co-speaker, Co-author, …). */
+  role?: string;
 };
 
 /** Replace-all: the wizard owns the whole speaker list for a proposal. */
@@ -1027,6 +1029,10 @@ export async function setSpeakers(
       headshotId: speaker.headshotId,
       links: speaker.links,
       isPrimary: speaker.isPrimary,
+      role:
+        speaker.role === undefined || speaker.role.trim() === ""
+          ? undefined
+          : assertText(speaker.role, { label: "Speaker role", max: 40 }),
     });
   }
   await ctx.db.patch("proposals", proposal._id, { updatedAt: Date.now() });
