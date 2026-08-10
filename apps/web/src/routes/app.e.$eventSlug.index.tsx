@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type * as React from 'react'
@@ -14,6 +14,8 @@ import {
 import { formatDateRange, formatDateTime } from '~/lib/datetime'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
+import { CopyLinkRow } from '~/components/CopyLinkRow'
+import { cfpUrl } from '~/components/cfp/ShareCallCard'
 
 export const Route = createFileRoute('/app/e/$eventSlug/')({
   component: Overview,
@@ -103,15 +105,31 @@ function Overview() {
             },
           ]}
         />
+        <div style={{ marginTop: 'var(--space-4)' }}>
+          <CopyLinkRow
+            label="CFP link"
+            value={cfpUrl(eventSlug)}
+            toast="CFP link copied"
+          />
+        </div>
         <p
           style={{
-            marginTop: 'var(--space-4)',
+            marginTop: 'var(--space-3)',
             color: 'var(--text-tertiary)',
             font: 'var(--type-caption)',
           }}
         >
-          The CFP form builder and the public submission page arrive with M1.
-          Until then these dates and the published flag are set in Settings.
+          {event.cfpPublished ? (
+            'This is the link to send to candidate speakers.'
+          ) : (
+            <>
+              The link goes live once the form is published in{' '}
+              <Link to="/app/e/$eventSlug/cfp" params={{ eventSlug }}>
+                Call for speakers
+              </Link>{' '}
+              and "CFP published" is on in Settings.
+            </>
+          )}
         </p>
       </Card>
 

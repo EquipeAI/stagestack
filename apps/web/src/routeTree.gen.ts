@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as AppIndexRouteImport } from './routes/app.index'
+import { Route as AppHomeRouteImport } from './routes/app.home'
 import { Route as CfpEventSlugRouteImport } from './routes/cfp.$eventSlug'
 import { Route as ESlugRouteImport } from './routes/e.$slug'
 import { Route as EmbedSlugRouteImport } from './routes/embed.$slug'
@@ -49,6 +50,11 @@ const AppRoute = AppRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppHomeRoute = AppHomeRouteImport.update({
+  id: '/home',
+  path: '/home',
   getParentRoute: () => AppRoute,
 } as any)
 const CfpEventSlugRoute = CfpEventSlugRouteImport.update({
@@ -171,6 +177,7 @@ const CfpEventSlugProposalProposalIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/app': typeof AppRouteWithChildren
+  '/app/home': typeof AppHomeRoute
   '/cfp/$eventSlug': typeof CfpEventSlugRouteWithChildren
   '/e/$slug': typeof ESlugRoute
   '/embed/$slug': typeof EmbedSlugRoute
@@ -198,6 +205,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/app/home': typeof AppHomeRoute
   '/e/$slug': typeof ESlugRoute
   '/embed/$slug': typeof EmbedSlugRoute
   '/invite/$token': typeof InviteTokenRoute
@@ -225,6 +233,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/app': typeof AppRouteWithChildren
+  '/app/home': typeof AppHomeRoute
   '/cfp/$eventSlug': typeof CfpEventSlugRouteWithChildren
   '/e/$slug': typeof ESlugRoute
   '/embed/$slug': typeof EmbedSlugRoute
@@ -255,6 +264,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/app'
+    | '/app/home'
     | '/cfp/$eventSlug'
     | '/e/$slug'
     | '/embed/$slug'
@@ -282,6 +292,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/app/home'
     | '/e/$slug'
     | '/embed/$slug'
     | '/invite/$token'
@@ -308,6 +319,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/app'
+    | '/app/home'
     | '/cfp/$eventSlug'
     | '/e/$slug'
     | '/embed/$slug'
@@ -365,6 +377,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/app/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/home': {
+      id: '/app/home'
+      path: '/home'
+      fullPath: '/app/home'
+      preLoaderRoute: typeof AppHomeRouteImport
       parentRoute: typeof AppRoute
     }
     '/cfp/$eventSlug': {
@@ -568,12 +587,14 @@ const AppEEventSlugRouteWithChildren = AppEEventSlugRoute._addFileChildren(
 )
 
 interface AppRouteChildren {
+  AppHomeRoute: typeof AppHomeRoute
   AppIndexRoute: typeof AppIndexRoute
   AppEEventSlugRoute: typeof AppEEventSlugRouteWithChildren
   AppOrgOrgSlugRoute: typeof AppOrgOrgSlugRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppHomeRoute: AppHomeRoute,
   AppIndexRoute: AppIndexRoute,
   AppEEventSlugRoute: AppEEventSlugRouteWithChildren,
   AppOrgOrgSlugRoute: AppOrgOrgSlugRoute,

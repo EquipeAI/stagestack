@@ -17,6 +17,7 @@ import {
 import { usePending } from '~/lib/usePending'
 import { copyToClipboard } from '~/lib/clipboard'
 import { pushToast } from '~/components/toast'
+import { CopyLinkRow } from '~/components/CopyLinkRow'
 import { formatDateTime } from '~/lib/datetime'
 import {
   ProgramView,
@@ -245,8 +246,12 @@ function ShareCard({
       subtitle="The same published program, three ways: a page to link, a JSON API to read, and an embed for an external site."
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        <LinkRow label="Public link" value={links.pageUrl} toast="Public link copied" />
-        <LinkRow label="API URL" value={links.apiUrl} toast="API URL copied" />
+        <CopyLinkRow
+          label="Public link"
+          value={links.pageUrl}
+          toast="Public link copied"
+        />
+        <CopyLinkRow label="API URL" value={links.apiUrl} toast="API URL copied" />
         <div>
           <Button
             variant="ghost"
@@ -265,64 +270,6 @@ function ShareCard({
         </div>
       </div>
     </Card>
-  )
-}
-
-function LinkRow({
-  label,
-  value,
-  toast,
-}: {
-  label: string
-  value: string
-  toast: string
-}) {
-  return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 'var(--space-3)',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-      }}
-    >
-      <span
-        style={{
-          font: 'var(--type-eyebrow)',
-          letterSpacing: 'var(--tracking-caps)',
-          textTransform: 'uppercase',
-          color: 'var(--text-tertiary)',
-          minWidth: 'var(--space-16)',
-        }}
-      >
-        {label}
-      </span>
-      <code
-        style={{
-          font: 'var(--type-mono)',
-          color: 'var(--text-secondary)',
-          background: 'var(--surface-sunken)',
-          padding: 'var(--space-1) var(--space-2)',
-          borderRadius: 'var(--radius-sm)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          flex: 1,
-          minWidth: 0,
-        }}
-      >
-        {value || '—'}
-      </code>
-      <Button
-        variant="secondary"
-        size="sm"
-        iconLeft="copy"
-        onClick={() => void copyToClipboard(value, toast)}
-        disabled={value === ''}
-      >
-        Copy
-      </Button>
-    </div>
   )
 }
 

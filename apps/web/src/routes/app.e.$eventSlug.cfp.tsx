@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { createFileRoute, useBlocker, useNavigate } from '@tanstack/react-router'
+import { Link, createFileRoute, useBlocker } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Doc } from '@convex/_generated/dataModel'
@@ -47,6 +47,7 @@ import {
 } from '~/lib/cfpForm'
 import { ConditionEditor } from '~/components/cfp/ConditionEditor'
 import { FormPreview } from '~/components/cfp/FormPreview'
+import { ShareCallCard } from '~/components/cfp/ShareCallCard'
 
 export const Route = createFileRoute('/app/e/$eventSlug/cfp')({
   component: CfpRoute,
@@ -85,6 +86,11 @@ function CfpLoader({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
       <Builder key={`builder-${event._id}`} eventSlug={eventSlug} event={event} form={form} />
+      <ShareCallCard
+        eventSlug={eventSlug}
+        event={event}
+        formPublished={form.published !== null}
+      />
       <FormSettingsCard
         key={`settings-${event._id}`}
         eventSlug={eventSlug}
@@ -119,7 +125,6 @@ function Builder({
   event: Doc<'events'>
   form: FormView
 }) {
-  const navigate = useNavigate()
   const saveForm = useMutation(api.cfp.updateWorkingForm)
   const publishForm = useMutation(api.cfp.publishForm)
   const saving = usePending()
@@ -338,31 +343,17 @@ function Builder({
           Saving now replaces their version with yours.
         </Callout>
       ) : null}
-      {!event.cfpPublished ? (
-        <Callout
-          tone="attention"
-          title="The CFP page isn't public yet"
-          actions={
-            <Button
-              size="sm"
-              onClick={() => {
-                void navigate({
-                  to: '/app/e/$eventSlug/settings',
-                  params: { eventSlug },
-                })
-              }}
-            >
-              Open settings
-            </Button>
-          }
-        >
-          Two switches gate it: "Publish form" here decides which version
-          speakers see, and "CFP published" in Settings makes the page
-          reachable. The Opens/Closes window in Settings controls when
-          submissions are accepted — and tracks, tags, rooms and custom
-          fields live in Settings too, not in this builder.
-        </Callout>
-      ) : null}
+      {/* Gating and the public link live in Share the call, below the builder.
+          What stays here is the boundary people trip on: this screen owns the
+          questions, Settings owns everything else about the call. */}
+      <p style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
+        "Publish form" decides which version submitters answer. The Opens/Closes
+        window, tracks, tags, rooms and custom fields live in{' '}
+        <Link to="/app/e/$eventSlug/settings" params={{ eventSlug }}>
+          Settings
+        </Link>
+        , not in this builder.
+      </p>
 
       {draft.sections.map((section, index) => (
         <SectionCard

@@ -77,7 +77,7 @@ function OrgPage() {
     <PageBody>
       <PageHeader
         title={org.org.name}
-        breadcrumbs={[{ label: 'My StageStack', href: '/app' }, { label: org.org.name }]}
+        breadcrumbs={[{ label: 'My StageStack', href: '/app/home' }, { label: org.org.name }]}
         description={
           org.role === null
             ? 'You have access through event membership.'

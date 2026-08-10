@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import {
   Outlet,
   createFileRoute,
@@ -10,6 +11,7 @@ import { Badge, Callout, PageHeader, SidebarNav } from '~/ds'
 import { PageBody } from '~/components/PageBody'
 import { errorCode, errorMessage } from '~/lib/errors'
 import { formatDateRange } from '~/lib/datetime'
+import { rememberLastEventSlug } from '~/lib/lastEvent'
 
 export const Route = createFileRoute('/app/e/$eventSlug')({
   component: EventLayout,
@@ -111,6 +113,14 @@ function EventLayout() {
   const navigate = useNavigate()
   const pathname = useLocation({ select: (l) => l.pathname })
 
+  // /app opens whatever event you were last in. Only record it once the event
+  // actually loaded, so a stale or forbidden slug in the URL is not the thing
+  // this browser returns to.
+  const loaded = data !== undefined
+  useEffect(() => {
+    if (loaded) rememberLastEventSlug(eventSlug)
+  }, [loaded, eventSlug])
+
   const current = pathname.replace(/\/$/, '')
   const activeId =
     (Object.keys(TAB_PATHS) as Array<TabId>).find(
@@ -165,7 +175,7 @@ function EventLayout() {
               <PageHeader
                 title={data.event.name}
                 breadcrumbs={[
-                  { label: 'My StageStack', href: '/app' },
+                  { label: 'My StageStack', href: '/app/home' },
                   { label: data.org.name, href: `/app/org/${data.org.slug}` },
                   { label: data.event.name },
                 ]}

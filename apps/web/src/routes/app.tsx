@@ -1,7 +1,8 @@
 import { Link, Outlet, createFileRoute } from '@tanstack/react-router'
-import { UserButton } from '@clerk/tanstack-react-start'
+import { Show, UserButton } from '@clerk/tanstack-react-start'
 import { Logo } from '~/ds'
 import { AuthGate } from '~/components/AuthGate'
+import { EventSwitcher } from '~/components/EventSwitcher'
 import { ToastViewport } from '~/components/toast'
 
 export const Route = createFileRoute('/app')({
@@ -30,7 +31,10 @@ function AppLayout() {
           flex: 'none',
           position: 'sticky',
           top: 0,
-          zIndex: 'var(--z-sticky)',
+          // Above --z-sticky: the bar hosts the event switcher, and its panel
+          // is trapped in this element's stacking context — at --z-sticky the
+          // nav rail (same layer, later in the DOM) painted over the menu.
+          zIndex: 'var(--z-dropdown)',
           display: 'flex',
           alignItems: 'center',
           gap: 'var(--space-4)',
@@ -47,6 +51,15 @@ function AppLayout() {
         <Link to="/app" style={{ display: 'flex', alignItems: 'center' }}>
           <Logo size={18} />
         </Link>
+        <Show when="signed-in">
+          <span
+            aria-hidden="true"
+            style={{ color: 'var(--text-tertiary)', flex: 'none' }}
+          >
+            /
+          </span>
+          <EventSwitcher />
+        </Show>
         <div style={{ flex: 1 }} />
         <UserButton />
       </header>
