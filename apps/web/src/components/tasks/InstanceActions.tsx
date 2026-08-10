@@ -5,6 +5,7 @@ import { TASK_STATUS_LABEL, isOverdue } from './model'
 import type { InstanceRow } from './model'
 import type { Id } from '@convex/_generated/dataModel'
 import { Button, Callout, Dialog, Field, Input, Textarea } from '~/ds'
+import { TaskCommentThread } from '~/components/tasks/TaskCommentThread'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
@@ -42,7 +43,8 @@ export function InstanceActions({
   const canRequestChanges =
     status === 'provided' || status === 'approved' || status === 'complete'
   const canMarkProvided =
-    evidence === 'manual' && (status === 'pending' || status === 'changesRequested')
+    evidence === 'manual' &&
+    (status === 'pending' || status === 'changesRequested')
   const canWaive = status !== 'notApplicable'
   const canReopen = status !== 'pending'
 
@@ -187,7 +189,9 @@ export function InstanceActions({
       </div>
 
       {error !== null && open === null ? (
-        <span style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}>
+        <span
+          style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}
+        >
           {error}
         </span>
       ) : null}
@@ -222,6 +226,7 @@ export function InstanceActions({
         <UploadsDialog
           eventSlug={eventSlug}
           instance={instance}
+          timezone={timezone}
           onClose={close}
         />
       ) : null}
@@ -283,7 +288,11 @@ function RequestChangesDialog({
       }
     >
       <div
-        style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
       >
         {error === null ? null : <Callout tone="blocked">{error}</Callout>}
         <Field
@@ -360,7 +369,11 @@ function NotApplicableDialog({
       }
     >
       <div
-        style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
       >
         {error === null ? null : <Callout tone="blocked">{error}</Callout>}
         <Field
@@ -404,7 +417,9 @@ function DueDateDialog({
 }) {
   const setInstanceDue = useMutation(api.tasks.setInstanceDue)
   const { pending, error, setError, run } = usePending()
-  const [value, setValue] = useState(() => toInputValue(instance.dueAt, timezone))
+  const [value, setValue] = useState(() =>
+    toInputValue(instance.dueAt, timezone),
+  )
 
   const submit = () => {
     const dueAt = fromInputValue(value, timezone)
@@ -442,7 +457,11 @@ function DueDateDialog({
       }
     >
       <div
-        style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
       >
         {error === null ? null : <Callout tone="blocked">{error}</Callout>}
         <Field
@@ -474,10 +493,12 @@ function DueDateDialog({
 function UploadsDialog({
   eventSlug,
   instance,
+  timezone,
   onClose,
 }: {
   eventSlug: string
   instance: InstanceRow
+  timezone: string
   onClose: () => void
 }) {
   const uploads = useQuery(api.tasks.listUploads, {
@@ -552,7 +573,11 @@ function UploadsDialog({
       }
     >
       <div
-        style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
       >
         {error === null ? null : <Callout tone="blocked">{error}</Callout>}
         {uploads === undefined ? (
@@ -613,9 +638,19 @@ function UploadsDialog({
             ))}
           </ul>
         )}
-        <p style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}>
-          Current status: {TASK_STATUS_LABEL[instance.status]}.
+        <p
+          style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}
+        >
+          Current status: {TASK_STATUS_LABEL[instance.status]}. PDF, images, or
+          ZIP · up to 50 MB per file.
         </p>
+
+        <TaskCommentThread
+          eventSlug={eventSlug}
+          instanceId={instance.instanceId}
+          source="organizer"
+          timezone={timezone}
+        />
       </div>
     </Dialog>
   )

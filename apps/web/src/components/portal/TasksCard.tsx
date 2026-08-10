@@ -6,6 +6,7 @@ import type { Id } from '@convex/_generated/dataModel'
 import type { PortalTask } from '~/components/tasks/model'
 import { PORTAL_TASK_STATUS, isOpen, isOverdue } from '~/components/tasks/model'
 import { Button, Callout, Card, EmptyState, StatusPill } from '~/ds'
+import { TaskCommentThread } from '~/components/tasks/TaskCommentThread'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { formatDateTime } from '~/lib/datetime'
@@ -185,7 +186,11 @@ function TaskCard({
       actions={<StatusPill status={state.label} tone={state.tone} />}
     >
       <div
-        style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
       >
         <div
           style={{
@@ -314,18 +319,27 @@ function TaskCard({
                 {hasUploads ? 'Replace file' : 'Upload file'}
               </Button>
             )}
-            {hasUploads ? (
-              <span
-                style={{
-                  font: 'var(--type-caption)',
-                  color: 'var(--text-tertiary)',
-                }}
-              >
-                A replacement is added as a new version — nothing you sent
-                before is lost.
-              </span>
-            ) : null}
+            <span
+              style={{
+                font: 'var(--type-caption)',
+                color: 'var(--text-tertiary)',
+              }}
+            >
+              PDF, images, or ZIP · up to 50 MB per file.
+              {hasUploads
+                ? ' A replacement is added as a new version — nothing you sent before is lost.'
+                : ''}
+            </span>
           </ButtonRow>
+        ) : null}
+
+        {task.evidence === 'file' ? (
+          <TaskCommentThread
+            eventSlug={eventSlug}
+            instanceId={task.instanceId}
+            source="portal"
+            timezone={timezone}
+          />
         ) : null}
       </div>
     </Card>

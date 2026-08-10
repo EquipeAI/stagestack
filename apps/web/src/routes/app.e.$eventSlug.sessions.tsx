@@ -21,6 +21,7 @@ import { usePending } from '~/lib/usePending'
 import { PARTICIPANT_STATE_LABEL } from '~/lib/labels'
 import { pushToast } from '~/components/toast'
 import { SessionPortalDialog } from '~/components/portal/SessionPortalDialog'
+import { SessionContentCell } from '~/components/sessions/SessionContentCell'
 
 // The event's sessions (M2). A session is what a proposal becomes once it is
 // accepted, or what a directly invited speaker is invited to — scheduling
@@ -93,13 +94,30 @@ function Sessions() {
         left={
           <span
             style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: 'var(--text-xs)',
-              fontVariantNumeric: 'tabular-nums',
-              color: 'var(--text-tertiary)',
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'baseline',
+              gap: 'var(--space-3)',
             }}
           >
-            {rows.length} session{rows.length === 1 ? '' : 's'}
+            <span
+              style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-xs)',
+                fontVariantNumeric: 'tabular-nums',
+                color: 'var(--text-tertiary)',
+              }}
+            >
+              {rows.length} session{rows.length === 1 ? '' : 's'}
+            </span>
+            <span
+              style={{
+                font: 'var(--type-caption)',
+                color: 'var(--text-tertiary)',
+              }}
+            >
+              Draft content never appears on the public program.
+            </span>
           </span>
         }
         right={inviteButton}
@@ -174,6 +192,18 @@ function Sessions() {
                         ? 'Cancelled'
                         : 'Planned'
                     }
+                  />
+                ),
+              },
+              {
+                key: 'content',
+                header: 'Content',
+                cell: (row: Row) => (
+                  <SessionContentCell
+                    eventSlug={eventSlug}
+                    session={row.session}
+                    timezone={event.event.timezone}
+                    archived={archived}
                   />
                 ),
               },

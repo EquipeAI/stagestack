@@ -18,6 +18,7 @@ import {
   InstanceNotes,
   StatusCell,
 } from '~/components/tasks/InstanceItem'
+import { FilesPanel } from '~/components/tasks/FilesPanel'
 import { InstanceActions } from '~/components/tasks/InstanceActions'
 import { NewRequirementDialog } from '~/components/tasks/NewRequirementDialog'
 import { RequirementCard } from '~/components/tasks/RequirementCard'
@@ -53,7 +54,9 @@ function TasksRoute() {
   const [tab, setTab] = useState('requirements')
 
   if (data === undefined) {
-    return <p style={{ color: 'var(--text-tertiary)' }}>Loading speaker tasks…</p>
+    return (
+      <p style={{ color: 'var(--text-tertiary)' }}>Loading speaker tasks…</p>
+    )
   }
 
   if (data.role !== 'organizer') {
@@ -67,7 +70,11 @@ function TasksRoute() {
 
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-6)',
+      }}
     >
       <Tabs
         variant="underline"
@@ -76,6 +83,7 @@ function TasksRoute() {
         tabs={[
           { id: 'requirements', label: 'Requirements', icon: 'list-checks' },
           { id: 'instances', label: 'Tasks', icon: 'table-2' },
+          { id: 'files', label: 'Files', icon: 'file-text' },
         ]}
       />
       {tab === 'requirements' ? (
@@ -83,6 +91,8 @@ function TasksRoute() {
           eventSlug={eventSlug}
           timezone={data.event.timezone}
         />
+      ) : tab === 'files' ? (
+        <FilesPanel eventSlug={eventSlug} timezone={data.event.timezone} />
       ) : (
         <InstancesPanel eventSlug={eventSlug} timezone={data.event.timezone} />
       )}
@@ -116,7 +126,11 @@ function RequirementsPanel({
 
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-5)',
+      }}
     >
       <Toolbar
         left={
@@ -230,7 +244,11 @@ function InstancesPanel({
 
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-4)',
+      }}
     >
       <Toolbar
         left={
