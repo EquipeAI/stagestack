@@ -146,6 +146,21 @@ export const board = eventQuery({
 
 /** Drag-and-drop placement. `slot: null` sends the session back to the tray.
  * Never notifies anyone: board edits are internal drafts (M6). */
+export const autoPlace = eventMutation({
+  args: {},
+  returns: v.object({
+    placed: v.array(
+      v.object({ sessionId: vv.id("sessions"), title: v.string() }),
+    ),
+    unplaced: v.array(
+      v.object({ sessionId: vv.id("sessions"), title: v.string() }),
+    ),
+  }),
+  handler: async (ctx) => {
+    return await Agenda.autoPlace(ctx, ctx.caller);
+  },
+});
+
 export const scheduleSession = eventMutation({
   args: { sessionId: v.id("sessions"), slot: v.union(vSlot, v.null()) },
   returns: v.null(),

@@ -1480,3 +1480,48 @@ describe("archived events", () => {
     ).toHaveLength(0);
   });
 });
+
+// ── Auto-place (W7: AIA-08) ──────────────────────────────────────────────
+
+describe("agenda.autoPlace", () => {
+  test("places every unscheduled session into conflict-free slots in one action", async () => {
+    const { t, alice, eventSlug } = await setup();
+    // Two sessions sharing a speaker: they must not land in overlapping
+    // slots; a third with its own speaker can share a time in another room.
+    const shared = {
+      firstName: "Grace",
+      lastName: "Hopper",
+      email: "grace@example.com",
+    };
+    const a = await directSession(alice, eventSlug, "Talk A", shared);
+    const b = await directSession(alice, eventSlug, "Talk B", shared);
+    const c = await directSession(alice, eventSlug, "Talk C", {
+      firstName: "Alan",
+      lastName: "Turing",
+      email: "alan@example.com",
+    });
+
+    const result = await alice.mutation(api.agenda.autoPlace, { eventSlug });
+    expect(result.placed.map((p) => p.title).sort()).toEqual([
+      "Talk A",
+      "Talk B",
+      "Talk C",
+    ]);
+    expect(result.unplaced).toEqual([]);
+
+    // The board must show zero blockers after auto-placement.
+    const board = await alice.query(api.agenda.board, { eventSlug });
+    const blocked = board.sessions.filter((s) =>
+      s.conflicts.some((conflict) => conflict.level === "blocker"),
+    );
+    expect(blocked).toEqual([]);
+    for (const id of [a, b, c]) {
+      const row = await sessionRow(t, id);
+      expect(row?.startsAt).toBeGreaterThan(0);
+      expect(row?.endsAt).toBe((row?.startsAt ?? 0) + 60 * 60 * 1000);
+    }
+    // Re-running places nothing new (idempotent over a full board).
+    const again = await alice.mutation(api.agenda.autoPlace, { eventSlug });
+    expect(again.placed).toEqual([]);
+  });
+});

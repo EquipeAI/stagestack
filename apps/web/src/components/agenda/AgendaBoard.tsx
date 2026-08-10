@@ -20,6 +20,7 @@ import { PlaceDialog } from './PlaceDialog'
 import { AgendaItemDialog } from './AgendaItemDialog'
 import { ReleaseDialog } from './ReleaseDialog'
 import { SessionDetailDialog } from './SessionDetailDialog'
+import { pushToast } from '~/components/toast'
 import {
   AGENDA_KEYBOARD_CODES,
   AGENDA_SCREEN_READER_INSTRUCTIONS,
@@ -92,6 +93,8 @@ export function AgendaBoard({
   onDay: (day: string) => void
 }) {
   const scheduleSession = useMutation(api.agenda.scheduleSession)
+  const autoPlace = useMutation(api.agenda.autoPlace)
+  const autoPlacing = usePending()
   const updateItem = useMutation(api.agenda.updateAgendaItem)
   // A drop is a mutation like any other: it can be refused (locked event, a
   // blocker the backend won't take), and the refusal has to reach the screen.
@@ -288,6 +291,24 @@ export function AgendaBoard({
       }
       right={
         <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+          <Button
+            iconLeft="sparkles"
+            disabled={tray.length === 0 || autoPlacing.pending}
+            onClick={() => {
+              void autoPlacing.run(async () => {
+                const result = await autoPlace({ eventSlug })
+                pushToast(
+                  'Auto-place finished',
+                  `${result.placed.length} placed` +
+                    (result.unplaced.length > 0
+                      ? ` · ${result.unplaced.length} without a free slot`
+                      : ' — review and drag to adjust.'),
+                )
+              })
+            }}
+          >
+            {autoPlacing.pending ? 'Placing…' : 'Auto-place'}
+          </Button>
           <Button iconLeft="plus" onClick={() => setModal({ type: 'item' })}>
             Add block
           </Button>

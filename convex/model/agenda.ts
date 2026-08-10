@@ -1605,3 +1605,111 @@ export async function organizerSetAck(
     response,
   });
 }
+
+// ── Auto-place (W7: AIA-08) ──────────────────────────────────────────────
+
+const HOUR_MS = 60 * 60 * 1000;
+/** Candidate start offsets within a day, hourly from the event's own daily
+ * anchor (its start time-of-day) — a working day of nine one-hour slots. */
+const SLOTS_PER_DAY = 9;
+
+export type AutoPlaceResult = {
+  placed: Array<{ sessionId: Id<"sessions">; title: string }>;
+  unplaced: Array<{ sessionId: Id<"sessions">; title: string }>;
+};
+
+/**
+ * One-action assisted scheduling: every unscheduled planned session is
+ * dropped into the first free hour-long slot (day × time × room) that the
+ * shared conflict engine accepts — no room clash, no speaker double-booking.
+ * Deliberately greedy and deterministic: the organizer reviews the result on
+ * the same board and can drag anything anywhere afterwards.
+ */
+export async function autoPlace(
+  ctx: MutationCtx,
+  caller: EventCaller,
+): Promise<AutoPlaceResult> {
+  requireOrganizer(caller);
+  assertEventActive(caller.event);
+  const event = caller.event;
+  const schedule = await loadSchedule(ctx, event);
+  const rooms = await takeAll(
+    ctx.db
+      .query("rooms")
+      .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+    500,
+    "rooms",
+  );
+  const roomIds: Array<Id<"rooms"> | undefined> =
+    rooms.length > 0
+      ? rooms.sort((a, b) => a.order - b.order).map((r) => r._id)
+      : [undefined];
+
+  const things = toScheduledThings({
+    sessions: schedule.sessions,
+    agendaItems: schedule.agendaItems,
+    participantsBySession: schedule.participantsBySession,
+  });
+
+  const unscheduled = schedule.sessions.filter(
+    (s) => s.status === "planned" && s.startsAt === undefined,
+  );
+
+  const dayCount = Math.max(
+    1,
+    Math.ceil((event.endsAt - event.startsAt) / DAY_MS),
+  );
+  const placed: AutoPlaceResult["placed"] = [];
+  const unplaced: AutoPlaceResult["unplaced"] = [];
+  for (const session of unscheduled) {
+    const speakerIds = (
+      schedule.participantsBySession.get(session._id) ?? []
+    )
+      .filter((p) => p.state !== "withdrawn" && p.state !== "declined")
+      .map((p) => p.eventContactId);
+    let landed: { startsAt: number; endsAt: number; roomId?: Id<"rooms"> } | null =
+      null;
+    outer: for (let day = 0; day < dayCount; day += 1) {
+      for (let slot = 0; slot < SLOTS_PER_DAY; slot += 1) {
+        const startsAt = event.startsAt + day * DAY_MS + slot * HOUR_MS;
+        const endsAt = startsAt + HOUR_MS;
+        if (endsAt > event.endsAt + DAY_MS) break outer;
+        for (const roomId of roomIds) {
+          const candidate: ScheduledThing = {
+            type: "session",
+            id: session._id,
+            title: session.title,
+            startsAt,
+            endsAt,
+            roomId,
+            trackId: session.trackId,
+            speakerIds,
+          };
+          const conflicts = conflictsFor([...things, candidate]);
+          const mine = conflicts.get(session._id) ?? [];
+          if (blockers(mine).length > 0) continue;
+          landed = { startsAt, endsAt, roomId };
+          things.push(candidate);
+          break outer;
+        }
+      }
+    }
+    if (landed === null) {
+      unplaced.push({ sessionId: session._id, title: session.title });
+      continue;
+    }
+    await ctx.db.patch("sessions", session._id, landed);
+    placed.push({ sessionId: session._id, title: session.title });
+  }
+
+  await logAudit(ctx, {
+    orgId: caller.org._id,
+    eventId: event._id,
+    actorUserId: caller.user._id,
+    action: "agenda.autoPlace",
+    targetType: "event",
+    targetId: event._id,
+    meta: { placed: placed.length, unplaced: unplaced.length },
+  });
+  return { placed, unplaced };
+}
