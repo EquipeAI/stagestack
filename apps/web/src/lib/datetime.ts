@@ -69,11 +69,48 @@ export function toInputValue(ms: number | undefined | null, zone: string) {
   return dt.isValid ? dt.toFormat("yyyy-MM-dd'T'HH:mm") : ''
 }
 
-/** Wall-clock string in `zone` → epoch ms. Null when the field is unusable. */
+/** Wall-clock string in `zone` → epoch ms. Null when the field is unusable.
+ *
+ * The happy path is the ISO-ish `yyyy-MM-ddTHH:mm` a real browser puts in a
+ * datetime-local input — but automation drivers (and some webviews) deliver
+ * localized strings to the controlled state instead, so fall through common
+ * localized shapes before giving up. */
 export function fromInputValue(value: string, zone: string): number | null {
-  if (!value) return null
-  const dt = DateTime.fromISO(value, { zone, locale: DATE_LOCALE })
-  return dt.isValid ? dt.toMillis() : null
+  const raw = value.trim()
+  if (!raw) return null
+  const iso = DateTime.fromISO(raw, { zone, locale: DATE_LOCALE })
+  if (iso.isValid) return iso.toMillis()
+  const formats = [
+    "yyyy-MM-dd HH:mm", // ISO with the T dropped
+    'M/d/yyyy, h:mm a', // en-US datetime-local display shape
+    'M/d/yyyy h:mm a',
+    'MM/dd/yyyy HH:mm',
+    'dd/MM/yyyy HH:mm', // day-first locales
+    'dd/MM/yyyy, HH:mm',
+    'd.M.yyyy HH:mm',
+    'yyyy/MM/dd HH:mm',
+  ]
+  for (const format of formats) {
+    const dt = DateTime.fromFormat(raw, format, { zone })
+    if (dt.isValid) return dt.toMillis()
+  }
+  // Last resort: whatever Date can make of it, re-anchored to `zone` keeping
+  // the wall-clock fields the driver intended.
+  const parsed = new Date(raw)
+  if (!Number.isNaN(parsed.getTime())) {
+    const dt = DateTime.fromObject(
+      {
+        year: parsed.getFullYear(),
+        month: parsed.getMonth() + 1,
+        day: parsed.getDate(),
+        hour: parsed.getHours(),
+        minute: parsed.getMinutes(),
+      },
+      { zone },
+    )
+    if (dt.isValid) return dt.toMillis()
+  }
+  return null
 }
 
 export function formatDateTime(ms: number, zone: string) {

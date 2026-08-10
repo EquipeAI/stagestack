@@ -1,6 +1,7 @@
 import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
+import { internal } from "../_generated/api";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
@@ -1094,8 +1095,49 @@ export async function submitProposal(
     updatedAt: now,
   });
 
+  // Emails go out AFTER this transaction commits (scheduled internal
+  // mutation): a template or delivery failure must never roll back the
+  // submission itself (this bit the eval run — Resend test mode + a real
+  // address unwound the whole submit).
+  await ctx.scheduler.runAfter(0, internal.cfp.sendSubmissionEmails, {
+    proposalId: proposal._id,
+    submittedByUserId: user._id,
+    isResubmit,
+  });
+
+  await logAudit(ctx, {
+    orgId: event.orgId,
+    eventId: event._id,
+    actorUserId: user._id,
+    action: "cfp.submit",
+    targetType: "proposal",
+    targetId: proposal._id,
+    meta: { isResubmit },
+  });
+
+  return { successMessage: row.successMessage ?? null };
+}
+
+/** Post-commit half of `submitProposal` — runs in its own transaction so an
+ * email failure can't unwind the submission. */
+export async function sendSubmissionEmails(
+  ctx: MutationCtx,
+  args: {
+    proposalId: Id<"proposals">;
+    submittedByUserId: Id<"users">;
+    isResubmit: boolean;
+  },
+): Promise<void> {
+  const proposal = await ctx.db.get("proposals", args.proposalId);
+  if (proposal === null) return;
+  const event = await ctx.db.get("events", proposal.eventId);
+  if (event === null) return;
+  const user = await ctx.db.get("users", args.submittedByUserId);
+  const speakers = await listSpeakers(ctx, proposal._id);
+  const { isResubmit } = args;
+
   const title = proposal.title;
-  const submitterEmail = user.email?.trim();
+  const submitterEmail = user?.email?.trim();
   if (submitterEmail !== undefined && submitterEmail.length > 0) {
     const rendered = await renderTemplate(ctx, event, "cfp.confirmation", {
       event: { name: event.name },
@@ -1115,7 +1157,7 @@ export async function submitProposal(
       kind: "cfp.confirmation",
       subject: rendered.subject,
       html: rendered.html,
-      sentByUserId: user._id,
+      sentByUserId: args.submittedByUserId,
       replyTo: event.replyTo,
       context: { proposalId: proposal._id, isResubmit },
     });
@@ -1137,18 +1179,6 @@ export async function submitProposal(
     html: adminNotice.html,
     context: { proposalId: proposal._id, isResubmit },
   });
-
-  await logAudit(ctx, {
-    orgId: event.orgId,
-    eventId: event._id,
-    actorUserId: user._id,
-    action: "cfp.submit",
-    targetType: "proposal",
-    targetId: proposal._id,
-    meta: { isResubmit },
-  });
-
-  return { successMessage: row.successMessage ?? null };
 }
 
 // ── Withdraw ─────────────────────────────────────────────────────────────

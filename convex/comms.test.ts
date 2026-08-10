@@ -63,6 +63,12 @@ async function participantRows(
 
 /** Wipe the comms log so a later assertion sees only new sends. */
 async function clearMessages(t: TestT): Promise<void> {
+  // Drain scheduled sends first (submitProposal defers its emails), so a
+  // pending job can't repopulate the table after the wipe.
+  for (let i = 0; i < 3; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
   await t.run(async (ctx) => {
     for (const message of await ctx.db.query("messages").collect()) {
       await ctx.db.delete("messages", message._id);

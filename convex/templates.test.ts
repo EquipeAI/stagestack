@@ -374,8 +374,18 @@ describe("lifecycle sends render through templates", () => {
         },
       ],
     });
+    // Emails are deferred to runAfter(0); drain between submits so the two
+    // sends land in submission order.
+    const drain = async () => {
+      for (let i = 0; i < 3; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await t.finishInProgressScheduledFunctions();
+      }
+    };
     await bob.mutation(api.cfp.submitProposal, { proposalId });
+    await drain();
     await bob.mutation(api.cfp.submitProposal, { proposalId });
+    await drain();
 
     const confirmations = (await messageRows(t)).filter(
       (m) => m.kind === "cfp.confirmation",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type * as React from 'react'
 import { Button } from '~/ds'
 
@@ -36,10 +36,25 @@ export function Popover({
   children: (close: () => void) => React.ReactNode
 }) {
   const [open, setOpen] = useState(false)
+  // Flip up when the trigger sits too low for the panel to fit below it (the
+  // bulk bar is pinned to the viewport bottom, so downward-only is unusable).
+  const [openUp, setOpenUp] = useState(false)
   const hostRef = useRef<HTMLDivElement | null>(null)
   const triggerRef = useRef<HTMLDivElement | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const panelId = useId()
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const host = hostRef.current
+    const panel = panelRef.current
+    if (!host || !panel) return
+    const rect = host.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - rect.bottom
+    const spaceAbove = rect.top
+    const needed = Math.min(panel.scrollHeight, window.innerHeight * 0.7) + 16
+    setOpenUp(spaceBelow < needed && spaceAbove > spaceBelow)
+  }, [open])
 
   const close = useCallback(() => {
     setOpen(false)
@@ -90,7 +105,7 @@ export function Popover({
           tabIndex={-1}
           style={{
             position: 'absolute',
-            top: `calc(100% + var(--space-2))`,
+            [openUp ? 'bottom' : 'top']: `calc(100% + var(--space-2))`,
             [align === 'end' ? 'right' : 'left']: 0,
             zIndex: 'var(--z-dropdown)',
             width,

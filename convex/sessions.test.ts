@@ -91,6 +91,8 @@ async function submittedProposal(t: TestT) {
     ],
   });
   await bob.mutation(api.cfp.submitProposal, { proposalId });
+  // Submit defers its emails; drain them so tests observe a settled baseline.
+  await drainScheduled(t);
   return { alice, bob, orgSlug, eventSlug, proposalId };
 }
 

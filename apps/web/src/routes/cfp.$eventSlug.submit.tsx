@@ -739,6 +739,22 @@ function ProposalStepsInner({
     // indicator rather than blocking the move.
     void answersDraft.autosave.flush().catch(() => {})
     void speakersDraft.autosave.flush().catch(() => {})
+    // Moving forward is gated on the current step's own blockers; moving back
+    // never is.
+    const forward = stepIndex(next) > stepIndex(step)
+    if (forward && step === 'submission' && missing.length > 0) {
+      setFlagged(new Set(missing.map((m) => m.field.id)))
+      const first = missing[0]
+      setTimeout(() => {
+        const el = document.getElementById(fieldDomId(first.field.id))
+        el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        el?.focus()
+      }, 60)
+      return
+    }
+    if (forward && step === 'participants' && nameless.length > 0) {
+      return
+    }
     if (next === 'review') {
       setFlagged(new Set(missing.map((m) => m.field.id)))
     }

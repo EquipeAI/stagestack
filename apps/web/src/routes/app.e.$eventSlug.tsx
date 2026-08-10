@@ -59,8 +59,18 @@ const NAV_GROUPS: Array<{ items: Array<NavItem> }> = [
         requires: 'organizer',
       },
       { id: 'overview', label: 'Overview', icon: 'layout-grid' },
-      { id: 'cfp', label: 'Call for speakers', icon: 'mic-vocal' },
-      { id: 'proposals', label: 'Proposals', icon: 'inbox' },
+      {
+        id: 'cfp',
+        label: 'Call for speakers',
+        icon: 'mic-vocal',
+        requires: 'organizer',
+      },
+      {
+        id: 'proposals',
+        label: 'Proposals',
+        icon: 'inbox',
+        requires: 'organizer',
+      },
       // Reviewers are assigned proposals to score, so Reviews is theirs too.
       { id: 'reviews', label: 'Reviews', icon: 'star' },
       {
@@ -101,8 +111,16 @@ const NAV_GROUPS: Array<{ items: Array<NavItem> }> = [
         icon: 'globe',
         requires: 'organizer',
       },
-      { id: 'settings', label: 'Settings', icon: 'settings' },
-      { id: 'team', label: 'Team', icon: 'users' },
+      // A reviewer's shell is Overview + Reviews only: the sidebar must not
+      // advertise organizer surfaces even though the backend already scopes
+      // them (eval CFP-10: role-separated navigation).
+      {
+        id: 'settings',
+        label: 'Settings',
+        icon: 'settings',
+        requires: 'organizer',
+      },
+      { id: 'team', label: 'Team', icon: 'users', requires: 'organizer' },
     ],
   },
 ]

@@ -32,6 +32,14 @@ async function messageRows(t: TestT) {
   return await t.run(async (ctx) => ctx.db.query("messages").collect());
 }
 
+/** Submit defers its emails to a runAfter(0) job; let it land. */
+async function drainScheduled(t: TestT): Promise<void> {
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+}
+
 async function proposalRows(t: TestT) {
   return await t.run(async (ctx) => ctx.db.query("proposals").collect());
 }
@@ -616,6 +624,7 @@ describe("cfp.submitProposal", () => {
 
     const result = await bob.mutation(api.cfp.submitProposal, { proposalId });
     expect(result.successMessage).toBe("We'll be in touch.");
+    await drainScheduled(t);
 
     const first = await bob.query(api.cfp.getMyProposal, { proposalId });
     expect(first.proposal.status).toBe("pending");
@@ -644,6 +653,7 @@ describe("cfp.submitProposal", () => {
       answers: { ...FULL_ANSWERS, abstract: "Now with more detail." },
     });
     await bob.mutation(api.cfp.submitProposal, { proposalId });
+    await drainScheduled(t);
     const second = await bob.query(api.cfp.getMyProposal, { proposalId });
     expect(second.proposal.submittedAt).toBe(first.proposal.submittedAt);
     expect(second.proposal.updatedAt).toBeGreaterThanOrEqual(
@@ -667,6 +677,7 @@ describe("cfp.submitProposal", () => {
     const t = setupTest();
     const { bob, proposalId } = await readyProposal(t);
     await bob.mutation(api.cfp.submitProposal, { proposalId });
+    await drainScheduled(t);
 
     const [message] = await messageRows(t);
     const emailId = message.resendEmailId! as EmailId;

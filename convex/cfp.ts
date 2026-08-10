@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import { HOUR, RateLimiter } from "@convex-dev/rate-limiter";
 import { components } from "./_generated/api";
+import { internalMutation } from "./_generated/server";
 import {
   authedMutation,
   authedQuery,
@@ -267,6 +268,19 @@ export const submitProposal = authedMutation({
   returns: v.object({ successMessage: v.union(v.string(), v.null()) }),
   handler: async (ctx, args) => {
     return await Cfp.submitProposal(ctx, ctx.user, args.proposalId);
+  },
+});
+
+export const sendSubmissionEmails = internalMutation({
+  args: {
+    proposalId: v.id("proposals"),
+    submittedByUserId: v.id("users"),
+    isResubmit: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Cfp.sendSubmissionEmails(ctx, args);
+    return null;
   },
 });
 
