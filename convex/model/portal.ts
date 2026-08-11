@@ -835,6 +835,7 @@ export async function beginMyHeadshotUpload(
     eventContactId: Id<"eventContacts">;
     contentType: string;
     size: number;
+    filename?: string;
   },
 ): Promise<{ uploadId: Id<"headshotUploads"> }> {
   const event = await eventBySlug(ctx, args.eventSlug);
@@ -848,7 +849,11 @@ export async function beginMyHeadshotUpload(
   return await Speakers.beginHeadshotUpload(
     ctx,
     portalHeadshotScope(event, contact, user),
-    { contentType: args.contentType, size: args.size },
+    {
+      contentType: args.contentType,
+      size: args.size,
+      filename: args.filename,
+    },
   );
 }
 
@@ -1130,6 +1135,7 @@ const TASK_SCAN = 500;
 export type PortalTaskUpload = {
   filename: string;
   version: number;
+  uploadedAt: number;
   url: string | null;
 };
 
@@ -1248,6 +1254,7 @@ export async function myTasks(
         uploads.push({
           filename: row.filename,
           version: row.version,
+          uploadedAt: row._creationTime,
           url: await ctx.storage.getUrl(row.storageId),
         });
       }
@@ -1507,7 +1514,13 @@ export async function taskComments(
   args: { eventSlug: string; instanceId: Id<"taskInstances"> },
 ): Promise<Tasks.TaskCommentRow[]> {
   const event = await eventBySlug(ctx, args.eventSlug);
-  return await Tasks.listTaskComments(ctx, user, event, args.instanceId);
+  return await Tasks.listTaskComments(
+    ctx,
+    user,
+    event,
+    args.instanceId,
+    "portal",
+  );
 }
 
 export async function commentOnTask(

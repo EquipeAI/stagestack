@@ -49,6 +49,7 @@ import type * as model_speakers from "../model/speakers.js";
 import type * as model_tasks from "../model/tasks.js";
 import type * as model_team from "../model/team.js";
 import type * as model_templates from "../model/templates.js";
+import type * as model_userDisplay from "../model/userDisplay.js";
 import type * as model_validation from "../model/validation.js";
 import type * as orgs from "../orgs.js";
 import type * as portal from "../portal.js";
@@ -115,6 +116,7 @@ declare const fullApi: ApiFromModules<{
   "model/tasks": typeof model_tasks;
   "model/team": typeof model_team;
   "model/templates": typeof model_templates;
+  "model/userDisplay": typeof model_userDisplay;
   "model/validation": typeof model_validation;
   orgs: typeof orgs;
   portal: typeof portal;

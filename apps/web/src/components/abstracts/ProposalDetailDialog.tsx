@@ -55,7 +55,9 @@ export function ProposalDetailDialog({
   if (detail === undefined) {
     return (
       <Modal title="Loading proposal…" width={860} onClose={onClose}>
-        <p style={{ color: 'var(--text-tertiary)' }}>Reading answers and reviews…</p>
+        <p style={{ color: 'var(--text-tertiary)' }}>
+          Reading answers and reviews…
+        </p>
       </Modal>
     )
   }
@@ -71,7 +73,13 @@ export function ProposalDetailDialog({
       onClose={onClose}
       footer={<Button onClick={onClose}>Close</Button>}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-5)',
+        }}
+      >
         <DescriptionList
           items={[
             {
@@ -128,8 +136,14 @@ export function ProposalDetailDialog({
 
         <SpeakersPanel speakers={detail.speakers} />
 
-        {proposal.status === 'draft' || proposal.status === 'pending' ? (
-          <ReopenPanel eventSlug={eventSlug} event={event} proposal={proposal} />
+        {event.archivedAt === undefined &&
+        proposal.status !== 'declined' &&
+        proposal.status !== 'withdrawn' ? (
+          <ReopenPanel
+            eventSlug={eventSlug}
+            event={event}
+            proposal={proposal}
+          />
         ) : null}
       </div>
     </Modal>
@@ -152,12 +166,18 @@ function DecisionPanel({
   const correct = useMutation(api.sessions.correct)
   const [busy, setBusy] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
-  const [confirming, setConfirming] = useState<'release' | 'correct' | null>(null)
+  const [confirming, setConfirming] = useState<'release' | 'correct' | null>(
+    null,
+  )
   const [note, setNote] = useState('')
-  const released = proposal.status === 'accepted' || proposal.status === 'declined'
+  const released =
+    proposal.status === 'accepted' || proposal.status === 'declined'
   const correctTo = proposal.status === 'accepted' ? 'declined' : 'accepted'
 
-  const move = (to: 'pending' | 'acceptQueue' | 'declineQueue', verb: string) => {
+  const move = (
+    to: 'pending' | 'acceptQueue' | 'declineQueue',
+    verb: string,
+  ) => {
     setBusy(to)
     setProblem(null)
     void setStatus({ eventSlug, proposalIds: [proposal._id], to })
@@ -198,10 +218,24 @@ function DecisionPanel({
             : 'Staged decisions stay inside this event until you release them.'
         }
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-          {problem !== null ? <Callout tone="blocked">{problem}</Callout> : null}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-3)',
+          }}
+        >
+          {problem !== null ? (
+            <Callout tone="blocked">{problem}</Callout>
+          ) : null}
           {released ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--space-3)',
+              }}
+            >
               <Field
                 label="Correction note"
                 htmlFor="correct-note"
@@ -221,13 +255,18 @@ function DecisionPanel({
                   disabled={busy !== null || note.trim() === ''}
                   onClick={() => setConfirming('correct')}
                 >
-                  Correct to {correctTo === 'accepted' ? 'Accepted' : 'Declined'}
+                  Correct to{' '}
+                  {correctTo === 'accepted' ? 'Accepted' : 'Declined'}
                 </Button>
               </div>
             </div>
           ) : (
             <div
-              style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}
+              style={{
+                display: 'flex',
+                gap: 'var(--space-2)',
+                flexWrap: 'wrap',
+              }}
             >
               <Button
                 size="sm"
@@ -239,7 +278,9 @@ function DecisionPanel({
               <Button
                 size="sm"
                 disabled={busy !== null || proposal.status === 'declineQueue'}
-                onClick={() => move('declineQueue', 'moved to the decline queue')}
+                onClick={() =>
+                  move('declineQueue', 'moved to the decline queue')
+                }
               >
                 {busy === 'declineQueue' ? 'Moving…' : 'Decline queue'}
               </Button>
@@ -440,7 +481,9 @@ function ReviewPanel({
                   flexWrap: 'wrap',
                 }}
               >
-                <strong>{review.reviewerName ?? review.reviewerEmail ?? 'Reviewer'}</strong>
+                <strong>
+                  {review.reviewerName ?? review.reviewerEmail ?? 'Reviewer'}
+                </strong>
                 <StatusPill
                   status={REVIEW_STATUS_LABEL[review.status] ?? review.status}
                 />
@@ -480,7 +523,12 @@ function ReviewPanel({
                   </Badge>
                 ) : null}
                 {review.submittedAt !== undefined ? (
-                  <span style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
+                  <span
+                    style={{
+                      color: 'var(--text-tertiary)',
+                      font: 'var(--type-caption)',
+                    }}
+                  >
                     {formatDateTime(review.submittedAt, timezone)}
                   </span>
                 ) : null}
@@ -666,7 +714,11 @@ function SpeakersPanel({
           {speakers.map((speaker) => (
             <li
               key={speaker._id}
-              style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-half)' }}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--space-half)',
+              }}
             >
               <span
                 style={{
@@ -676,19 +728,28 @@ function SpeakersPanel({
                   flexWrap: 'wrap',
                 }}
               >
-                <strong>{`${speaker.firstName} ${speaker.lastName}`.trim()}</strong>
+                <strong>
+                  {`${speaker.firstName} ${speaker.lastName}`.trim()}
+                </strong>
                 {speaker.isPrimary ? <Badge tone="info">Primary</Badge> : null}
                 {speaker.role !== undefined && speaker.role !== '' ? (
                   <Tag>{speaker.role}</Tag>
                 ) : null}
               </span>
               {speaker.email !== undefined ? (
-                <span style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
+                <span
+                  style={{
+                    color: 'var(--text-tertiary)',
+                    font: 'var(--type-caption)',
+                  }}
+                >
                   {speaker.email}
                 </span>
               ) : null}
               {speaker.tagline !== undefined ? (
-                <span style={{ color: 'var(--text-secondary)' }}>{speaker.tagline}</span>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  {speaker.tagline}
+                </span>
               ) : null}
             </li>
           ))}
@@ -735,14 +796,27 @@ function ReopenPanel({
       variant="flat"
       title="Reopen editing"
       subtitle={
-        closed
-          ? 'The CFP has closed. Grant this submitter a window to edit their proposal.'
-          : 'The CFP is still open — a grant only matters once it closes.'
+        proposal.status === 'accepted'
+          ? 'The released acceptance stays in place. Grant the submitter a window to revise this same proposal; newly added participants join its existing session when they resubmit.'
+          : closed
+            ? 'The CFP has closed. Grant this submitter a window to edit their proposal.'
+            : 'The CFP is still open — a grant only matters once it closes.'
       }
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-3)',
+        }}
+      >
         {proposal.reopenedUntil !== undefined ? (
-          <p style={{ color: 'var(--text-secondary)', font: 'var(--type-caption)' }}>
+          <p
+            style={{
+              color: 'var(--text-secondary)',
+              font: 'var(--type-caption)',
+            }}
+          >
             Currently editable until{' '}
             {formatDateTime(proposal.reopenedUntil, event.timezone)}.
           </p>
@@ -772,7 +846,9 @@ function ReopenPanel({
           </Button>
         </div>
         {error !== null ? (
-          <span style={{ color: 'var(--text-danger)', font: 'var(--type-caption)' }}>
+          <span
+            style={{ color: 'var(--text-danger)', font: 'var(--type-caption)' }}
+          >
             {error}
           </span>
         ) : null}

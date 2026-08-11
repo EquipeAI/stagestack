@@ -6,7 +6,8 @@ import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
 import { notifyOrganizers, sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
-import { assertEventActive, assertText } from "./validation";
+import { assertEventActive, assertText, takeAll } from "./validation";
+import { eventUserDisplayName, storedPersonName } from "./userDisplay";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Speaker ops: requirements & task instances (M4).
@@ -39,7 +40,13 @@ const PARTICIPANT_SCAN = 5000;
 const INSTANCE_SCAN = 8000;
 const CONTACT_SCAN = 2000;
 const UPLOAD_SCAN = 200;
-const FILE_LIBRARY_SCAN = 2000;
+const FILE_LIBRARY_SCAN = 300;
+const FILE_LIBRARY_CURRENT_LIMIT = 120;
+const FILE_LIBRARY_HEADSHOT_CONTACT_LIMIT = 64;
+const FILE_LIBRARY_TASK_CONTACT_LIMIT = 16;
+const FILE_LIBRARY_SESSION_LIMIT = 64;
+const FILE_LIBRARY_HEADSHOT_CONTACT_BYTES = 2 * 1024 * 1024;
+const FILE_LIBRARY_HYDRATION_BYTES = 6 * 1024 * 1024;
 const MAX_PARTICIPANTS_PER_SESSION = 100;
 
 const MAX_TITLE = 200;
@@ -380,26 +387,34 @@ export async function instantiateForSession(
   ) {
     return 0;
   }
-  const requirements = (
-    await ctx.db
+  const requirementRows = await takeAll(
+    ctx.db
       .query("requirements")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(REQUIREMENT_SCAN)
-  ).filter((r) => r.active);
+      .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+    REQUIREMENT_SCAN,
+    "requirements",
+  );
+  const requirements = requirementRows.filter((r) => r.active);
   if (requirements.length === 0) return 0;
 
   // Event-wide existing scan, not per-session: a participant-scope obligation
   // is owed once per speaker, so an instance on their OTHER session must
   // suppress creation here too.
   const [existing, participants] = await Promise.all([
-    ctx.db
-      .query("taskInstances")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(INSTANCE_SCAN),
-    ctx.db
-      .query("sessionParticipants")
-      .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
-      .take(MAX_PARTICIPANTS_PER_SESSION),
+    takeAll(
+      ctx.db
+        .query("taskInstances")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      INSTANCE_SCAN,
+      "task instances",
+    ),
+    takeAll(
+      ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId)),
+      MAX_PARTICIPANTS_PER_SESSION,
+      "participants on one session",
+    ),
   ]);
   const seen = new Set(existing.map(existingInstanceKey));
   const cache: ContactCache = new Map();
@@ -447,12 +462,14 @@ export async function createRequirement(
   // definition, and it must not mint a second requirement (the eval run turned
   // five intended types into seven this way). An identical active definition
   // is the same request — re-run the idempotent backfill and return it.
-  const duplicate = (
-    await ctx.db
+  const existingRequirements = await takeAll(
+    ctx.db
       .query("requirements")
-      .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
-      .take(REQUIREMENT_SCAN)
-  ).find(
+      .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id)),
+    REQUIREMENT_SCAN,
+    "requirements",
+  );
+  const duplicate = existingRequirements.find(
     (r) =>
       r.active &&
       r.title === title &&
@@ -470,6 +487,12 @@ export async function createRequirement(
       duplicate,
     );
     return { requirementId: duplicate._id, instances };
+  }
+  if (existingRequirements.length >= REQUIREMENT_SCAN) {
+    throw new ConvexError({
+      code: "event_too_large",
+      message: `This event already has the ${REQUIREMENT_SCAN}-requirement maximum. Consolidate existing requirements or contact support before adding another.`,
+    });
   }
 
   const requirementId = await ctx.db.insert("requirements", {
@@ -1482,6 +1505,7 @@ export async function listTaskComments(
   actor: Doc<"users">,
   event: Doc<"events">,
   instanceId: Id<"taskInstances">,
+  audience: "organizer" | "portal",
 ): Promise<TaskCommentRow[]> {
   const { instance } = await requireTaskAccess(ctx, actor, event, instanceId);
   const rows = await ctx.db
@@ -1489,12 +1513,41 @@ export async function listTaskComments(
     .withIndex("by_instanceId", (q) => q.eq("instanceId", instance._id))
     .take(COMMENT_SCAN);
   const out: TaskCommentRow[] = [];
+  const authors = new Map<
+    Id<"users">,
+    {
+      personName: string | null;
+      email: string | null;
+      organizer: boolean;
+    }
+  >();
   for (const row of rows.sort((a, b) => a.createdAt - b.createdAt)) {
-    const author = await ctx.db.get("users", row.authorUserId);
+    let authorDetails = authors.get(row.authorUserId);
+    if (authorDetails === undefined) {
+      const author = await ctx.db.get("users", row.authorUserId);
+      authorDetails = {
+        personName: await eventUserDisplayName(
+          ctx,
+          event._id,
+          author,
+          instance.eventContactId,
+        ),
+        email: author?.email ?? null,
+        organizer:
+          author !== null && (await isEventOrganizer(ctx, author, event)),
+      };
+      authors.set(row.authorUserId, authorDetails);
+    }
     out.push({
       commentId: row._id,
-      authorName: author?.name ?? null,
-      authorEmail: author?.email ?? null,
+      authorName:
+        authorDetails.personName ??
+        (audience === "portal"
+          ? authorDetails.organizer
+            ? "Organizer"
+            : "Session manager"
+          : null),
+      authorEmail: audience === "organizer" ? authorDetails.email : null,
       body: row.body,
       createdAt: row.createdAt,
       mine: row.authorUserId === actor._id,
@@ -1506,6 +1559,31 @@ export async function listTaskComments(
 // ── Files library & bulk export (W5: CNT-13/CNT-14) ──────────────────────
 
 export type LibraryFileRow = {
+  fileId: string;
+  kind: "task" | "headshot";
+  instanceId: Id<"taskInstances"> | null;
+  requirementTitle: string;
+  sessionId: Id<"sessions"> | null;
+  sessionTitle: string;
+  speakerName: string | null;
+  /** Original browser basename retained as provenance; null for task uploads
+   * (whose stored/download filename is already the original) and legacy
+   * headshots created before provenance capture. */
+  sourceFilename: string | null;
+  /** MIME-correct filename used for view/download and bundle export. */
+  filename: string;
+  version: number | null;
+  versionCount: number | null;
+  uploadedByName: string | null;
+  uploadedAt: number | null;
+  url: string | null;
+  commentCount: number;
+};
+
+/** Original files-library contract kept for clients deployed before headshots
+ * became first-class rows. It is intentionally task-only and contains no
+ * nullable task/session/version fields. */
+export type LegacyLibraryFileRow = {
   instanceId: Id<"taskInstances">;
   requirementTitle: string;
   sessionId: Id<"sessions">;
@@ -1519,40 +1597,189 @@ export type LibraryFileRow = {
   commentCount: number;
 };
 
-/** Every uploaded deliverable on the event — latest version per task, with
- * session/speaker association and the version count (CNT-13). */
+export function legacyLibraryFileRows(
+  rows: ReadonlyArray<LibraryFileRow>,
+): LegacyLibraryFileRow[] {
+  return rows.flatMap((row) => {
+    if (
+      row.kind !== "task" ||
+      row.instanceId === null ||
+      row.sessionId === null ||
+      row.version === null ||
+      row.versionCount === null ||
+      row.uploadedAt === null
+    ) {
+      return [];
+    }
+    return [
+      {
+        instanceId: row.instanceId,
+        requirementTitle: row.requirementTitle,
+        sessionId: row.sessionId,
+        sessionTitle: row.sessionTitle,
+        speakerName: row.speakerName,
+        filename: row.filename,
+        version: row.version,
+        versionCount: row.versionCount,
+        uploadedAt: row.uploadedAt,
+        url: row.url,
+        commentCount: row.commentCount,
+      },
+    ];
+  });
+}
+
+function headshotDownloadFilename(
+  originalFilename: string | undefined,
+): string {
+  if (originalFilename === undefined) return "headshot.webp";
+  const dot = originalFilename.lastIndexOf(".");
+  const rawStem = dot <= 0 ? originalFilename : originalFilename.slice(0, dot);
+  const stem = rawStem.trim().replace(/[. ]+$/g, "");
+  return `${stem.length === 0 ? "headshot" : stem}.webp`;
+}
+
+function genericHeadshotDownloadFilename(
+  contentType: string | null | undefined,
+): string | null {
+  switch (contentType?.split(";", 1)[0]?.trim().toLowerCase()) {
+    case "image/webp":
+      return "headshot.webp";
+    case "image/png":
+      return "headshot.png";
+    case "image/jpeg":
+    case "image/jpg":
+      return "headshot.jpg";
+    default:
+      return null;
+  }
+}
+
+const FILE_LIBRARY_IO_BATCH = 100;
+const fileLibraryEncoder = new TextEncoder();
+
+function encodedDocumentBytes(value: unknown): number {
+  return fileLibraryEncoder.encode(JSON.stringify(value)).length;
+}
+
+export function completeHeadshotContactPage(page: {
+  page: unknown[];
+  isDone: boolean;
+  pageStatus?: "SplitRecommended" | "SplitRequired" | null;
+}): boolean {
+  return (
+    page.isDone &&
+    page.pageStatus !== "SplitRequired" &&
+    page.page.length <= FILE_LIBRARY_HEADSHOT_CONTACT_LIMIT &&
+    encodedDocumentBytes(page.page) <= FILE_LIBRARY_HEADSHOT_CONTACT_BYTES
+  );
+}
+
+async function mapInBatches<Input, Output>(
+  rows: ReadonlyArray<Input>,
+  operation: (row: Input) => Promise<Output>,
+): Promise<Output[]> {
+  const out: Output[] = [];
+  for (let offset = 0; offset < rows.length; offset += FILE_LIBRARY_IO_BATCH) {
+    out.push(
+      ...(await Promise.all(
+        rows.slice(offset, offset + FILE_LIBRARY_IO_BATCH).map(operation),
+      )),
+    );
+  }
+  return out;
+}
+
+/** Every current uploaded deliverable on the event — latest version per task
+ * plus every current headshot referenced by an event-contact snapshot.
+ *
+ * The contact is the source of truth for whether a headshot is current. A
+ * same-event, currently-attached secure-upload ticket may enrich that row with
+ * provenance, but a copied directory/other-event/legacy blob still remains a
+ * downloadable current file. In that fallback case we deliberately expose no
+ * source actor, filename, timestamp, or history from another context. */
 export async function filesLibrary(
   ctx: QueryCtx,
   caller: EventCaller,
+  options?: { includeHeadshots?: boolean },
 ): Promise<LibraryFileRow[]> {
   requireOrganizer(caller);
-  const uploads = await ctx.db
-    .query("uploads")
-    .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
-    .take(FILE_LIBRARY_SCAN + 1);
+  const includeHeadshots = options?.includeHeadshots ?? true;
+  const [uploads, headshotContactPage, headshotUploads, comments] =
+    await Promise.all([
+      ctx.db
+        .query("uploads")
+        .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+        .take(FILE_LIBRARY_SCAN + 1),
+      includeHeadshots
+        ? ctx.db
+            .query("eventContacts")
+            .withIndex("by_eventId_and_headshotId", (q) =>
+              q.eq("eventId", caller.event._id).gt("headshotId", undefined),
+            )
+            // Convex permits one paginated range per function. Spend it on
+            // the only source whose legacy rows may contain hundreds of KiB
+            // of custom profile values. A byte split is an explicit refusal,
+            // never a partial files view.
+            .paginate({
+              cursor: null,
+              numItems: FILE_LIBRARY_HEADSHOT_CONTACT_LIMIT + 1,
+              maximumRowsRead: FILE_LIBRARY_HEADSHOT_CONTACT_LIMIT + 1,
+              maximumBytesRead: FILE_LIBRARY_HEADSHOT_CONTACT_BYTES,
+            })
+        : Promise.resolve({
+            page: [] as Array<Doc<"eventContacts">>,
+            isDone: true,
+            pageStatus: null,
+          }),
+      includeHeadshots
+        ? ctx.db
+            .query("headshotUploads")
+            .withIndex("by_eventId_and_attachedAt", (q) =>
+              q.eq("eventId", caller.event._id).gt("attachedAt", undefined),
+            )
+            .take(FILE_LIBRARY_SCAN + 1)
+        : Promise.resolve([] as Array<Doc<"headshotUploads">>),
+      ctx.db
+        .query("uploadComments")
+        .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+        .take(FILE_LIBRARY_SCAN + 1),
+    ]);
+  const headshotContacts = headshotContactPage.page;
   if (uploads.length > FILE_LIBRARY_SCAN) {
     throw new ConvexError({
       code: "files_export_too_large",
       message:
-        "This event has more than 2,000 uploaded file versions. Export a smaller event before building a complete bundle.",
+        "This event has more than 300 uploaded file versions. The files library refuses a partial version history.",
     });
   }
+  if (!completeHeadshotContactPage(headshotContactPage)) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 64 current headshots or its headshot profiles exceed the 2 MiB safe read budget. The files library refuses a partial view.",
+    });
+  }
+  if (headshotUploads.length > FILE_LIBRARY_SCAN) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 300 attached headshot versions. The files library cannot report complete same-event history safely.",
+    });
+  }
+  if (comments.length > FILE_LIBRARY_SCAN) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 300 file comments. The files library cannot report complete counts safely.",
+    });
+  }
+
   const byInstance = new Map<Id<"taskInstances">, Array<Doc<"uploads">>>();
   for (const upload of uploads) {
     const list = byInstance.get(upload.taskInstanceId) ?? [];
     list.push(upload);
     byInstance.set(upload.taskInstanceId, list);
-  }
-  const comments = await ctx.db
-    .query("uploadComments")
-    .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
-    .take(FILE_LIBRARY_SCAN + 1);
-  if (comments.length > FILE_LIBRARY_SCAN) {
-    throw new ConvexError({
-      code: "files_export_too_large",
-      message:
-        "This event has more than 2,000 file comments. The files library cannot report complete counts safely.",
-    });
   }
   const commentCount = new Map<Id<"taskInstances">, number>();
   for (const comment of comments) {
@@ -1562,38 +1789,338 @@ export async function filesLibrary(
     );
   }
 
-  const out: LibraryFileRow[] = [];
-  for (const [instanceId, list] of byInstance) {
-    const instance = await ctx.db.get("taskInstances", instanceId);
-    if (instance === null) continue;
-    const requirement = await ctx.db.get(
-      "requirements",
-      instance.requirementId,
-    );
-    const session = await ctx.db.get("sessions", instance.sessionId);
-    const contact =
-      instance.eventContactId === undefined
-        ? null
-        : await ctx.db.get("eventContacts", instance.eventContactId);
-    const latest = list.reduce((a, b) => (a.version >= b.version ? a : b));
-    out.push({
-      instanceId,
-      requirementTitle: requirement?.title ?? "(deleted requirement)",
-      sessionId: instance.sessionId,
-      sessionTitle: session?.title ?? "(deleted session)",
-      speakerName:
-        contact === null
-          ? null
-          : `${contact.firstName} ${contact.lastName}`.trim(),
-      filename: latest.filename,
-      version: latest.version,
-      versionCount: list.length,
-      uploadedAt: latest._creationTime,
-      url: await ctx.storage.getUrl(latest.storageId),
-      commentCount: commentCount.get(instanceId) ?? 0,
+  if (byInstance.size + headshotContacts.length > FILE_LIBRARY_CURRENT_LIMIT) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 120 current files. Select a smaller event before opening Files or building a bundle.",
     });
   }
-  return out.sort((a, b) => b.uploadedAt - a.uploadedAt);
+
+  // Hydrate only relationships referenced by current file rows. The three
+  // `.take` sources above have compact, write-bounded strings. Contacts are
+  // different: legacy custom values can make one row approach the database's
+  // document limit. Their indexed range has its own byte ceiling, and every
+  // targeted get below is sequential and charged to this shared budget. At
+  // most one max-size document can cross the soft ceiling before we refuse,
+  // leaving ample room below Convex's 16 MiB transaction read limit.
+  let hydrationBytes = encodedDocumentBytes(headshotContacts);
+  function trackHydratedDocument<T>(document: T): T {
+    if (document !== null && document !== undefined) {
+      hydrationBytes += encodedDocumentBytes(document);
+      if (hydrationBytes > FILE_LIBRARY_HYDRATION_BYTES) {
+        throw new ConvexError({
+          code: "files_export_too_large",
+          message:
+            "This event's file relationships exceed the 6 MiB safe read budget. The files library refuses a partial view.",
+        });
+      }
+    }
+    return document;
+  }
+
+  const instanceDocs: Array<Doc<"taskInstances"> | null> = [];
+  for (const instanceId of byInstance.keys()) {
+    instanceDocs.push(
+      trackHydratedDocument(await ctx.db.get("taskInstances", instanceId)),
+    );
+  }
+  const instanceById = new Map<Id<"taskInstances">, Doc<"taskInstances">>();
+  for (const instance of instanceDocs) {
+    if (instance !== null && instance.eventId === caller.event._id) {
+      instanceById.set(instance._id, instance);
+    }
+  }
+
+  const taskCandidates = [...byInstance].flatMap(([instanceId, list]) => {
+    const instance = instanceById.get(instanceId);
+    if (instance === undefined) return [];
+    const latest = list.reduce((a, b) => (a.version >= b.version ? a : b));
+    return [{ instance, latest, versionCount: list.length }];
+  });
+  const requirementIds = new Set(
+    taskCandidates.map(({ instance }) => instance.requirementId),
+  );
+  const sessionIds = new Set(
+    taskCandidates.map(({ instance }) => instance.sessionId),
+  );
+  const taskContactIds = new Set(
+    taskCandidates.flatMap(({ instance }) =>
+      instance.eventContactId === undefined ? [] : [instance.eventContactId],
+    ),
+  );
+  if (sessionIds.size > FILE_LIBRARY_SESSION_LIMIT) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event's current files span more than 64 sessions. The files library refuses a partial view.",
+    });
+  }
+  const headshotContactIds = new Set(
+    headshotContacts.map((contact) => contact._id),
+  );
+  const additionalTaskContactIds = [...taskContactIds].filter(
+    (eventContactId) => !headshotContactIds.has(eventContactId),
+  );
+  if (additionalTaskContactIds.length > FILE_LIBRARY_TASK_CONTACT_LIMIT) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event's task files span more than 16 additional speaker profiles. The files library refuses a partial view.",
+    });
+  }
+
+  const contactById = new Map<Id<"eventContacts">, Doc<"eventContacts">>(
+    headshotContacts.map((contact) => [contact._id, contact]),
+  );
+  for (const eventContactId of additionalTaskContactIds) {
+    const contact = trackHydratedDocument(
+      await ctx.db.get("eventContacts", eventContactId),
+    );
+    if (contact !== null && contact.eventId === caller.event._id) {
+      contactById.set(contact._id, contact);
+    }
+  }
+  const requirementById = new Map<Id<"requirements">, Doc<"requirements">>();
+  for (const requirementId of requirementIds) {
+    const requirement = trackHydratedDocument(
+      await ctx.db.get("requirements", requirementId),
+    );
+    if (requirement !== null && requirement.eventId === caller.event._id) {
+      requirementById.set(requirement._id, requirement);
+    }
+  }
+  const sessionById = new Map<Id<"sessions">, Doc<"sessions">>();
+  for (const sessionId of sessionIds) {
+    const session = trackHydratedDocument(
+      await ctx.db.get("sessions", sessionId),
+    );
+    if (session !== null && session.eventId === caller.event._id) {
+      sessionById.set(session._id, session);
+    }
+  }
+
+  const headshotVersions = new Map<
+    Id<"eventContacts">,
+    Array<Doc<"headshotUploads">>
+  >();
+  for (const upload of headshotUploads) {
+    const versions = headshotVersions.get(upload.eventContactId) ?? [];
+    versions.push(upload);
+    headshotVersions.set(upload.eventContactId, versions);
+  }
+  for (const versions of headshotVersions.values()) {
+    versions.sort(
+      (a, b) =>
+        (a.attachedAt ?? 0) - (b.attachedAt ?? 0) ||
+        a._creationTime - b._creationTime,
+    );
+  }
+  const headshotCandidates = headshotContacts.flatMap((contact) => {
+    const storageId = contact.headshotId;
+    if (storageId === undefined) return [];
+    const versions = headshotVersions.get(contact._id) ?? [];
+    // Replaced/retained/corrupt duplicate tickets must not be presented as
+    // the current upload's provenance. Ambiguity falls back to an honest
+    // generic row instead of choosing a potentially unrelated actor.
+    const matches = versions.filter(
+      (upload) =>
+        upload.status === "attached" && upload.storageId === storageId,
+    );
+    const provenance = matches.length === 1 ? matches[0] : undefined;
+    const version =
+      provenance === undefined
+        ? null
+        : versions.findIndex((row) => row._id === provenance._id) + 1;
+    return [{ contact, storageId, versions, provenance, version }];
+  });
+
+  // Only non-exact actors require user-row hydration. Reads are deduplicated,
+  // sequential, and charged to the same byte budget as other relationships.
+  const uploaderUserIds = new Set<Id<"users">>();
+  const addUploaderIfNeeded = (
+    userId: Id<"users">,
+    eventContactId: Id<"eventContacts"> | undefined,
+  ) => {
+    if (
+      eventContactId === undefined ||
+      contactById.get(eventContactId)?.userId !== userId
+    ) {
+      uploaderUserIds.add(userId);
+    }
+  };
+  for (const candidate of taskCandidates) {
+    addUploaderIfNeeded(
+      candidate.latest.uploadedBy,
+      candidate.instance.eventContactId,
+    );
+  }
+  for (const candidate of headshotCandidates) {
+    if (candidate.provenance !== undefined) {
+      addUploaderIfNeeded(
+        candidate.provenance.uploadedByUserId,
+        candidate.contact._id,
+      );
+    }
+  }
+  const userEntries: Array<readonly [Id<"users">, Doc<"users"> | null]> = [];
+  for (const userId of uploaderUserIds) {
+    userEntries.push([
+      userId,
+      trackHydratedDocument(await ctx.db.get("users", userId)),
+    ]);
+  }
+  const userById = new Map(userEntries);
+  const stableUploaderNames = new Map<Id<"users">, string>();
+  const stableUploaderName = (userId: Id<"users">): string => {
+    const hit = stableUploaderNames.get(userId);
+    if (hit !== undefined) return hit;
+    const profileName = storedPersonName(userById.get(userId) ?? null);
+    const name = profileName ?? "Event contributor";
+    stableUploaderNames.set(userId, name);
+    return name;
+  };
+  const uploaderName = (
+    userId: Id<"users">,
+    eventContactId: Id<"eventContacts"> | undefined,
+  ): string => {
+    const exact =
+      eventContactId === undefined
+        ? undefined
+        : contactById.get(eventContactId);
+    if (exact?.userId === userId) {
+      const exactName = `${exact.firstName} ${exact.lastName}`
+        .trim()
+        .replace(/\s+/g, " ");
+      if (exactName !== "") return exactName;
+    }
+    return stableUploaderName(userId);
+  };
+
+  // A provenance-less headshot may predate normalization or may be copied
+  // from another event. Read only target storage metadata: never source-event
+  // tickets. Unsupported/unknown bytes remain listed but receive no URL or
+  // misleading extension.
+  const genericStorageIds = new Set<Id<"_storage">>();
+  for (const candidate of headshotCandidates) {
+    if (candidate.provenance === undefined) {
+      genericStorageIds.add(candidate.storageId);
+    }
+  }
+  const metadataEntries = await mapInBatches(
+    [...genericStorageIds],
+    async (storageId) =>
+      [storageId, await ctx.db.system.get(storageId)] as const,
+  );
+  const metadataByStorageId = new Map(metadataEntries);
+  const genericFilenameByStorageId = new Map<Id<"_storage">, string | null>();
+  for (const storageId of genericStorageIds) {
+    genericFilenameByStorageId.set(
+      storageId,
+      genericHeadshotDownloadFilename(
+        metadataByStorageId.get(storageId)?.contentType,
+      ),
+    );
+  }
+
+  const downloadableStorageIds = new Set<Id<"_storage">>();
+  for (const candidate of taskCandidates) {
+    downloadableStorageIds.add(candidate.latest.storageId);
+  }
+  for (const candidate of headshotCandidates) {
+    if (
+      candidate.provenance !== undefined ||
+      genericFilenameByStorageId.get(candidate.storageId) !== null
+    ) {
+      downloadableStorageIds.add(candidate.storageId);
+    }
+  }
+  const urlEntries = await mapInBatches(
+    [...downloadableStorageIds],
+    async (storageId) =>
+      [storageId, await ctx.storage.getUrl(storageId)] as const,
+  );
+  const urlByStorageId = new Map(urlEntries);
+
+  const taskRows: LibraryFileRow[] = taskCandidates.map(
+    ({ instance, latest, versionCount }) => {
+      const requirement = requirementById.get(instance.requirementId);
+      const session = sessionById.get(instance.sessionId);
+      const contact =
+        instance.eventContactId === undefined
+          ? null
+          : (contactById.get(instance.eventContactId) ?? null);
+      return {
+        fileId: `task:${instance._id}`,
+        kind: "task",
+        instanceId: instance._id,
+        requirementTitle: requirement?.title ?? "(deleted requirement)",
+        sessionId: instance.sessionId,
+        sessionTitle: session?.title ?? "(deleted session)",
+        speakerName:
+          contact === null
+            ? null
+            : `${contact.firstName} ${contact.lastName}`.trim(),
+        sourceFilename: null,
+        filename: latest.filename,
+        version: latest.version,
+        versionCount,
+        uploadedByName: uploaderName(
+          latest.uploadedBy,
+          instance.eventContactId,
+        ),
+        uploadedAt: latest._creationTime,
+        url: urlByStorageId.get(latest.storageId) ?? null,
+        commentCount: commentCount.get(instance._id) ?? 0,
+      };
+    },
+  );
+  const headshotRows: LibraryFileRow[] = headshotCandidates.map(
+    ({ contact, storageId, versions, provenance, version }) => {
+      const genericFilename = genericFilenameByStorageId.get(storageId) ?? null;
+      return {
+        fileId: `headshot:${contact._id}`,
+        kind: "headshot",
+        instanceId: null,
+        requirementTitle: "Speaker headshot",
+        sessionId: null,
+        sessionTitle: "Speaker profile",
+        speakerName: `${contact.firstName} ${contact.lastName}`.trim(),
+        sourceFilename: provenance?.originalFilename ?? null,
+        filename:
+          provenance === undefined
+            ? (genericFilename ?? "headshot")
+            : headshotDownloadFilename(provenance.originalFilename),
+        version: provenance === undefined || version === 0 ? null : version,
+        versionCount: provenance === undefined ? null : versions.length,
+        uploadedByName:
+          provenance === undefined
+            ? null
+            : uploaderName(provenance.uploadedByUserId, contact._id),
+        uploadedAt: provenance?.attachedAt ?? null,
+        url:
+          provenance === undefined && genericFilename === null
+            ? null
+            : (urlByStorageId.get(storageId) ?? null),
+        commentCount: 0,
+      };
+    },
+  );
+
+  const out = [...taskRows, ...headshotRows];
+  return out.sort((a, b) => {
+    if (a.uploadedAt === null && b.uploadedAt !== null) return 1;
+    if (a.uploadedAt !== null && b.uploadedAt === null) return -1;
+    if (a.uploadedAt !== null && b.uploadedAt !== null) {
+      const newestFirst = b.uploadedAt - a.uploadedAt;
+      if (newestFirst !== 0) return newestFirst;
+    }
+    return (
+      (a.speakerName ?? a.sessionTitle).localeCompare(
+        b.speakerName ?? b.sessionTitle,
+      ) || a.fileId.localeCompare(b.fileId)
+    );
+  });
 }
 
 export type BundleFile = {
@@ -1605,18 +2132,32 @@ export type BundleFile = {
 };
 
 /** The latest version of each selected deliverable, for the client-side ZIP
- * (CNT-14). `instanceIds` empty → everything with an upload. */
+ * (CNT-14). `fileIds` empty means every current file, except the legacy
+ * `instanceIds: []` compatibility path, which still means every task upload. */
 export async function exportBundle(
   ctx: QueryCtx,
   caller: EventCaller,
-  instanceIds: Array<Id<"taskInstances">>,
+  fileIds: string[],
+  legacyTaskOnly = false,
 ): Promise<BundleFile[]> {
   requireOrganizer(caller);
-  const all = await filesLibrary(ctx, caller);
+  if (!legacyTaskOnly && fileIds.length > FILE_LIBRARY_CURRENT_LIMIT) {
+    throw new ConvexError({
+      code: "too_many",
+      message: `Select at most ${FILE_LIBRARY_CURRENT_LIMIT} files at a time.`,
+    });
+  }
+  const all = await filesLibrary(ctx, caller, {
+    includeHeadshots: !legacyTaskOnly,
+  });
+  const eligible = legacyTaskOnly
+    ? all.filter((row) => row.kind === "task")
+    : all;
+  const selected = new Set(fileIds);
   const wanted =
-    instanceIds.length === 0
-      ? all
-      : all.filter((row) => instanceIds.some((id) => id === row.instanceId));
+    selected.size === 0
+      ? eligible
+      : eligible.filter((row) => selected.has(row.fileId));
   return wanted.map((row) => ({
     filename: row.filename,
     url: row.url,

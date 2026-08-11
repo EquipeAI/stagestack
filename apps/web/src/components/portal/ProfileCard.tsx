@@ -134,6 +134,7 @@ export function ProfileCard({
         eventContactId: profile._id,
         contentType: file.type,
         size: file.size,
+        filename: file.name,
       })
       uploadId = ticket.uploadId
       await uploadHeadshot({

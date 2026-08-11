@@ -556,8 +556,10 @@ export type PublishAction =
   | { kind: "agendaItem"; itemId: Id<"agendaItems">; published: boolean };
 
 /** Flip one publication control and ask for the served projection to be
- * rewritten. Rewriting after every flag change keeps the served blob
- * authoritative; an unpublish is just a flag flip + rewrite (decision log #11).
+ * rewritten. Publication intent is independent from editorial approval: a
+ * session flag may be enabled while its draft content remains held back.
+ * Rewriting after every flag change keeps the served blob authoritative; an
+ * unpublish is just a flag flip + rewrite (decision log #11).
  * The rewrite is SCHEDULED, not inline: this mutation is one small write, while
  * the rebuild reads the whole event graph, and a publish console flipping fifty
  * sessions must not run fifty full rebuilds inside fifty user-facing mutations.
@@ -596,16 +598,6 @@ export async function publish(
         action.sessionId,
         action.published,
       );
-      // Listing a session publicly IS approving its content — one click does
-      // both, so the publish console never strands a session behind a second
-      // gate. Un-listing does NOT un-approve (editorial state is stickier).
-      if (action.published && session.contentStatus === "draft") {
-        await ctx.db.patch("sessions", action.sessionId, {
-          contentStatus: "approved",
-          contentStatusSetBy: caller.user._id,
-          contentStatusSetAt: Date.now(),
-        });
-      }
       break;
     }
     case "agendaItem": {

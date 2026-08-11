@@ -31,6 +31,7 @@ const vProposalStatus = v.union(
 );
 
 const vSpeakerInput = v.object({
+  proposalSpeakerId: v.optional(v.id("proposalSpeakers")),
   firstName: v.string(),
   lastName: v.string(),
   email: v.optional(v.string()),
@@ -221,6 +222,7 @@ export const getMyProposal = authedQuery({
       cfpOpenAt: v.optional(v.number()),
       cfpCloseAt: v.optional(v.number()),
       cfpPublished: v.boolean(),
+      archivedAt: v.optional(v.number()),
     }),
     windowOpen: v.boolean(),
   }),
@@ -269,6 +271,26 @@ export const submitProposal = authedMutation({
   returns: v.object({ successMessage: v.union(v.string(), v.null()) }),
   handler: async (ctx, args) => {
     return await Cfp.submitProposal(ctx, ctx.user, args.proposalId);
+  },
+});
+
+export const resubmitProposal = authedMutation({
+  args: {
+    proposalId: v.id("proposals"),
+    expectedContentVersion: v.number(),
+    answers: vAnswers,
+    speakers: v.array(vSpeakerInput),
+  },
+  returns: v.object({ successMessage: v.union(v.string(), v.null()) }),
+  handler: async (ctx, args) => {
+    return await Cfp.resubmitProposal(
+      ctx,
+      ctx.user,
+      args.proposalId,
+      args.expectedContentVersion,
+      args.answers,
+      args.speakers,
+    );
   },
 });
 

@@ -211,6 +211,7 @@ export const beginHeadshotUpload = authedMutation({
     eventContactId: v.id("eventContacts"),
     contentType: v.string(),
     size: v.number(),
+    filename: v.optional(v.string()),
   },
   returns: v.object({
     uploadId: vv.id("headshotUploads"),
@@ -303,6 +304,7 @@ export const myTasks = authedQuery({
         v.object({
           filename: v.string(),
           version: v.number(),
+          uploadedAt: v.number(),
           url: v.union(v.string(), v.null()),
         }),
       ),

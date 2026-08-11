@@ -72,6 +72,7 @@ export const myAssignments = eventQuery({
   returns: v.array(
     v.object({
       reviewId: vv.id("reviews"),
+      contentVersion: v.number(),
       status: vReviewStatus,
       answers: vReviewAnswers,
       round: v.object({
@@ -103,10 +104,19 @@ export const saveDraft = eventMemberMutation({
   args: {
     reviewId: v.id("reviews"),
     answers: vReviewAnswers,
+    // Optional only for deployed pre-fence clients. The model admits an
+    // omitted value exclusively for untouched v0 assignments.
+    expectedContentVersion: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await Reviews.saveReviewDraft(ctx, ctx.caller, args.reviewId, args.answers);
+    await Reviews.saveReviewDraft(
+      ctx,
+      ctx.caller,
+      args.reviewId,
+      args.answers,
+      args.expectedContentVersion,
+    );
     return null;
   },
 });
@@ -115,10 +125,17 @@ export const submit = eventMemberMutation({
   args: {
     reviewId: v.id("reviews"),
     answers: vReviewAnswers,
+    expectedContentVersion: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await Reviews.submitReview(ctx, ctx.caller, args.reviewId, args.answers);
+    await Reviews.submitReview(
+      ctx,
+      ctx.caller,
+      args.reviewId,
+      args.answers,
+      args.expectedContentVersion,
+    );
     return null;
   },
 });
@@ -126,11 +143,18 @@ export const submit = eventMemberMutation({
 export const declareConflict = eventMemberMutation({
   args: {
     reviewId: v.id("reviews"),
+    expectedContentVersion: v.optional(v.number()),
     note: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await Reviews.declareConflict(ctx, ctx.caller, args.reviewId, args.note);
+    await Reviews.declareConflict(
+      ctx,
+      ctx.caller,
+      args.reviewId,
+      args.expectedContentVersion,
+      args.note,
+    );
     return null;
   },
 });

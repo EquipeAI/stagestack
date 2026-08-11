@@ -773,6 +773,11 @@ describe("published blob follows privacy transitions", () => {
       participantId,
       to: "confirmed",
     });
+    await alice.mutation(api.sessions.setContentStatus, {
+      eventSlug,
+      sessionId,
+      to: "approved",
+    });
     await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
     await alice.mutation(api.publish.setSession, {
       eventSlug,

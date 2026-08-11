@@ -7,12 +7,7 @@ import { notFound, requireOrganizer } from "../lib/functions";
 import { mailFromAddress } from "../emails";
 import { logAudit } from "./audit";
 import { routeParticipant } from "./audiences";
-import {
-  emailShell,
-  escapeHtml,
-  notifyOrganizers,
-  siteUrl,
-} from "./comms";
+import { emailShell, escapeHtml, notifyOrganizers, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
 import { assertEventActive, assertText, takeAll } from "./validation";
 
@@ -198,15 +193,13 @@ function counts(participant: Doc<"sessionParticipants">): boolean {
 export function toScheduledThings(args: {
   sessions: Array<Doc<"sessions">>;
   agendaItems: Array<Doc<"agendaItems">>;
-  participantsBySession: Map<
-    Id<"sessions">,
-    Array<Doc<"sessionParticipants">>
-  >;
+  participantsBySession: Map<Id<"sessions">, Array<Doc<"sessionParticipants">>>;
 }): ScheduledThing[] {
   const things: ScheduledThing[] = [];
   for (const session of args.sessions) {
     if (session.status !== "planned") continue;
-    if (session.startsAt === undefined || session.endsAt === undefined) continue;
+    if (session.startsAt === undefined || session.endsAt === undefined)
+      continue;
     things.push({
       type: "session",
       id: session._id,
@@ -387,10 +380,7 @@ type EventSchedule = {
   agendaItems: Array<Doc<"agendaItems">>;
   participants: Array<Doc<"sessionParticipants">>;
   contacts: Array<Doc<"eventContacts">>;
-  participantsBySession: Map<
-    Id<"sessions">,
-    Array<Doc<"sessionParticipants">>
-  >;
+  participantsBySession: Map<Id<"sessions">, Array<Doc<"sessionParticipants">>>;
   contactById: Map<Id<"eventContacts">, Doc<"eventContacts">>;
   conflicts: Map<string, Conflict[]>;
 };
@@ -675,7 +665,11 @@ export async function createAgendaItem(
     startsAt: slot.startsAt,
     endsAt: slot.endsAt,
     roomId: slot.roomId,
-    description: optionalText(input.description, "Description", MAX_DESCRIPTION),
+    description: optionalText(
+      input.description,
+      "Description",
+      MAX_DESCRIPTION,
+    ),
   });
   await logAudit(ctx, {
     orgId: caller.org._id,
@@ -1010,6 +1004,115 @@ async function loadManagers(
   return new Map(ids.map((id, i) => [id, docs[i]]));
 }
 
+/**
+ * Bring only genuinely new accepted-proposal participants onto an already
+ * released slot. Existing participants are never reset or re-emailed here;
+ * their acknowledgement and calendar history belong to the original release.
+ */
+export async function inviteAddedParticipants(
+  ctx: MutationCtx,
+  args: {
+    event: Doc<"events">;
+    session: Doc<"sessions">;
+    participants: Array<Doc<"sessionParticipants">>;
+    actorUserId: Id<"users">;
+  },
+): Promise<void> {
+  assertEventActive(args.event);
+  if (args.session.eventId !== args.event._id) {
+    throw new ConvexError({
+      code: "not_found",
+      message: "The released session does not belong to this event.",
+    });
+  }
+  const released = args.session.releasedSlot;
+  if (released === undefined || args.participants.length === 0) return;
+
+  const seen = new Set<string>();
+  const participants: Array<Doc<"sessionParticipants">> = [];
+  for (const participant of args.participants) {
+    if (
+      participant.sessionId !== args.session._id ||
+      participant.eventId !== args.event._id
+    ) {
+      throw new ConvexError({
+        code: "not_found",
+        message: "A new participant does not belong to the released session.",
+      });
+    }
+    const key = String(participant._id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // A pre-existing acknowledgement proves this was not a newly materialized
+    // participant. Refuse to touch it even if an upstream caller passes it.
+    if (participant.ack !== undefined || !counts(participant)) continue;
+    participants.push(participant);
+  }
+  if (participants.length === 0) return;
+
+  const [managers, rooms] = await Promise.all([
+    loadManagers(ctx, participants),
+    roomNames(ctx, args.event),
+  ]);
+  const sequence = nextIcsSequence(args.session);
+  const now = Date.now();
+  await ctx.db.patch("sessions", args.session._id, { icsSequence: sequence });
+
+  let notified = 0;
+  let unreachable = 0;
+  for (const participant of participants) {
+    const contact = await ctx.db.get(
+      "eventContacts",
+      participant.eventContactId,
+    );
+    if (contact === null || contact.eventId !== args.event._id) {
+      throw new ConvexError({
+        code: "not_found",
+        message: "A new participant's event contact no longer exists.",
+      });
+    }
+    await ctx.db.patch("sessionParticipants", participant._id, {
+      ack: "awaitingAck",
+      ackSetBy: args.actorUserId,
+      ackSetAt: now,
+    });
+    const sent = await queueSlotEmail(ctx, {
+      event: args.event,
+      session: args.session,
+      participant,
+      contact,
+      managerUser:
+        participant.managerUserId === undefined
+          ? undefined
+          : managers.get(participant.managerUserId),
+      slot: released,
+      roomName:
+        released.roomId === undefined ? undefined : rooms.get(released.roomId),
+      sequence,
+      method: "REQUEST",
+      templateKey: "schedule.released",
+      context: { mode: "participant_added" },
+    });
+    if (sent) notified += 1;
+    else unreachable += 1;
+  }
+
+  await logAudit(ctx, {
+    orgId: args.event.orgId,
+    eventId: args.event._id,
+    actorUserId: args.actorUserId,
+    action: "agenda.participantAddedToReleasedSlot",
+    targetType: "session",
+    targetId: args.session._id,
+    meta: {
+      participantIds: participants.map((participant) => participant._id),
+      sequence,
+      notified,
+      unreachable,
+    },
+  });
+}
+
 /** The comms-log kinds queueSlotEmail sends under — nothing else writes them,
  * so they identify a session's invite trail among the event's messages. */
 const CALENDAR_KINDS = [
@@ -1272,7 +1375,8 @@ export async function releaseSlots(
             ? undefined
             : managers.get(participant.managerUserId),
         slot,
-        roomName: slot.roomId === undefined ? undefined : rooms.get(slot.roomId),
+        roomName:
+          slot.roomId === undefined ? undefined : rooms.get(slot.roomId),
         sequence,
         method: "REQUEST",
         // A resend re-delivers the exact notice that failed to send.
@@ -1543,10 +1647,7 @@ export async function setAcknowledgement(
     ackSetAt: now,
   });
 
-  const contact = await ctx.db.get(
-    "eventContacts",
-    participant.eventContactId,
-  );
+  const contact = await ctx.db.get("eventContacts", participant.eventContactId);
   await logAudit(ctx, {
     orgId: args.event.orgId,
     eventId: args.event._id,
@@ -1662,13 +1763,14 @@ export async function autoPlace(
   const placed: AutoPlaceResult["placed"] = [];
   const unplaced: AutoPlaceResult["unplaced"] = [];
   for (const session of unscheduled) {
-    const speakerIds = (
-      schedule.participantsBySession.get(session._id) ?? []
-    )
+    const speakerIds = (schedule.participantsBySession.get(session._id) ?? [])
       .filter((p) => p.state !== "withdrawn" && p.state !== "declined")
       .map((p) => p.eventContactId);
-    let landed: { startsAt: number; endsAt: number; roomId?: Id<"rooms"> } | null =
-      null;
+    let landed: {
+      startsAt: number;
+      endsAt: number;
+      roomId?: Id<"rooms">;
+    } | null = null;
     outer: for (let day = 0; day < dayCount; day += 1) {
       for (let slot = 0; slot < SLOTS_PER_DAY; slot += 1) {
         const startsAt = event.startsAt + day * DAY_MS + slot * HOUR_MS;

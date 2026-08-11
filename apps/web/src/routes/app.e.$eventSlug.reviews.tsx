@@ -9,7 +9,11 @@ import { ReviewPanel } from '~/components/reviews/ReviewPanel'
 import { ProposalReadout } from '~/components/reviews/ProposalReadout'
 import { RoundsPanel } from '~/components/reviews/RoundsPanel'
 import { ProgressPanel } from '~/components/reviews/ProgressPanel'
-import { isUnfinished, submittedCount } from '~/components/reviews/model'
+import {
+  isUnfinished,
+  reviewPanelKey,
+  submittedCount,
+} from '~/components/reviews/model'
 
 // The single screen a reviewer works from: the queue on the left, the proposal
 // in the middle, the review panel on the right. Nothing here navigates away —
@@ -171,7 +175,7 @@ function QueueView({
           {current === null ? null : (
             <div style={{ position: 'sticky', top: 'var(--topbar-height)' }}>
               <ReviewPanel
-                key={current.reviewId}
+                key={reviewPanelKey(current)}
                 eventSlug={eventSlug}
                 assignment={current}
                 archived={archived}

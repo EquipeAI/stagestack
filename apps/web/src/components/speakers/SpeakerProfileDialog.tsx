@@ -112,6 +112,7 @@ export function SpeakerProfileDialog({
         eventContactId: row.eventContactId,
         contentType: file.type,
         size: file.size,
+        filename: file.name,
       })
       uploadId = ticket.uploadId
       await uploadHeadshot({

@@ -70,69 +70,87 @@ export function ProposalReadout({ assignment }: { assignment: Assignment }) {
         )}
       </Card>
 
-      <Card
-        title={proposal.speakers.length === 1 ? 'Speaker' : 'Speakers'}
-        subtitle="Reviewers see professional identity only — never contact details."
-      >
-        {proposal.speakers.length === 0 ? (
+      {assignment.round.anonymized ? (
+        <Card
+          title="Blind review"
+          subtitle="Speaker identities are hidden for this round."
+        >
           <p
             style={{ color: 'var(--text-tertiary)', margin: 'var(--space-0)' }}
           >
-            No speaker was recorded on this proposal.
+            Evaluate only the proposal content shown above.
           </p>
-        ) : (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 'var(--space-5)',
-            }}
-          >
-            {proposal.speakers.map((speaker, index) => (
-              <div
-                key={`${speaker.firstName}-${speaker.lastName}-${index}`}
-                style={{ display: 'flex', gap: 'var(--space-3)' }}
-              >
-                <Avatar name={speakerName(speaker) || 'Speaker'} size={32} />
-                <div style={{ minWidth: 0 }}>
-                  <p
-                    style={{
-                      font: 'var(--type-label)',
-                      color: 'var(--text-primary)',
-                      margin: 'var(--space-0)',
-                    }}
-                  >
-                    {speakerName(speaker) || 'Speaker to be announced'}
-                  </p>
-                  {speaker.tagline === undefined ? null : (
+        </Card>
+      ) : (
+        <Card
+          title={proposal.speakers.length === 1 ? 'Speaker' : 'Speakers'}
+          subtitle="Reviewers see professional identity only — never contact details."
+        >
+          {proposal.speakers.length === 0 ? (
+            <p
+              style={{
+                color: 'var(--text-tertiary)',
+                margin: 'var(--space-0)',
+              }}
+            >
+              No speaker was recorded on this proposal.
+            </p>
+          ) : (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--space-5)',
+              }}
+            >
+              {proposal.speakers.map((speaker, index) => (
+                <div
+                  key={`${speaker.firstName}-${speaker.lastName}-${index}`}
+                  style={{ display: 'flex', gap: 'var(--space-3)' }}
+                >
+                  <Avatar name={speakerName(speaker) || 'Speaker'} size={32} />
+                  <div style={{ minWidth: 0 }}>
                     <p
                       style={{
-                        font: 'var(--type-caption)',
-                        color: 'var(--text-secondary)',
-                        margin: 'var(--space-1) var(--space-0) var(--space-0)',
+                        font: 'var(--type-label)',
+                        color: 'var(--text-primary)',
+                        margin: 'var(--space-0)',
                       }}
                     >
-                      {speaker.tagline}
+                      {speakerName(speaker) || 'Speaker to be announced'}
                     </p>
-                  )}
-                  {speaker.bio === undefined ? null : (
-                    <p
-                      style={{
-                        font: 'var(--type-body)',
-                        color: 'var(--text-secondary)',
-                        whiteSpace: 'pre-wrap',
-                        margin: 'var(--space-2) var(--space-0) var(--space-0)',
-                      }}
-                    >
-                      {speaker.bio}
-                    </p>
-                  )}
+                    {speaker.tagline === undefined ? null : (
+                      <p
+                        style={{
+                          font: 'var(--type-caption)',
+                          color: 'var(--text-secondary)',
+                          margin:
+                            'var(--space-1) var(--space-0) var(--space-0)',
+                        }}
+                      >
+                        {speaker.tagline}
+                      </p>
+                    )}
+                    {speaker.bio === undefined ? null : (
+                      <p
+                        style={{
+                          font: 'var(--type-body)',
+                          color: 'var(--text-secondary)',
+                          whiteSpace: 'pre-wrap',
+                          margin:
+                            'var(--space-2) var(--space-0) var(--space-0)',
+                        }}
+                      >
+                        {speaker.bio}
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
     </div>
   )
 }

@@ -56,10 +56,23 @@ async function userId(t: TestT, key: string): Promise<Id<"users">> {
 }
 
 /** An open CFP with `count` submitted proposals from distinct submitters. */
-async function eventWithProposals(t: TestT, count: number) {
+async function eventWithProposals(
+  t: TestT,
+  count: number,
+  options: {
+    form?: ReturnType<typeof starterFormDef>;
+    answers?: Record<string, string>;
+  } = {},
+) {
   const alice = await signIn(t, "alice");
   const orgSlug = await createOrg(alice, "Acme Conf Co");
   const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+  if (options.form !== undefined) {
+    await alice.mutation(api.cfp.updateWorkingForm, {
+      eventSlug,
+      def: options.form,
+    });
+  }
   await alice.mutation(api.cfp.publishForm, { eventSlug });
   await alice.mutation(api.events.updateSettings, {
     eventSlug,
@@ -74,7 +87,11 @@ async function eventWithProposals(t: TestT, count: number) {
     });
     await submitter.mutation(api.cfp.saveAnswers, {
       proposalId,
-      answers: { ...ANSWERS, talkTitle: `Talk ${i}` },
+      answers: {
+        ...ANSWERS,
+        ...options.answers,
+        talkTitle: `Talk ${i}`,
+      },
     });
     await submitter.mutation(api.cfp.setSpeakers, {
       proposalId,
@@ -107,6 +124,53 @@ async function reviewerFor(
   return { as, id: await userId(t, key) };
 }
 
+/** Release the first proposal as Accepted and the second as Declined. */
+async function releaseOppositeDecisions(
+  organizer: TestUserT,
+  eventSlug: string,
+  proposalIds: [Id<"proposals">, Id<"proposals">],
+): Promise<void> {
+  const [acceptedId, declinedId] = proposalIds;
+  expect(
+    await organizer.mutation(api.sessions.setStatus, {
+      eventSlug,
+      proposalIds: [acceptedId],
+      to: "acceptQueue",
+    }),
+  ).toEqual([{ proposalId: acceptedId, ok: true }]);
+  expect(
+    await organizer.mutation(api.sessions.setStatus, {
+      eventSlug,
+      proposalIds: [declinedId],
+      to: "declineQueue",
+    }),
+  ).toEqual([{ proposalId: declinedId, ok: true }]);
+  expect(
+    await organizer.mutation(api.sessions.release, {
+      eventSlug,
+      proposalIds: [acceptedId, declinedId],
+    }),
+  ).toEqual([
+    { proposalId: acceptedId, ok: true },
+    { proposalId: declinedId, ok: true },
+  ]);
+}
+
+async function proposalStatuses(
+  t: TestT,
+  proposalIds: Array<Id<"proposals">>,
+): Promise<Array<string>> {
+  return await t.run(async (ctx) => {
+    const statuses: Array<string> = [];
+    for (const proposalId of proposalIds) {
+      const proposal = await ctx.db.get("proposals", proposalId);
+      if (proposal === null) throw new Error("no proposal");
+      statuses.push(proposal.status);
+    }
+    return statuses;
+  });
+}
+
 describe("reviews.assign", () => {
   test("bulk assignment skips existing pairs and audits the counts", async () => {
     const t = setupTest();
@@ -131,6 +195,52 @@ describe("reviews.assign", () => {
       await t.run(async (ctx) => ctx.db.query("reviews").collect()),
     ).toHaveLength(2);
     expect(await auditActions(t)).toContain("review.assign");
+  });
+
+  test("assigns accepted and declined proposals into a post-decision round without changing their decisions", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 2);
+    const acceptedAndDeclined: [Id<"proposals">, Id<"proposals">] = [
+      proposalIds[0],
+      proposalIds[1],
+    ];
+    await releaseOppositeDecisions(alice, eventSlug, acceptedAndDeclined);
+    const sam = await reviewerFor(t, eventSlug, "sam");
+    const roundId = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Post-decision review",
+      anonymized: true,
+      reviewerCap: 5,
+      scorecard: [
+        { id: "score", label: "Score", kind: "numeric", required: true },
+      ],
+    });
+
+    const first = await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds: acceptedAndDeclined,
+      reviewerUserId: sam.id,
+      roundId,
+    });
+    expect(first).toEqual({ assigned: 2, skipped: 0 });
+    const again = await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds: acceptedAndDeclined,
+      reviewerUserId: sam.id,
+      roundId,
+    });
+    expect(again).toEqual({ assigned: 0, skipped: 2 });
+
+    const queue = await sam.as.query(api.reviews.myAssignments, { eventSlug });
+    expect(queue).toHaveLength(2);
+    expect(queue.map((row) => row.proposal._id).sort()).toEqual(
+      [...acceptedAndDeclined].sort(),
+    );
+    expect(queue.every((row) => row.round.roundId === roundId)).toBe(true);
+    expect(await proposalStatuses(t, acceptedAndDeclined)).toEqual([
+      "accepted",
+      "declined",
+    ]);
   });
 
   test("rejects a non-member reviewer, a foreign proposal, and a draft proposal", async () => {
@@ -242,6 +352,7 @@ describe("reviews.myAssignments", () => {
     const mine = await rita.as.query(api.reviews.myAssignments, { eventSlug });
     expect(mine).toHaveLength(1);
     expect(mine[0].proposal._id).toBe(proposalIds[0]);
+    expect(mine[0].contentVersion).toBe(0);
     expect(mine[0].status).toBe("assigned");
     // Evaluation content is visible...
     expect(mine[0].proposal.answers.abstract).toBe(ANSWERS.abstract);
@@ -276,6 +387,7 @@ describe("reviews.myAssignments", () => {
     });
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId: before[0].reviewId,
       answers: { score: 4, recommendation: "Accept" },
     });
@@ -287,6 +399,207 @@ describe("reviews.myAssignments", () => {
 });
 
 describe("reviews.saveDraft / submit", () => {
+  test("pre-fence clients may write untouched v0 assignments through every review action", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 3);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: rita.id,
+    });
+    const assignments = await rita.as.query(api.reviews.myAssignments, {
+      eventSlug,
+    });
+    const reviewFor = (proposalId: Id<"proposals">) => {
+      const assignment = assignments.find(
+        (row) => row.proposal._id === proposalId,
+      );
+      if (assignment === undefined) throw new Error("missing assignment");
+      return assignment.reviewId;
+    };
+
+    // Deliberately omit expectedContentVersion: these calls model clients
+    // deployed before the optimistic content fence existed.
+    await rita.as.mutation(api.reviews.saveDraft, {
+      eventSlug,
+      reviewId: reviewFor(proposalIds[0]),
+      answers: { comments: "Legacy v0 draft" },
+    });
+    await rita.as.mutation(api.reviews.submit, {
+      eventSlug,
+      reviewId: reviewFor(proposalIds[1]),
+      answers: { score: 4, recommendation: "Accept" },
+    });
+    await rita.as.mutation(api.reviews.declareConflict, {
+      eventSlug,
+      reviewId: reviewFor(proposalIds[2]),
+      note: "Legacy v0 conflict",
+    });
+
+    const after = await rita.as.query(api.reviews.myAssignments, { eventSlug });
+    expect(
+      after.map((row) => ({
+        proposalId: row.proposal._id,
+        status: row.status,
+        contentVersion: row.contentVersion,
+      })),
+    ).toEqual(
+      expect.arrayContaining([
+        {
+          proposalId: proposalIds[0],
+          status: "draft",
+          contentVersion: 0,
+        },
+        {
+          proposalId: proposalIds[1],
+          status: "submitted",
+          contentVersion: 0,
+        },
+        {
+          proposalId: proposalIds[2],
+          status: "conflict",
+          contentVersion: 0,
+        },
+      ]),
+    );
+  });
+
+  test("a pending autosave cannot resurrect answers for revised proposal content", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: rita.id,
+    });
+    const opened = (
+      await rita.as.query(api.reviews.myAssignments, { eventSlug })
+    )[0];
+    expect(opened.contentVersion).toBe(0);
+
+    const submitter = await signIn(t, "submitter0");
+    const proposal = await submitter.query(api.cfp.getMyProposal, {
+      proposalId: proposalIds[0],
+    });
+    await submitter.mutation(api.cfp.resubmitProposal, {
+      proposalId: proposalIds[0],
+      expectedContentVersion: proposal.proposal.contentVersion ?? 0,
+      answers: {
+        ...proposal.proposal.answers,
+        abstract: "Revised after the reviewer opened the assignment.",
+      },
+      speakers: proposal.speakers.map((speaker) => ({
+        proposalSpeakerId: speaker._id,
+        firstName: speaker.firstName,
+        lastName: speaker.lastName,
+        email: speaker.email,
+        phone: speaker.phone,
+        tagline: speaker.tagline,
+        bio: speaker.bio,
+        headshotId: speaker.headshotId,
+        links: speaker.links,
+        isPrimary: speaker.isPrimary,
+        role: speaker.role,
+      })),
+    });
+    const beforeLegacyAttempts = await t.run(async (ctx) => {
+      const row = await ctx.db.get("reviews", opened.reviewId);
+      if (row === null) throw new Error("missing review");
+      return row;
+    });
+
+    // A deployed pre-fence client has no version to echo. Compatibility is
+    // safe only at v0, so every old write is rejected after this revision.
+    await expectRejectedWith(
+      rita.as.mutation(api.reviews.saveDraft, {
+        eventSlug,
+        reviewId: opened.reviewId,
+        answers: { comments: "Unversioned stale draft" },
+      }),
+      "client_upgrade_required",
+    );
+    await expectRejectedWith(
+      rita.as.mutation(api.reviews.submit, {
+        eventSlug,
+        reviewId: opened.reviewId,
+        answers: { score: 5, recommendation: "Accept" },
+      }),
+      "client_upgrade_required",
+    );
+    await expectRejectedWith(
+      rita.as.mutation(api.reviews.declareConflict, {
+        eventSlug,
+        reviewId: opened.reviewId,
+      }),
+      "client_upgrade_required",
+    );
+    expect(
+      (await rita.as.query(api.reviews.myAssignments, { eventSlug }))[0],
+    ).toMatchObject({
+      reviewId: opened.reviewId,
+      contentVersion: 1,
+      status: "assigned",
+      answers: {},
+    });
+    expect(
+      await t.run(async (ctx) => await ctx.db.get("reviews", opened.reviewId)),
+    ).toEqual(beforeLegacyAttempts);
+
+    // These model the old panel's queued autosave, submit shortcut, and
+    // conflict click carrying an explicitly observed but stale v0 fence.
+    await expectRejectedWith(
+      rita.as.mutation(api.reviews.saveDraft, {
+        eventSlug,
+        reviewId: opened.reviewId,
+        expectedContentVersion: opened.contentVersion,
+        answers: { comments: "Old-content draft" },
+      }),
+      "stale_proposal_content",
+    );
+    await expectRejectedWith(
+      rita.as.mutation(api.reviews.submit, {
+        eventSlug,
+        reviewId: opened.reviewId,
+        expectedContentVersion: opened.contentVersion,
+        answers: { score: 5, recommendation: "Accept" },
+      }),
+      "stale_proposal_content",
+    );
+    await expectRejectedWith(
+      rita.as.mutation(api.reviews.declareConflict, {
+        eventSlug,
+        reviewId: opened.reviewId,
+        expectedContentVersion: opened.contentVersion,
+      }),
+      "stale_proposal_content",
+    );
+
+    const refreshed = (
+      await rita.as.query(api.reviews.myAssignments, { eventSlug })
+    )[0];
+    expect(refreshed).toMatchObject({
+      reviewId: opened.reviewId,
+      contentVersion: 1,
+      status: "assigned",
+      answers: {},
+    });
+    await rita.as.mutation(api.reviews.saveDraft, {
+      eventSlug,
+      reviewId: refreshed.reviewId,
+      expectedContentVersion: refreshed.contentVersion,
+      answers: { comments: "Fresh-content draft" },
+    });
+    expect(
+      (await rita.as.query(api.reviews.myAssignments, { eventSlug }))[0],
+    ).toMatchObject({
+      contentVersion: 1,
+      status: "draft",
+      answers: { comments: "Fresh-content draft" },
+    });
+  });
+
   test("draft → submit → organizer summary aggregates the submitted reviews", async () => {
     const t = setupTest();
     const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1);
@@ -313,6 +626,7 @@ describe("reviews.saveDraft / submit", () => {
     // Autosave: partial patch, status becomes draft.
     await rita.as.mutation(api.reviews.saveDraft, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId: ritaReview,
       answers: { comments: "Halfway through." },
     });
@@ -339,11 +653,13 @@ describe("reviews.saveDraft / submit", () => {
 
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId: ritaReview,
       answers: { score: 5, recommendation: "Accept", comments: "Strong." },
     });
     await raj.as.mutation(api.reviews.submit, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId: rajReview,
       answers: { score: 2, recommendation: "Reject" },
     });
@@ -381,6 +697,7 @@ describe("reviews.saveDraft / submit", () => {
     )!.submittedAt;
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId: ritaReview,
       answers: { score: 3, recommendation: "Maybe" },
     });
@@ -413,6 +730,7 @@ describe("reviews.saveDraft / submit", () => {
     await expectRejectedWith(
       rita.as.mutation(api.reviews.saveDraft, {
         eventSlug,
+        expectedContentVersion: 0,
         reviewId,
         answers: { score: 6 },
       }),
@@ -421,6 +739,7 @@ describe("reviews.saveDraft / submit", () => {
     await expectRejectedWith(
       rita.as.mutation(api.reviews.saveDraft, {
         eventSlug,
+        expectedContentVersion: 0,
         reviewId,
         answers: { score: 3.5 },
       }),
@@ -429,6 +748,7 @@ describe("reviews.saveDraft / submit", () => {
     await expectRejectedWith(
       rita.as.mutation(api.reviews.saveDraft, {
         eventSlug,
+        expectedContentVersion: 0,
         reviewId,
         answers: { comments: "x".repeat(5001) },
       }),
@@ -437,12 +757,14 @@ describe("reviews.saveDraft / submit", () => {
 
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId,
       answers: { score: 4, recommendation: "Accept" },
     });
     await expectRejectedWith(
       rita.as.mutation(api.reviews.saveDraft, {
         eventSlug,
+        expectedContentVersion: 0,
         reviewId,
         answers: { comments: "sneaky edit" },
       }),
@@ -472,6 +794,7 @@ describe("reviews.saveDraft / submit", () => {
     await expectRejectedWith(
       raj.as.mutation(api.reviews.saveDraft, {
         eventSlug,
+        expectedContentVersion: 0,
         reviewId: ritaReview,
         answers: { comments: "not mine" },
       }),
@@ -480,6 +803,7 @@ describe("reviews.saveDraft / submit", () => {
     await expectRejectedWith(
       raj.as.mutation(api.reviews.submit, {
         eventSlug,
+        expectedContentVersion: 0,
         reviewId: ritaReview,
         answers: { score: 1, recommendation: "Reject" },
       }),
@@ -489,6 +813,7 @@ describe("reviews.saveDraft / submit", () => {
     await expectRejectedWith(
       alice.mutation(api.reviews.submit, {
         eventSlug,
+        expectedContentVersion: 0,
         reviewId: ritaReview,
         answers: { score: 5, recommendation: "Accept" },
       }),
@@ -519,6 +844,7 @@ describe("reviews.unassign", () => {
 
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId: mine[1].reviewId,
       answers: { score: 4, recommendation: "Accept" },
     });
@@ -749,6 +1075,7 @@ describe("reviews.rounds", () => {
     )[0].reviewId;
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId,
       answers: { orig: 4, rel: 2, rec: "Accept", comments: "Solid." },
     });
@@ -778,6 +1105,7 @@ describe("reviews.rounds", () => {
     await expectRejectedWith(
       raj.as.mutation(api.reviews.submit, {
         eventSlug,
+        expectedContentVersion: 0,
         reviewId: rajReview,
         answers: { orig: 5 },
       }),
@@ -816,6 +1144,92 @@ describe("reviews.rounds", () => {
       proposalId: proposalIds[0],
     });
     expect(detail.speakers[0].firstName).toBe("Speaker0");
+  });
+
+  test("blind review excludes every answer in the identity section without hiding same-labeled proposal fields (ABS-07)", async () => {
+    const t = setupTest();
+    const identityBioId = "speaker-bio-profile";
+    const proposalBioId = "speaker-bio-session";
+    const identityBio = "Identity profile answer for a named employer.";
+    const proposalBio = "Session-only context reviewers need to evaluate.";
+    const def = starterFormDef();
+    def.sections[0].fields.push({
+      id: identityBioId,
+      kind: "textarea",
+      label: "Speaker bio",
+      required: false,
+    });
+    def.sections[1].fields.push({
+      id: proposalBioId,
+      kind: "textarea",
+      label: "Speaker bio",
+      required: false,
+    });
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1, {
+      form: def,
+      answers: {
+        [identityBioId]: identityBio,
+        [proposalBioId]: proposalBio,
+      },
+    });
+    const blindReviewer = await reviewerFor(t, eventSlug, "blind-reviewer");
+    const openReviewer = await reviewerFor(t, eventSlug, "open-reviewer");
+    const scorecard = [
+      { id: "score", label: "Score", kind: "numeric" as const, required: true },
+    ];
+    const blindRoundId = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Blind Round",
+      anonymized: true,
+      scorecard,
+    });
+    const openRoundId = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Open Round",
+      anonymized: false,
+      scorecard,
+    });
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: blindReviewer.id,
+      roundId: blindRoundId,
+    });
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: openReviewer.id,
+      roundId: openRoundId,
+    });
+
+    const blind = (
+      await blindReviewer.as.query(api.reviews.myAssignments, { eventSlug })
+    )[0];
+    expect(blind.proposal.speakers).toEqual([]);
+    expect(blind.proposal.answers[identityBioId]).toBeUndefined();
+    expect(blind.proposal.fields.map((field) => field.id)).not.toContain(
+      identityBioId,
+    );
+    expect(blind.proposal.answers[proposalBioId]).toBe(proposalBio);
+    expect(blind.proposal.fields.map((field) => field.id)).toContain(
+      proposalBioId,
+    );
+    const blindPayload = JSON.stringify(blind.proposal);
+    expect(blindPayload).not.toContain(identityBio);
+    expect(blindPayload).not.toContain("Speaker0");
+    expect(blindPayload).not.toContain("speaker0@example.com");
+    expect(blindPayload).not.toContain("CTO, Acme");
+    expect(blindPayload).not.toContain("Builds things.");
+
+    const open = (
+      await openReviewer.as.query(api.reviews.myAssignments, { eventSlug })
+    )[0];
+    expect(open.proposal.answers[identityBioId]).toBe(identityBio);
+    expect(open.proposal.answers[proposalBioId]).toBe(proposalBio);
+    expect(open.proposal.fields.map((field) => field.id)).toContain(
+      identityBioId,
+    );
+    expect(open.proposal.speakers[0].firstName).toBe("Speaker0");
   });
 
   test("autoDistribute spreads load, respects the cap, and never duplicates (ABS-06)", async () => {
@@ -870,6 +1284,59 @@ describe("reviews.rounds", () => {
     expect(second.unplaced).toBe(2);
   });
 
+  test("auto-distributes exactly the selected accepted and declined proposals into a later reviewer queue", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 2);
+    const acceptedAndDeclined: [Id<"proposals">, Id<"proposals">] = [
+      proposalIds[0],
+      proposalIds[1],
+    ];
+    await releaseOppositeDecisions(alice, eventSlug, acceptedAndDeclined);
+    const sam = await reviewerFor(t, eventSlug, "sam");
+    const roundId = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Initial Review",
+      anonymized: true,
+      reviewerCap: 5,
+      scorecard: [
+        { id: "score", label: "Score", kind: "numeric", required: true },
+      ],
+    });
+    await alice.mutation(api.reviews.addRoundReviewer, {
+      eventSlug,
+      roundId,
+      userId: sam.id,
+    });
+
+    const result = await alice.mutation(api.reviews.autoDistribute, {
+      eventSlug,
+      roundId,
+      proposalIds: acceptedAndDeclined,
+    });
+    expect(result).toEqual({
+      assigned: 2,
+      unplaced: 0,
+      perReviewer: [{ userId: sam.id, assigned: 2, total: 2 }],
+    });
+    const again = await alice.mutation(api.reviews.autoDistribute, {
+      eventSlug,
+      roundId,
+      proposalIds: acceptedAndDeclined,
+    });
+    expect(again.assigned).toBe(0);
+
+    const queue = await sam.as.query(api.reviews.myAssignments, { eventSlug });
+    expect(queue).toHaveLength(2);
+    expect(queue.map((row) => row.proposal._id).sort()).toEqual(
+      [...acceptedAndDeclined].sort(),
+    );
+    expect(queue.every((row) => row.round.roundId === roundId)).toBe(true);
+    expect(await proposalStatuses(t, acceptedAndDeclined)).toEqual([
+      "accepted",
+      "declined",
+    ]);
+  });
+
   test("conflict of interest removes the item from the actionable queue (ABS-12)", async () => {
     const t = setupTest();
     const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1);
@@ -884,6 +1351,7 @@ describe("reviews.rounds", () => {
     )[0].reviewId;
     await rita.as.mutation(api.reviews.declareConflict, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId,
       note: "Former colleague.",
     });
@@ -893,6 +1361,7 @@ describe("reviews.rounds", () => {
     await expectRejectedWith(
       rita.as.mutation(api.reviews.saveDraft, {
         eventSlug,
+        expectedContentVersion: 0,
         reviewId,
         answers: { score: 3 },
       }),
@@ -966,11 +1435,13 @@ describe("reviews.rounds", () => {
     const mine = await rita.as.query(api.reviews.myAssignments, { eventSlug });
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId: mine[0].reviewId,
       answers: { score: 4, recommendation: "Accept" },
     });
     await rita.as.mutation(api.reviews.submit, {
       eventSlug,
+      expectedContentVersion: 0,
       reviewId: mine[1].reviewId,
       answers: { score: 5, recommendation: "Accept" },
     });

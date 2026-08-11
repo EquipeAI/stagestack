@@ -416,6 +416,9 @@ export default defineSchema({
     // Form version the answers were last validated against (stamped on
     // submit/resubmit).
     formVersion: v.number(),
+    /** Monotonic proposal-content revision. Optional for pre-fence rows, which
+     * read as version 0 until their first content-changing resubmit. */
+    contentVersion: v.optional(v.number()),
     submittedAt: v.optional(v.number()),
     updatedAt: v.number(),
     withdrawnAt: v.optional(v.number()),
@@ -508,6 +511,9 @@ export default defineSchema({
     ),
     /** Scorecard answers keyed by criterion id (W2). */
     answers: v.optional(vReviewAnswers),
+    /** Proposal content revision these answers evaluate. Optional legacy rows
+     * are version 0; writes must fence against both this and the proposal. */
+    contentVersion: v.optional(v.number()),
     /** Weighted mean of this review's numeric criteria, precomputed on
      * submit so list views never re-derive it. */
     weightedScore: v.optional(v.number()),
@@ -551,7 +557,9 @@ export default defineSchema({
     .index("by_contactId", ["contactId"])
     .index("by_proposalSpeakerId", ["proposalSpeakerId"])
     .index("by_userId", ["userId"])
+    .index("by_eventId_and_userId", ["eventId", "userId"])
     .index("by_eventId_and_email", ["eventId", "email"])
+    .index("by_eventId_and_headshotId", ["eventId", "headshotId"])
     .index("by_headshotId", ["headshotId"]),
 
   // One-time, actor-bound headshot upload tickets. Only the authenticated HTTP
@@ -566,6 +574,9 @@ export default defineSchema({
     purpose: v.literal("speakerHeadshot"),
     expectedContentType: v.string(),
     expectedSize: v.number(),
+    // Browser-provided basename, validated at authenticated ticket minting.
+    // Optional for tickets created before provenance was retained.
+    originalFilename: v.optional(v.string()),
     // Raw source bytes live only long enough for the private Node action to
     // decode and normalize them. The HTTP action records the fresh storage id
     // immediately so the sweeper can recover a crashed/lost-response action.
@@ -619,6 +630,7 @@ export default defineSchema({
   })
     .index("by_storageId", ["storageId"])
     .index("by_sourceStorageId", ["sourceStorageId"])
+    .index("by_eventId_and_attachedAt", ["eventId", "attachedAt"])
     .index("by_sourceCleanupPending_and_sourceStoredAt", [
       "sourceCleanupPending",
       "sourceStoredAt",
@@ -669,7 +681,8 @@ export default defineSchema({
     cancelledAt: v.optional(v.number()),
     // Content approval (W5): draft content never reaches public output.
     // Absent on legacy rows = approved (they were already being served).
-    // The publish console's per-session toggle approves as it lists.
+    // Approval and the publish console's per-session listing flag are
+    // independent: an enabled draft remains held back until approved.
     contentStatus: v.optional(
       v.union(v.literal("draft"), v.literal("approved")),
     ),

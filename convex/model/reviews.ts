@@ -4,8 +4,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
-import type { AnswerValue } from "../shared/formDef";
-import { allFields } from "../shared/formDef";
+import type { AnswerValue, FormDef } from "../shared/formDef";
 import { findForm } from "./cfp";
 import {
   MAX_SCORECARD_FIELDS,
@@ -29,8 +28,9 @@ import { sendLoggedEmail, siteUrl } from "./comms";
 //     hold an organizer role" — there is deliberately NO reviewer-facing
 //     proposal-by-id capability; `myAssignments` is the only door.
 //   * "they can see evaluation content and speaker professional identity, but
-//     not contact details" — the speaker projection carries name/tagline/bio
-//     and never email or phone.
+//     not contact details" — the non-blind speaker projection carries
+//     name/tagline/bio and never email or phone. Blind rounds also remove every
+//     answer from the form section that owns the locked identity fields.
 //   * "Reviewers see only their own scores/comments" — every reviewer-facing
 //     write and read is scoped to `caller.user`.
 //   * "organizers see progress status, not unfinished content" — draft scores
@@ -60,13 +60,16 @@ function assertCompleteScan(
   }
 }
 
-/** Proposals that may be reviewed: submitted and not yet decided. Queued
- * proposals stay reviewable — staging is an internal, reversible step. */
-const REVIEWABLE: ReadonlySet<Doc<"proposals">["status"]> = new Set([
-  "pending",
-  "acceptQueue",
-  "declineQueue",
-]);
+/**
+ * Review rounds are independent of the decision pipeline. Any proposal that
+ * was submitted may enter another round even after its Accepted/Declined
+ * decision was released; assigning review work must never rewrite or reopen
+ * that decision. Drafts were never submitted, and withdrawn proposals remain
+ * terminal and absent from active reviewer queues.
+ */
+function canEnterReviewRound(proposal: Doc<"proposals">): boolean {
+  return proposal.status !== "draft" && proposal.status !== "withdrawn";
+}
 
 import { assertEventActive } from "./validation";
 export { assertEventActive };
@@ -595,7 +598,7 @@ export async function assignReviewers(
     if (proposal === null || proposal.eventId !== caller.event._id) {
       notFound("proposal", "No such proposal on this event.");
     }
-    if (!REVIEWABLE.has(proposal.status)) {
+    if (!canEnterReviewRound(proposal)) {
       invalidStatus(
         `"${proposal.title}" isn't in review (it is ${proposal.status}).`,
       );
@@ -610,6 +613,7 @@ export async function assignReviewers(
       reviewerUserId,
       roundId: round._id,
       status: "assigned",
+      contentVersion: proposal.contentVersion ?? 0,
       updatedAt: now,
     });
     assigned += 1;
@@ -673,7 +677,7 @@ export async function autoDistribute(
       if (proposal === null || proposal.eventId !== caller.event._id) {
         notFound("proposal", "No such proposal on this event.");
       }
-      if (REVIEWABLE.has(proposal.status)) candidates.push(proposal);
+      if (canEnterReviewRound(proposal)) candidates.push(proposal);
     }
   } else {
     const all = await ctx.db
@@ -683,7 +687,7 @@ export async function autoDistribute(
       )
       .take(REVIEW_SCAN + 1);
     assertCompleteScan(all, REVIEW_SCAN, "proposals");
-    candidates = all.filter((p) => REVIEWABLE.has(p.status));
+    candidates = all.filter(canEnterReviewRound);
   }
 
   // Current load + existing pairs in one event-wide scan. Legacy rows (no
@@ -749,6 +753,7 @@ export async function autoDistribute(
         reviewerUserId: target,
         roundId: round._id,
         status: "assigned",
+        contentVersion: proposal.contentVersion ?? 0,
         updatedAt: now,
       });
       pairs.add(`${proposal._id}:${target}`);
@@ -827,6 +832,9 @@ export type ReviewerField = {
 
 export type AssignmentRow = {
   reviewId: Id<"reviews">;
+  /** Proposal content revision this assignment currently evaluates. Every
+   * reviewer write must echo it back as an optimistic-concurrency fence. */
+  contentVersion: number;
   status: ReviewStatus;
   /** Scorecard answers (legacy rows are translated on read). */
   answers: ReviewAnswers;
@@ -862,6 +870,63 @@ function reviewerSpeaker(row: Doc<"proposalSpeakers">): ReviewerSpeaker {
   };
 }
 
+const SPEAKER_IDENTITY_SYSTEM_KEYS: ReadonlySet<string> = new Set([
+  "firstName",
+  "lastName",
+  "email",
+]);
+
+type ReviewerProjection = {
+  fields: ReviewerField[];
+  allowedIds: ReadonlySet<string>;
+  fileFieldIds: ReadonlySet<string>;
+};
+
+/**
+ * The form's locked identity fields establish a structural privacy boundary:
+ * every custom question in that section belongs to the submitter/speaker
+ * profile, regardless of its editable label. Blind rounds omit the whole
+ * section, so an organizer-authored bio/company/role question cannot leak an
+ * author identity. Non-blind rounds retain those professional-profile answers.
+ */
+function reviewerProjection(
+  def: FormDef | undefined,
+  anonymized: boolean,
+): ReviewerProjection {
+  const fields: ReviewerField[] =
+    def === undefined
+      ? []
+      : def.sections.flatMap((section) => {
+          const identitySection = section.fields.some(
+            (field) =>
+              field.systemKey !== undefined &&
+              SPEAKER_IDENTITY_SYSTEM_KEYS.has(field.systemKey),
+          );
+          if (anonymized && identitySection) return [];
+          return section.fields
+            .filter(
+              (field) =>
+                field.systemKey !== "firstName" &&
+                field.systemKey !== "lastName" &&
+                field.systemKey !== "email" &&
+                field.kind !== "email" &&
+                field.kind !== "phone",
+            )
+            .map((field) => ({
+              id: field.id,
+              label: field.label,
+              kind: field.kind,
+            }));
+        });
+  return {
+    fields,
+    allowedIds: new Set(fields.map((field) => field.id)),
+    fileFieldIds: new Set(
+      fields.filter((field) => field.kind === "file").map((field) => field.id),
+    ),
+  };
+}
+
 /**
  * Everything this reviewer has been asked to evaluate, unfinished first
  * (M2 "Submit & Next"). Organizers who assigned themselves see their own rows
@@ -881,26 +946,13 @@ export async function myAssignments(
 
   // Reviewers see evaluation content and professional identity only
   // (MILESTONES M2): contact-detail fields never cross the wire — neither
-  // the system identity fields nor any email/phone-kind custom field.
+  // the system identity fields nor any email/phone-kind custom field. Blind
+  // rounds additionally remove the entire section that owns system identity,
+  // including organizer-authored profile questions such as bio or company.
   const form = await findForm(ctx, caller.event._id);
   const def = form?.published ?? form?.working;
-  const evaluationFields: ReviewerField[] =
-    def === undefined
-      ? []
-      : allFields(def)
-          .filter(
-            (f) =>
-              f.systemKey !== "firstName" &&
-              f.systemKey !== "lastName" &&
-              f.systemKey !== "email" &&
-              f.kind !== "email" &&
-              f.kind !== "phone",
-          )
-          .map((f) => ({ id: f.id, label: f.label, kind: f.kind }));
-  const allowedIds = new Set(evaluationFields.map((f) => f.id));
-  const fileFieldIds = new Set(
-    evaluationFields.filter((f) => f.kind === "file").map((f) => f.id),
-  );
+  const nonBlindProjection = reviewerProjection(def, false);
+  const blindProjection = reviewerProjection(def, true);
 
   const rounds = await listRoundDocs(ctx, caller.event._id);
   const rows: AssignmentRow[] = [];
@@ -910,6 +962,7 @@ export async function myAssignments(
     // withdrawal must leave every active review queue (MILESTONES M1).
     if (proposal === null || proposal.status === "withdrawn") continue;
     const round = roundForReview(review, rounds);
+    const projection = round.anonymized ? blindProjection : nonBlindProjection;
     const speakers = await ctx.db
       .query("proposalSpeakers")
       .withIndex("by_proposalId", (q) => q.eq("proposalId", proposal._id))
@@ -917,10 +970,10 @@ export async function myAssignments(
     const answers: Record<string, AnswerValue> = {};
     const fileUrls: Record<string, string | null> = {};
     for (const [fieldId, value] of Object.entries(proposal.answers)) {
-      if (!allowedIds.has(fieldId)) continue;
+      if (!projection.allowedIds.has(fieldId)) continue;
       answers[fieldId] = value;
       if (
-        fileFieldIds.has(fieldId) &&
+        projection.fileFieldIds.has(fieldId) &&
         typeof value === "string" &&
         value.length > 0
       ) {
@@ -933,6 +986,7 @@ export async function myAssignments(
     }
     rows.push({
       reviewId: review._id,
+      contentVersion: proposal.contentVersion ?? 0,
       status: review.status,
       answers: review.answers ?? legacyAnswers(review),
       round: {
@@ -947,7 +1001,7 @@ export async function myAssignments(
         _id: proposal._id,
         title: proposal.title,
         answers,
-        fields: evaluationFields,
+        fields: projection.fields,
         fileUrls,
         // Blind round: no author identity of any kind crosses the wire
         // (ABS-07). The professional-identity-only projection applies to
@@ -986,11 +1040,49 @@ async function requireOwnReview(
 async function assertProposalStillReviewable(
   ctx: QueryCtx,
   review: Doc<"reviews">,
-): Promise<void> {
+  expectedContentVersion: number | undefined,
+): Promise<{ proposal: Doc<"proposals">; contentVersion: number }> {
+  if (
+    expectedContentVersion !== undefined &&
+    (!Number.isSafeInteger(expectedContentVersion) ||
+      expectedContentVersion < 0)
+  ) {
+    throw new ConvexError({
+      code: "invalid_content_version",
+      message: "Reload this review before saving it.",
+    });
+  }
   const proposal = await ctx.db.get("proposals", review.proposalId);
   if (proposal === null || proposal.status === "withdrawn") {
     invalidStatus("This proposal was withdrawn — it no longer needs review.");
   }
+  const proposalContentVersion = proposal.contentVersion ?? 0;
+  const reviewContentVersion = review.contentVersion ?? 0;
+  if (expectedContentVersion === undefined) {
+    // Compatibility window for clients deployed before the content fence was
+    // added. They may write only the legacy state that cannot be stale: both
+    // sides still at v0. Once either side advances, an explicit observed
+    // version is mandatory so an old tab cannot overwrite revised work.
+    if (proposalContentVersion !== 0 || reviewContentVersion !== 0) {
+      throw new ConvexError({
+        code: "client_upgrade_required",
+        message:
+          "This proposal has newer content. Refresh the review to load the latest version before saving; update the app if the message persists.",
+      });
+    }
+    return { proposal, contentVersion: 0 };
+  }
+  if (
+    proposalContentVersion !== expectedContentVersion ||
+    reviewContentVersion !== expectedContentVersion
+  ) {
+    throw new ConvexError({
+      code: "stale_proposal_content",
+      message:
+        "This proposal changed since you opened the review. Reload it before saving so old answers cannot be applied to the revised content.",
+    });
+  }
+  return { proposal, contentVersion: expectedContentVersion };
 }
 
 /** The round a mutation should validate a review's answers against. */
@@ -1054,10 +1146,15 @@ export async function saveReviewDraft(
   caller: EventCaller,
   reviewId: Id<"reviews">,
   patch: ReviewAnswers,
+  expectedContentVersion: number | undefined,
 ): Promise<void> {
   assertEventActive(caller.event);
   const review = await requireOwnReview(ctx, caller, reviewId);
-  await assertProposalStillReviewable(ctx, review);
+  const { contentVersion } = await assertProposalStillReviewable(
+    ctx,
+    review,
+    expectedContentVersion,
+  );
   if (review.status === "locked") {
     invalidStatus("This review is locked — ask an organizer to reopen it.");
   }
@@ -1078,6 +1175,7 @@ export async function saveReviewDraft(
   await ctx.db.patch("reviews", reviewId, {
     status: "draft",
     answers: merged,
+    contentVersion,
     updatedAt: Date.now(),
   });
 }
@@ -1092,10 +1190,15 @@ export async function submitReview(
   caller: EventCaller,
   reviewId: Id<"reviews">,
   answers: ReviewAnswers,
+  expectedContentVersion: number | undefined,
 ): Promise<void> {
   assertEventActive(caller.event);
   const review = await requireOwnReview(ctx, caller, reviewId);
-  await assertProposalStillReviewable(ctx, review);
+  const { contentVersion } = await assertProposalStillReviewable(
+    ctx,
+    review,
+    expectedContentVersion,
+  );
   if (review.status === "locked") {
     invalidStatus("This review is locked — ask an organizer to reopen it.");
   }
@@ -1114,6 +1217,7 @@ export async function submitReview(
   await ctx.db.patch("reviews", reviewId, {
     status: "submitted",
     answers,
+    contentVersion,
     weightedScore: weightedScore ?? undefined,
     ...legacyMirror(round.scorecard, answers, weightedScore),
     submittedAt: review.submittedAt ?? now,
@@ -1141,10 +1245,16 @@ export async function declareConflict(
   ctx: MutationCtx,
   caller: EventCaller,
   reviewId: Id<"reviews">,
+  expectedContentVersion: number | undefined,
   note?: string,
 ): Promise<void> {
   assertEventActive(caller.event);
   const review = await requireOwnReview(ctx, caller, reviewId);
+  const { contentVersion } = await assertProposalStillReviewable(
+    ctx,
+    review,
+    expectedContentVersion,
+  );
   if (review.status === "submitted" || review.status === "locked") {
     invalidStatus("This review is already submitted.");
   }
@@ -1154,6 +1264,7 @@ export async function declareConflict(
   await ctx.db.patch("reviews", reviewId, {
     status: "conflict",
     conflictNote: note,
+    contentVersion,
     updatedAt: Date.now(),
   });
   await logAudit(ctx, {

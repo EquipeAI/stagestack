@@ -15,6 +15,11 @@ export type Answers = Assignment['proposal']['answers']
 export type ReviewAnswers = Assignment['answers']
 export type ScorecardField = Assignment['round']['scorecard'][number]
 
+/** Remount local answer/autosave state whenever the proposal content changes. */
+export function reviewPanelKey(assignment: Assignment): string {
+  return `${assignment.reviewId}:${assignment.contentVersion}`
+}
+
 /** Review state, written exactly as the product says it. */
 export const REVIEW_STATUS_LABEL: Record<ReviewStatus, string> = {
   assigned: 'Awaiting Review',

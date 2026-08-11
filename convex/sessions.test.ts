@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   auditActions,
   createEvent,
@@ -24,6 +24,22 @@ const ANSWERS: Record<string, string> = {
   talkTitle: "Convex in anger",
   abstract: "Everything we learned shipping a reactive backend.",
 };
+
+function speakerInput(speaker: Doc<"proposalSpeakers">) {
+  return {
+    proposalSpeakerId: speaker._id,
+    firstName: speaker.firstName,
+    lastName: speaker.lastName,
+    email: speaker.email,
+    phone: speaker.phone,
+    tagline: speaker.tagline,
+    bio: speaker.bio,
+    headshotId: speaker.headshotId,
+    links: speaker.links,
+    isPrimary: speaker.isPrimary,
+    role: speaker.role,
+  };
+}
 
 async function messageRows(t: TestT) {
   return await t.run(async (ctx) => ctx.db.query("messages").collect());
@@ -126,9 +142,9 @@ describe("sessions.setStatus (staging)", () => {
     // ...the submitter sees "pending" — THE masking rule (MILESTONES M2).
     const mine = await bob.query(api.cfp.getMyProposal, { proposalId });
     expect(mine.proposal.status).toBe("pending");
-    expect(
-      (await bob.query(api.cfp.myProposals, {}))[0].proposal.status,
-    ).toBe("pending");
+    expect((await bob.query(api.cfp.myProposals, {}))[0].proposal.status).toBe(
+      "pending",
+    );
 
     // Nothing was sent.
     expect(await messageRows(t)).toHaveLength(before);
@@ -140,15 +156,22 @@ describe("sessions.setStatus (staging)", () => {
     const { alice, bob, eventSlug, proposalId } = await submittedProposal(t);
     await stage(alice, eventSlug, proposalId, "acceptQueue");
     const before = (await messageRows(t)).length;
+    const queued = await bob.query(api.cfp.getMyProposal, { proposalId });
 
-    // Editing stays allowed while queued...
-    await bob.mutation(api.cfp.saveAnswers, {
+    // A queued revision is one atomic resubmit: the staged version remains
+    // intact until this full payload passes validation.
+    await bob.mutation(api.cfp.resubmitProposal, {
       proposalId,
+      expectedContentVersion: queued.proposal.contentVersion ?? 0,
       answers: { ...ANSWERS, abstract: "Now with more detail." },
+      speakers: queued.speakers.map(speakerInput),
     });
+    await drainScheduled(t);
     // ...and invalidates the staged verdict.
     expect(await proposalStatus(t, proposalId)).toBe("pending");
-    const notices = (await messageRows(t)).slice(before);
+    const notices = (await messageRows(t))
+      .slice(before)
+      .filter((message) => message.kind === "cfp.adminNotification");
     expect(notices).toHaveLength(1);
     expect(notices[0].toEmail).toBe("alice@example.com");
     expect(notices[0].subject).toBe(
@@ -466,14 +489,16 @@ describe("sessions.correct", () => {
     const ctx = await submittedProposal(t);
     // An email-less co-speaker: no email identity to dedupe on, so only the
     // proposal-speaker link keeps re-materialisation from duplicating them.
-    await ctx.bob.mutation(api.cfp.setSpeakers, {
+    const submitted = await ctx.bob.query(api.cfp.getMyProposal, {
       proposalId: ctx.proposalId,
+    });
+    await ctx.bob.mutation(api.cfp.resubmitProposal, {
+      proposalId: ctx.proposalId,
+      expectedContentVersion: submitted.proposal.contentVersion ?? 0,
+      answers: submitted.proposal.answers,
       speakers: [
         {
-          firstName: "Bob",
-          lastName: "Speaker",
-          email: "bob@example.com",
-          isPrimary: true,
+          ...speakerInput(submitted.speakers[0]),
         },
         { firstName: "Ana", lastName: "Anonyma", isPrimary: false },
       ],
@@ -577,6 +602,11 @@ describe("sessions.correct", () => {
       await ctx.db.patch("sessionParticipants", participant!._id, {
         state: "confirmed",
       });
+    });
+    await alice.mutation(api.sessions.setContentStatus, {
+      eventSlug,
+      sessionId,
+      to: "approved",
     });
     await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
     await alice.mutation(api.publish.setSession, {
@@ -760,7 +790,10 @@ describe("archived events", () => {
     expect(await alice.query(api.sessions.list, { eventSlug })).toEqual([]);
     expect(await alice.query(api.reviews.progress, { eventSlug })).toEqual({});
     // ...and archiving itself is not an M2 write, so it can be undone.
-    await alice.mutation(api.events.setArchived, { eventSlug, archived: false });
+    await alice.mutation(api.events.setArchived, {
+      eventSlug,
+      archived: false,
+    });
     expect(
       await alice.mutation(api.sessions.release, {
         eventSlug,

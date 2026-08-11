@@ -18,6 +18,24 @@ import { usePending } from '~/lib/usePending'
 type Contact = Doc<'contacts'>
 type Stage = NonNullable<Contact['pipelineStage']>
 
+export function contactMatchesSearch(contact: Contact, search?: string) {
+  const needle = search?.trim().toLowerCase()
+  if (!needle) return true
+  return [
+    contact.firstName,
+    contact.lastName,
+    contact.email,
+    contact.tagline,
+    contact.jobTitle,
+    contact.company,
+    ...(contact.tags ?? []),
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(' ')
+    .toLowerCase()
+    .includes(needle)
+}
+
 const STAGES: Array<{ value: Stage; label: string }> = [
   { value: 'sourced', label: 'Sourced' },
   { value: 'contacted', label: 'Contacted' },
@@ -330,17 +348,7 @@ function matchesFilters(
 ) {
   if (filters.tag && !(contact.tags ?? []).includes(filters.tag)) return false
   if (filters.company && contact.company !== filters.company) return false
-  const needle = filters.search?.trim().toLowerCase()
-  return (
-    !needle ||
-    [
-      contact.firstName,
-      contact.lastName,
-      contact.email,
-      contact.company,
-      contact.tagline,
-    ].some((field) => field?.toLowerCase().includes(needle))
-  )
+  return contactMatchesSearch(contact, filters.search)
 }
 
 function PipelineBoard({
@@ -443,10 +451,7 @@ function PipelineBoard({
                   >
                     Details &amp; history
                   </Button>
-                  <Field
-                    label="Stage"
-                    htmlFor={`crm-stage-${contact._id}`}
-                  >
+                  <Field label="Stage" htmlFor={`crm-stage-${contact._id}`}>
                     <Select
                       id={`crm-stage-${contact._id}`}
                       value={contact.pipelineStage}
@@ -485,7 +490,10 @@ type ParsedRow = {
   tags?: Array<string>
 }
 
-function splitContactName(value: string): { firstName: string; lastName: string } {
+function splitContactName(value: string): {
+  firstName: string
+  lastName: string
+} {
   const parts = value.trim().split(/\s+/).filter(Boolean)
   if (parts.length <= 1) {
     return { firstName: parts[0] ?? '', lastName: '' }
@@ -566,9 +574,7 @@ export function parseContactsCsv(source: string): {
           ? undefined
           : values[jobTitle].trim(),
       bio:
-        bio < 0 || !(values[bio] ?? '').trim()
-          ? undefined
-          : values[bio].trim(),
+        bio < 0 || !(values[bio] ?? '').trim() ? undefined : values[bio].trim(),
       tags:
         tags < 0
           ? undefined

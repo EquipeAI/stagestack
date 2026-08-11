@@ -173,6 +173,96 @@ describe("publish — lineup", () => {
   });
 });
 
+describe("publish — content approval", () => {
+  test("a published draft stays draft and out of preview/live output until explicitly approved (CNT-12)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, sessionId } = await seedProgram(t);
+    const startsAt = Date.parse("2026-09-01T17:00:00Z");
+    const endsAt = Date.parse("2026-09-01T18:00:00Z");
+
+    // Reproduce the publish-console path with a real draft that is also
+    // eligible for both lineup and agenda output.
+    await t.run(async (ctx) => {
+      await ctx.db.patch("sessions", sessionId as Id<"sessions">, {
+        contentStatus: "draft",
+        releasedSlot: {
+          startsAt,
+          endsAt,
+          releasedAt: Date.parse("2026-08-01T00:00:00Z"),
+          sequence: 0,
+        },
+      });
+    });
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setAgenda, { eventSlug, enabled: true });
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId: sessionId as Id<"sessions">,
+      published: true,
+    });
+
+    // Listing intent and editorial approval are independent. The flag is on,
+    // but the draft is absent from both sections of the live preview.
+    const state = await alice.query(api.publish.state, { eventSlug });
+    expect(state.publishedSessionIds).toContain(sessionId);
+    let preview = await alice.query(api.publish.preview, { eventSlug });
+    expect(preview.lineup).toEqual([]);
+    expect(preview.agenda).toEqual([]);
+
+    // The stored projection powers both the public page/query and HTTP API.
+    let program = (await servedProgram(t, eventSlug))!;
+    expect(program.lineup).toEqual([]);
+    expect(program.agenda).toEqual([]);
+    let http = await t.fetch(`/api/events/${eventSlug}/program`);
+    expect(http.status).toBe(200);
+    expect(await http.json()).toMatchObject({ lineup: [], agenda: [] });
+
+    // Publishing must not hide an approval mutation in the session row.
+    expect(
+      await t.run(async (ctx) => {
+        const session = await ctx.db.get("sessions", sessionId);
+        return {
+          contentStatus: session?.contentStatus,
+          contentStatusSetBy: session?.contentStatusSetBy,
+          contentStatusSetAt: session?.contentStatusSetAt,
+        };
+      }),
+    ).toEqual({
+      contentStatus: "draft",
+      contentStatusSetBy: undefined,
+      contentStatusSetAt: undefined,
+    });
+
+    // Once explicitly approved, the already-enabled flag takes effect on the
+    // next rebuild without requiring a second publish toggle.
+    await alice.mutation(api.sessions.setContentStatus, {
+      eventSlug,
+      sessionId: sessionId as Id<"sessions">,
+      to: "approved",
+    });
+    preview = await alice.query(api.publish.preview, { eventSlug });
+    expect(
+      preview.lineup.map((session: { title: string }) => session.title),
+    ).toEqual(["Agents in Production"]);
+    expect(preview.agenda).toMatchObject([
+      { kind: "session", title: "Agents in Production", startsAt, endsAt },
+    ]);
+    program = (await servedProgram(t, eventSlug))!;
+    expect(
+      program.lineup.map((session: { title: string }) => session.title),
+    ).toEqual(["Agents in Production"]);
+    expect(program.agenda).toMatchObject([
+      { kind: "session", title: "Agents in Production", startsAt, endsAt },
+    ]);
+    http = await t.fetch(`/api/events/${eventSlug}/program`);
+    expect(http.status).toBe(200);
+    expect(await http.json()).toMatchObject({
+      lineup: [{ title: "Agents in Production" }],
+      agenda: [{ kind: "session", title: "Agents in Production" }],
+    });
+  });
+});
+
 describe("publish — agenda independence", () => {
   test("the agenda grid carries only released+slotted sessions", async () => {
     const t = setupTest();
@@ -497,16 +587,16 @@ describe("publish — production-path projection", () => {
   const T10 = Date.parse("2026-09-01T10:00:00Z");
   const T11 = Date.parse("2026-09-01T11:00:00Z");
 
-  test("a session driven through accept → release → agenda release publishes with the real shapes", async () => {
+  test("a session driven through accept → approval → agenda release publishes with the real shapes", async () => {
     const t = setupTest();
     const alice = await signIn(t, "alice");
     const orgSlug = await createOrg(alice, "Acme Conf Co");
     const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
 
     // The whole production path, no raw inserts: CFP submit → accept queue →
-    // decision release → confirmation → board placement → slot release. If
-    // computeProgram ever drifts from what these writers actually store, this
-    // is the test that breaks.
+    // decision release → confirmation → content approval → board placement →
+    // slot release. If computeProgram ever drifts from what these writers
+    // actually store, this is the test that breaks.
     await alice.mutation(api.cfp.publishForm, { eventSlug });
     await alice.mutation(api.events.updateSettings, {
       eventSlug,
@@ -580,6 +670,11 @@ describe("publish — production-path projection", () => {
         sessionIds: [sessionId],
       }),
     ).toEqual([{ sessionId, ok: true }]);
+    await alice.mutation(api.sessions.setContentStatus, {
+      eventSlug,
+      sessionId,
+      to: "approved",
+    });
 
     await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
     await alice.mutation(api.publish.setSession, {

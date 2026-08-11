@@ -10,9 +10,9 @@ import { sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
 import { proposalAbstract, proposalLink } from "./cfp";
 import { republishIfPublished } from "./publish";
-import { assertEventActive } from "./reviews";
 import { instantiateForSession } from "./tasks";
-import { assertText, normalizeEmail } from "./validation";
+import { eventUserDisplayName } from "./userDisplay";
+import { assertEventActive, assertText, normalizeEmail } from "./validation";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Decisions & sessions (M2).
@@ -117,9 +117,10 @@ export type SpeakerProfile = {
 
 /** "Principal Engineer, Latticework" → structured title/company. Only the
  * unambiguous two-part shape splits; anything else stays tagline-only. */
-function splitTagline(
-  tagline: string | undefined,
-): { jobTitle?: string; company?: string } {
+function splitTagline(tagline: string | undefined): {
+  jobTitle?: string;
+  company?: string;
+} {
   if (tagline === undefined) return {};
   const parts = tagline.split(",").map((p) => p.trim());
   if (parts.length !== 2 || parts.some((p) => p === "")) return {};
@@ -235,18 +236,29 @@ async function ensureParticipant(
     eventId: Id<"events">;
     eventContactId: Id<"eventContacts">;
     managerUserId?: Id<"users">;
+    /** Stored only when creating a participant. Existing operational role
+     * labels are never overwritten by a later proposal synchronization. */
+    role?: string;
   },
-): Promise<void> {
+): Promise<{
+  participantId: Id<"sessionParticipants">;
+  created: boolean;
+}> {
   const existing = await ctx.db
     .query("sessionParticipants")
     .withIndex("by_sessionId", (q) => q.eq("sessionId", args.sessionId))
     .take(MAX_PARTICIPANTS_PER_SESSION);
-  if (existing.some((p) => p.eventContactId === args.eventContactId)) return;
-  await ctx.db.insert("sessionParticipants", {
+  const found = existing.find(
+    (participant) => participant.eventContactId === args.eventContactId,
+  );
+  if (found !== undefined) {
+    return { participantId: found._id, created: false };
+  }
+  const participantId = await ctx.db.insert("sessionParticipants", {
     sessionId: args.sessionId,
     eventId: args.eventId,
     eventContactId: args.eventContactId,
-    role: "speaker",
+    role: args.role?.trim() || "speaker",
     // Acceptance creates the session, but "each speaker's participation
     // remains separately Awaiting Response until confirmed or declined" (M2).
     state: "awaiting",
@@ -255,6 +267,7 @@ async function ensureParticipant(
     // full cadence after the invitation, rather than firing at the next sweep.
     lastRemindedAt: Date.now(),
   });
+  return { participantId, created: true };
 }
 
 async function sessionForProposal(
@@ -304,7 +317,10 @@ async function materializeSession(
   ctx: MutationCtx,
   event: Doc<"events">,
   proposal: Doc<"proposals">,
-): Promise<Id<"sessions">> {
+): Promise<{
+  sessionId: Id<"sessions">;
+  addedParticipantIds: Array<Id<"sessionParticipants">>;
+}> {
   const existing = await sessionForProposal(ctx, proposal._id);
   const trackId =
     existing?.trackId ?? (await trackFromAnswers(ctx, event, proposal));
@@ -322,13 +338,18 @@ async function materializeSession(
     }));
   // A correction that restores an existing track-less session still gets the
   // carry-over (the eval saw "No track" on a converted session).
-  if (existing !== null && existing.trackId === undefined && trackId !== undefined) {
+  if (
+    existing !== null &&
+    existing.trackId === undefined &&
+    trackId !== undefined
+  ) {
     await ctx.db.patch("sessions", existing._id, { trackId });
   }
   const speakers = await ctx.db
     .query("proposalSpeakers")
     .withIndex("by_proposalId", (q) => q.eq("proposalId", proposal._id))
     .take(MAX_SPEAKERS_PER_PROPOSAL);
+  const addedParticipantIds: Array<Id<"sessionParticipants">> = [];
   for (const speaker of speakers.sort((a, b) => a.order - b.order)) {
     const eventContactId = await ensureEventContact(
       ctx,
@@ -336,18 +357,74 @@ async function materializeSession(
       profileOf(speaker),
       speaker._id,
     );
-    await ensureParticipant(ctx, {
+    const participant = await ensureParticipant(ctx, {
       sessionId,
       eventId: event._id,
       eventContactId,
       managerUserId: proposal.submitterUserId,
+      role: speaker.role,
     });
+    if (participant.created) {
+      addedParticipantIds.push(participant.participantId);
+    }
   }
   // "Create and assign applicable requirements when an acceptance ... is
   // formally released" (M4). Idempotent per (requirement, participant), so a
   // decline→accept correction or a later co-speaker adds only what's missing.
   await instantiateForSession(ctx, event, sessionId);
-  return sessionId;
+  return { sessionId, addedParticipantIds };
+}
+
+/** Keep a released acceptance authoritative while incorporating an explicitly
+ * reopened proposal revision. The accepted session is reused, existing
+ * participants and immutable event snapshots are preserved, and only missing
+ * participants/requirements are added. Removing a participant still belongs
+ * to the explicit participation-withdrawal path, never an incidental proposal
+ * edit.
+ */
+export async function syncAcceptedProposalRevision(
+  ctx: MutationCtx,
+  event: Doc<"events">,
+  proposal: Doc<"proposals">,
+  actorUserId: Id<"users">,
+): Promise<void> {
+  assertEventActive(event);
+  if (proposal.status !== "accepted" || proposal.eventId !== event._id) {
+    throw new ConvexError({
+      code: "invalid_status",
+      message: "Only an accepted proposal can update its released session.",
+    });
+  }
+  const materialized = await materializeSession(ctx, event, proposal);
+  if (materialized.addedParticipantIds.length === 0) return;
+  const session = await ctx.db.get("sessions", materialized.sessionId);
+  if (session === null) {
+    throw new ConvexError({
+      code: "not_found",
+      message: "The accepted proposal's session no longer exists.",
+    });
+  }
+  const addedParticipants = await Promise.all(
+    materialized.addedParticipantIds.map(async (participantId) => {
+      const participant = await ctx.db.get(
+        "sessionParticipants",
+        participantId,
+      );
+      if (participant === null) {
+        throw new ConvexError({
+          code: "not_found",
+          message: "A newly added session participant no longer exists.",
+        });
+      }
+      return participant;
+    }),
+  );
+  await Agenda.inviteAddedParticipants(ctx, {
+    event,
+    session,
+    participants: addedParticipants,
+    actorUserId,
+  });
 }
 
 // ── Staging ──────────────────────────────────────────────────────────────
@@ -1075,7 +1152,9 @@ export async function listRevisions(
     out.push({
       revisionId: row._id,
       editedAt: row.editedAt,
-      editorName: editor?.name ?? null,
+      editorName:
+        (await eventUserDisplayName(ctx, caller.event._id, editor)) ??
+        "Event team member",
       editorEmail: editor?.email ?? null,
       before: row.before,
       after: row.after,

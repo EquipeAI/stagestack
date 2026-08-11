@@ -2,7 +2,13 @@
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { createEvent, createOrg, setupTest, signIn, type TestT } from "./test.helpers";
+import {
+  createEvent,
+  createOrg,
+  setupTest,
+  signIn,
+  type TestT,
+} from "./test.helpers";
 
 // Embeds (W3): named widget instances over the published projection, plus
 // the content-approval gate (W5) and the iCal feed.
@@ -97,7 +103,9 @@ describe("embeds", () => {
     });
     expect(await t.query(api.embeds.resolve, { embedId })).toBeNull();
     // Junk ids too.
-    expect(await t.query(api.embeds.resolve, { embedId: "nonsense" })).toBeNull();
+    expect(
+      await t.query(api.embeds.resolve, { embedId: "nonsense" }),
+    ).toBeNull();
   });
 
   test("draft content status pulls a session from public output; approve restores it (CNT-12)", async () => {
@@ -114,11 +122,36 @@ describe("embeds", () => {
       sessionId: sessionIds[1] as Id<"sessions">,
       to: "draft",
     });
+    // Re-enabling an already-enabled publication flag is the deployed defect:
+    // it must not double as an editorial approval action.
+    await alice.mutation(api.publish.setSession, {
+      eventSlug,
+      sessionId: sessionIds[1] as Id<"sessions">,
+      published: true,
+    });
     await drainScheduled(t);
     program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
     expect(program.lineup.map((s: { title: string }) => s.title)).toEqual([
       "Infra talk",
     ]);
+    expect(
+      await t.run(
+        async (ctx) =>
+          (await ctx.db.get("sessions", sessionIds[1] as Id<"sessions">))
+            ?.contentStatus,
+      ),
+    ).toBe("draft");
+
+    const embedId = await alice.mutation(api.embeds.create, {
+      eventSlug,
+      name: "Approved sessions only",
+      widget: "sessions",
+      config: {},
+    });
+    let resolved = (await t.query(api.embeds.resolve, { embedId }))!;
+    expect(
+      resolved.program.lineup.map((s: { title: string }) => s.title),
+    ).toEqual(["Infra talk"]);
 
     await alice.mutation(api.sessions.setContentStatus, {
       eventSlug,
@@ -128,6 +161,10 @@ describe("embeds", () => {
     await drainScheduled(t);
     program = (await t.query(api.publish.publicProgram, { slug: eventSlug }))!;
     expect(program.lineup).toHaveLength(2);
+    resolved = (await t.query(api.embeds.resolve, { embedId }))!;
+    expect(
+      resolved.program.lineup.map((s: { title: string }) => s.title),
+    ).toEqual(["AI talk", "Infra talk"]);
   });
 
   test("the program.ics feed serves a VCALENDAR of released agenda entries", async () => {

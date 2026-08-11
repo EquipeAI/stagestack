@@ -23,7 +23,7 @@ import {
   Toolbar,
 } from '~/ds'
 import { ContactDetailDialog } from '~/components/contacts/ContactDetailDialog'
-import { CrmTools } from '~/components/contacts/CrmTools'
+import { CrmTools, contactMatchesSearch } from '~/components/contacts/CrmTools'
 import { PageBody } from '~/components/PageBody'
 import { EventCard, EventGrid } from '~/components/EventCard'
 import { QueryBoundary } from '~/components/QueryBoundary'
@@ -363,16 +363,7 @@ function ContactsTab({
       if (companyFilter !== '' && contact.company !== companyFilter) {
         return false
       }
-      if (needle === '') return true
-      return [
-        contact.firstName,
-        contact.lastName,
-        contact.email,
-        contact.company,
-        contact.tagline,
-      ].some(
-        (field) => field !== undefined && field.toLowerCase().includes(needle),
-      )
+      return contactMatchesSearch(contact, needle)
     })
   }, [contacts, needle, tagFilter, companyFilter])
 

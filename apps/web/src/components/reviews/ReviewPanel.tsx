@@ -19,9 +19,9 @@ import { saveStatusLabel, useAutosave } from '~/components/cfp/useAutosave'
 import { SaveIndicator } from '~/components/cfp/CfpChrome'
 
 // The review itself: the round's scorecard rendered dynamically (numeric
-// steppers, dropdowns, text), one commit button. The panel is mounted with
-// the review id as its key, so its state always starts from what the server
-// holds for the proposal on screen.
+// steppers, dropdowns, text), one commit button. The route mounts the panel by
+// review id + proposal content version, so a revision starts with fresh server
+// state while any already-queued old autosave is rejected by the same fence.
 //
 // Speed is still the point (M2: "Submit & Next"). Drafts autosave, and when
 // the scorecard has a single numeric criterion the 1–9 keys set it;
@@ -73,7 +73,12 @@ export function ReviewPanel({
   const committed = useRef(false)
   const autosave = useAutosave<ReviewAnswers>(async (value) => {
     if (committed.current) return
-    await saveDraft({ eventSlug, reviewId: assignment.reviewId, answers: value })
+    await saveDraft({
+      eventSlug,
+      reviewId: assignment.reviewId,
+      answers: value,
+      expectedContentVersion: assignment.contentVersion,
+    })
   })
 
   const applyAnswer = (fieldId: string, value: number | string) => {
@@ -105,6 +110,7 @@ export function ReviewPanel({
           eventSlug,
           reviewId: assignment.reviewId,
           answers,
+          expectedContentVersion: assignment.contentVersion,
         })
         pushToast(
           submitted ? 'Review updated' : 'Review submitted',
@@ -123,7 +129,11 @@ export function ReviewPanel({
 
   const doDeclareConflict = () => {
     void conflictAction.run(async () => {
-      await declareConflict({ eventSlug, reviewId: assignment.reviewId })
+      await declareConflict({
+        eventSlug,
+        reviewId: assignment.reviewId,
+        expectedContentVersion: assignment.contentVersion,
+      })
       setConfirmConflict(false)
       pushToast('Conflict declared', assignment.proposal.title)
     })
@@ -234,7 +244,11 @@ export function ReviewPanel({
           if (field.kind === 'numeric') {
             const options = numericOptions(field)
             return (
-              <Field key={field.id} label={field.label} required={field.required}>
+              <Field
+                key={field.id}
+                label={field.label}
+                required={field.required}
+              >
                 <div>
                   <Segmented
                     name={field.label}
@@ -260,7 +274,11 @@ export function ReviewPanel({
           }
           if (field.kind === 'dropdown') {
             return (
-              <Field key={field.id} label={field.label} required={field.required}>
+              <Field
+                key={field.id}
+                label={field.label}
+                required={field.required}
+              >
                 <Select
                   value={typeof value === 'string' ? value : ''}
                   disabled={readOnly}
@@ -375,8 +393,8 @@ export function ReviewPanel({
             {soloNumeric !== undefined ? (
               <>
                 <kbd>{soloNumeric.min ?? 1}</kbd>–
-                <kbd>{soloNumeric.max ?? 5}</kbd> {soloNumeric.label.toLowerCase()}{' '}
-                ·{' '}
+                <kbd>{soloNumeric.max ?? 5}</kbd>{' '}
+                {soloNumeric.label.toLowerCase()} ·{' '}
               </>
             ) : null}
             <kbd>Cmd</kbd>/<kbd>Ctrl</kbd> + <kbd>Enter</kbd>{' '}

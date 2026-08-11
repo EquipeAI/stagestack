@@ -105,6 +105,7 @@ export const beginHeadshotUpload = eventMutation({
     eventContactId: v.id("eventContacts"),
     contentType: v.string(),
     size: v.number(),
+    filename: v.optional(v.string()),
   },
   returns: v.object({
     uploadId: vv.id("headshotUploads"),
@@ -125,7 +126,11 @@ export const beginHeadshotUpload = eventMutation({
       ctx,
       ctx.caller,
       args.eventContactId,
-      { contentType: args.contentType, size: args.size },
+      {
+        contentType: args.contentType,
+        size: args.size,
+        filename: args.filename,
+      },
     );
   },
 });

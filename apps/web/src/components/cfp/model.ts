@@ -62,6 +62,40 @@ export function answerList(value: AnswerValue | undefined): Array<string> {
 
 export type WindowState = 'before' | 'open' | 'closed'
 
+export type ProposalEditAccess = 'eligible' | 'expired-grant' | 'locked'
+
+/** Status-side edit gate, separate from the CFP date window. Undecided
+ * proposals use the ordinary event window; a released acceptance requires its
+ * own explicit organizer grant even when the event-wide CFP is open again.
+ * Remembering an expired accepted grant lets an already-mounted editor keep
+ * unsent local changes visible instead of unmounting them at the deadline.
+ */
+export function proposalEditAccess(input: {
+  status: ProposalStatus
+  reopenedUntil?: number | null
+  archivedAt?: number | null
+  now: number
+}): ProposalEditAccess {
+  const { status, reopenedUntil, archivedAt, now } = input
+  if (archivedAt !== undefined && archivedAt !== null) return 'locked'
+  if (
+    status === 'draft' ||
+    status === 'pending' ||
+    status === 'acceptQueue' ||
+    status === 'declineQueue'
+  ) {
+    return 'eligible'
+  }
+  if (
+    status !== 'accepted' ||
+    reopenedUntil === undefined ||
+    reopenedUntil === null
+  ) {
+    return 'locked'
+  }
+  return reopenedUntil > now ? 'eligible' : 'expired-grant'
+}
+
 /**
  * Computed on the client from the raw timestamps, never read from a
  * server-computed boolean: a subscription can hand back a `windowOpen` that
@@ -75,11 +109,16 @@ export function cfpWindowState(input: {
 }): WindowState {
   const { openAt, closeAt, reopenedUntil, now } = input
   // An organizer-granted reopen overrides both bounds for this one proposal.
-  if (reopenedUntil !== undefined && reopenedUntil !== null && reopenedUntil > now) {
+  if (
+    reopenedUntil !== undefined &&
+    reopenedUntil !== null &&
+    reopenedUntil > now
+  ) {
     return 'open'
   }
   if (openAt !== undefined && openAt !== null && now < openAt) return 'before'
-  if (closeAt !== undefined && closeAt !== null && now > closeAt) return 'closed'
+  if (closeAt !== undefined && closeAt !== null && now > closeAt)
+    return 'closed'
   return 'open'
 }
 
@@ -89,7 +128,10 @@ export type MissingAnswer = { field: FieldDef; reason: string }
  * The client-side mirror of the server's submit check: only visible fields
  * count, so a hidden conditional field is never required.
  */
-export function missingAnswers(form: FormDef, answers: Answers): Array<MissingAnswer> {
+export function missingAnswers(
+  form: FormDef,
+  answers: Answers,
+): Array<MissingAnswer> {
   const out: Array<MissingAnswer> = []
   for (const field of visibleFields(form, answers)) {
     const value = answers[field.id]

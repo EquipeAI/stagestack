@@ -7,6 +7,7 @@ import type { PortalTask } from '~/components/tasks/model'
 import { PORTAL_TASK_STATUS, isOpen, isOverdue } from '~/components/tasks/model'
 import { Button, Callout, Card, EmptyState, StatusPill } from '~/ds'
 import { TaskCommentThread } from '~/components/tasks/TaskCommentThread'
+import { UploadVersionList } from '~/components/tasks/UploadVersionList'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { formatDateTime } from '~/lib/datetime'
@@ -231,39 +232,7 @@ function TaskCard({
         <ActionError error={error} />
 
         {hasUploads ? (
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            {task.uploads.map((file) => (
-              <li
-                key={`${file.version}-${file.filename}`}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 'var(--space-3)',
-                  flexWrap: 'wrap',
-                  minHeight: 'var(--row-height-sm)',
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 'var(--text-xs)',
-                    color: 'var(--text-tertiary)',
-                  }}
-                >
-                  v{file.version}
-                </span>
-                {file.url === null ? (
-                  <span style={{ color: 'var(--text-tertiary)' }}>
-                    {file.filename}
-                  </span>
-                ) : (
-                  <a href={file.url} target="_blank" rel="noreferrer">
-                    {file.filename}
-                  </a>
-                )}
-              </li>
-            ))}
-          </ul>
+          <UploadVersionList uploads={task.uploads} timezone={timezone} />
         ) : null}
 
         {task.evidence === 'profileField' ? (

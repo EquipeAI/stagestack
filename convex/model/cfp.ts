@@ -345,7 +345,9 @@ export function validateFormDef(def: FormDef): void {
     }
   };
   for (const section of sections) {
-    const hasSystemField = section.fields.some((f) => f.systemKey !== undefined);
+    const hasSystemField = section.fields.some(
+      (f) => f.systemKey !== undefined,
+    );
     if (section.visibleIf !== undefined) {
       if (hasSystemField) {
         invalidForm(
@@ -401,7 +403,8 @@ export async function updateFormSettings(
       if (!Number.isInteger(n) || n < 1 || n > 100) {
         throw new ConvexError({
           code: "invalid_settings",
-          message: "Submissions per person must be a whole number from 1 to 100.",
+          message:
+            "Submissions per person must be a whole number from 1 to 100.",
         });
       }
     }
@@ -477,8 +480,9 @@ export function submissionWindowOpen(
 function assertWindowOpen(
   event: Doc<"events">,
   proposal?: Doc<"proposals"> | null,
+  now = Date.now(),
 ): void {
-  if (!submissionWindowOpen(event, Date.now(), proposal)) {
+  if (!submissionWindowOpen(event, now, proposal)) {
     throw new ConvexError({
       code: "cfp_closed",
       message: "This call for proposals isn't accepting changes right now.",
@@ -657,6 +661,7 @@ export async function startProposal(
     title: "Untitled proposal",
     answers: {},
     formVersion: version,
+    contentVersion: 0,
     updatedAt: Date.now(),
   });
 }
@@ -685,13 +690,22 @@ const EDITABLE_STATUSES: ReadonlySet<ProposalStatus> = new Set<ProposalStatus>([
   "declineQueue",
 ]);
 
-function assertEditableStatus(proposal: Doc<"proposals">): void {
-  if (!EDITABLE_STATUSES.has(proposal.status)) {
-    throw new ConvexError({
-      code: "not_editable",
-      message: "This proposal can no longer be edited.",
-    });
+function assertEditableStatus(proposal: Doc<"proposals">, now: number): void {
+  if (EDITABLE_STATUSES.has(proposal.status)) return;
+  // A released acceptance stays a released acceptance. It becomes editable
+  // only through a current, proposal-specific organizer grant — reopening the
+  // event's CFP globally must never make decided proposals writable again.
+  if (
+    proposal.status === "accepted" &&
+    proposal.reopenedUntil !== undefined &&
+    proposal.reopenedUntil > now
+  ) {
+    return;
   }
+  throw new ConvexError({
+    code: "not_editable",
+    message: "This proposal can no longer be edited.",
+  });
 }
 
 /**
@@ -738,7 +752,7 @@ async function unstageOnEdit(
 
 /**
  * The preamble every submitter *write* shares: own it, it's still editable,
- * its event exists, and the submission window is open.
+ * its event exists and is active, and the submission window is open.
  * withdrawProposal deliberately does NOT use this — withdrawing must stay
  * possible after the CFP closes, so it runs its own status checks with no
  * window check at all.
@@ -749,10 +763,12 @@ async function loadEditableProposal(
   proposalId: Id<"proposals">,
 ): Promise<{ proposal: Doc<"proposals">; event: Doc<"events"> }> {
   const proposal = await requireOwnProposal(ctx, user, proposalId);
-  assertEditableStatus(proposal);
+  const now = Date.now();
+  assertEditableStatus(proposal, now);
   const event = await ctx.db.get("events", proposal.eventId);
   if (event === null) notFoundProposal();
-  assertWindowOpen(event, proposal);
+  assertEventActive(event);
+  assertWindowOpen(event, proposal, now);
   return { proposal, event };
 }
 
@@ -768,6 +784,7 @@ export type MyProposalView = {
     cfpOpenAt?: number;
     cfpCloseAt?: number;
     cfpPublished: boolean;
+    archivedAt?: number;
   };
   windowOpen: boolean;
 };
@@ -795,6 +812,7 @@ export async function getMyProposal(
       cfpOpenAt: event.cfpOpenAt,
       cfpCloseAt: event.cfpCloseAt,
       cfpPublished: event.cfpPublished,
+      archivedAt: event.archivedAt,
     },
     // Wall clock in a query: the wizard re-reads on every mutation anyway and
     // the server re-checks the window on every write, so a stale `true` here
@@ -913,18 +931,12 @@ function titleFromAnswers(
   return title.length > 0 ? title.slice(0, 200) : "Untitled proposal";
 }
 
-/** Full replace of the proposal's answers (the wizard always sends the whole
- * set). Required fields are NOT enforced here — drafts are partial. */
-export async function saveAnswers(
-  ctx: MutationCtx,
-  user: Doc<"users">,
-  proposalId: Id<"proposals">,
+function prepareAnswers(
+  ctx: QueryCtx,
+  def: FormDef,
   answers: Record<string, AnswerValue>,
-): Promise<void> {
-  const { proposal, event } = await loadEditableProposal(ctx, user, proposalId);
-  const { def } = await requirePublishedForm(ctx, event);
-
-  const byId = new Map(allFields(def).map((f) => [f.id, f]));
+): { answers: Record<string, AnswerValue>; title: string } {
+  const byId = new Map(allFields(def).map((field) => [field.id, field]));
   // Silently DROP answers whose field no longer exists: an organizer removing
   // a field must not brick drafts that still carry its answer (they resend
   // the full record on every autosave). Known fields still validate strictly.
@@ -935,19 +947,43 @@ export async function saveAnswers(
     assertAnswerShape(ctx, field, value);
     kept[key] = value;
   }
+  return { answers: kept, title: titleFromAnswers(def, kept) };
+}
 
-  const title = titleFromAnswers(def, kept);
+function requireStandaloneDraftWrite(proposal: Doc<"proposals">): void {
+  if (proposal.status === "draft") return;
+  throw new ConvexError({
+    code: "client_upgrade_required",
+    message:
+      "This proposal editor is out of date and cannot safely update a submitted proposal. Refresh the page, then use Save & resubmit.",
+  });
+}
+
+/** Full replace of the proposal's answers (the wizard always sends the whole
+ * set). Required fields are NOT enforced here — drafts are partial. */
+export async function saveAnswers(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  proposalId: Id<"proposals">,
+  answers: Record<string, AnswerValue>,
+): Promise<void> {
+  const { proposal, event } = await loadEditableProposal(ctx, user, proposalId);
+  requireStandaloneDraftWrite(proposal);
+  const { def } = await requirePublishedForm(ctx, event);
+  const prepared = prepareAnswers(ctx, def, answers);
   await ctx.db.patch("proposals", proposal._id, {
-    answers: kept,
-    title,
+    answers: prepared.answers,
+    title: prepared.title,
     updatedAt: Date.now(),
   });
-  await unstageOnEdit(ctx, proposal, event, title);
+  await unstageOnEdit(ctx, proposal, event, prepared.title);
 }
 
 // ── Speakers ─────────────────────────────────────────────────────────────
 
 export type SpeakerInput = {
+  /** Existing rows are reconciled in place. Absent means a new coauthor. */
+  proposalSpeakerId?: Id<"proposalSpeakers">;
   firstName: string;
   lastName: string;
   email?: string;
@@ -966,7 +1002,200 @@ export type SpeakerInput = {
   role?: string;
 };
 
-/** Replace-all: the wizard owns the whole speaker list for a proposal. */
+type PreparedSpeaker = SpeakerInput & {
+  firstName: string;
+  lastName: string;
+};
+
+type SpeakerPlan = {
+  existing: Array<Doc<"proposalSpeakers">>;
+  speakers: PreparedSpeaker[];
+  referencedIds: Set<string>;
+};
+
+function cleanSpeakerInput(speaker: SpeakerInput): PreparedSpeaker {
+  const rawEmail = speaker.email?.trim();
+  const links =
+    speaker.links === undefined
+      ? undefined
+      : {
+          website: optionalHttpUrl(
+            speaker.links.website,
+            "Speaker website link",
+          ),
+          twitter: optionalHttpUrl(
+            speaker.links.twitter,
+            "Speaker Twitter link",
+          ),
+          linkedin: optionalHttpUrl(
+            speaker.links.linkedin,
+            "Speaker LinkedIn link",
+          ),
+          github: optionalHttpUrl(speaker.links.github, "Speaker GitHub link"),
+        };
+  const hasLink =
+    links !== undefined &&
+    Object.values(links).some((value) => value !== undefined);
+  return {
+    ...speaker,
+    firstName: assertText(speaker.firstName, {
+      label: "Speaker first name",
+      max: 80,
+    }),
+    lastName: assertText(speaker.lastName, {
+      label: "Speaker last name",
+      max: 80,
+    }),
+    email:
+      rawEmail !== undefined && rawEmail.length > 0
+        ? normalizeEmail(rawEmail)
+        : undefined,
+    links: hasLink ? links : undefined,
+    role:
+      speaker.role === undefined || speaker.role.trim() === ""
+        ? undefined
+        : assertText(speaker.role, { label: "Speaker role", max: 40 }),
+  };
+}
+
+async function prepareSpeakerPlan(
+  ctx: QueryCtx,
+  proposal: Doc<"proposals">,
+  speakers: SpeakerInput[],
+  preserveExisting: boolean,
+): Promise<SpeakerPlan> {
+  if (speakers.length > MAX_SPEAKERS) {
+    throw new ConvexError({
+      code: "too_many_speakers",
+      message: `A proposal can list at most ${MAX_SPEAKERS} speakers.`,
+    });
+  }
+  const existing = await listSpeakers(ctx, proposal._id);
+  let cleaned = speakers.map(cleanSpeakerInput);
+  // A brand-new draft starts with client-local cards, so its first autosave has
+  // no ids to round-trip yet. Until the proposal is submitted, positional
+  // reconciliation gives those cards stable rows across later autosaves. Once
+  // any persisted id is present (and for every accepted revision), absence
+  // unambiguously means a genuinely new coauthor.
+  if (
+    proposal.status === "draft" &&
+    cleaned.every((speaker) => speaker.proposalSpeakerId === undefined)
+  ) {
+    cleaned = cleaned.map((speaker, order) => ({
+      ...speaker,
+      proposalSpeakerId: existing[order]?._id,
+    }));
+  }
+  const existingIds = new Set(existing.map((row) => String(row._id)));
+  const referencedIds = new Set<string>();
+  for (const speaker of cleaned) {
+    if (speaker.proposalSpeakerId === undefined) continue;
+    const key = String(speaker.proposalSpeakerId);
+    if (referencedIds.has(key)) {
+      throw new ConvexError({
+        code: "duplicate_speaker_id",
+        message: "The same existing speaker cannot be submitted twice.",
+      });
+    }
+    if (!existingIds.has(key)) {
+      throw new ConvexError({
+        code: "invalid_speaker_id",
+        message: "That speaker does not belong to this proposal.",
+      });
+    }
+    referencedIds.add(key);
+  }
+  if (
+    preserveExisting &&
+    existing.some((row) => !referencedIds.has(String(row._id)))
+  ) {
+    throw new ConvexError({
+      code: "accepted_speaker_removal",
+      message:
+        "Existing speakers on an accepted proposal cannot be removed here. Ask an organizer to withdraw their participation.",
+    });
+  }
+  return { existing, speakers: cleaned, referencedIds };
+}
+
+function speakerPatch(
+  proposal: Doc<"proposals">,
+  speaker: PreparedSpeaker,
+  order: number,
+): Omit<Doc<"proposalSpeakers">, "_id" | "_creationTime"> {
+  return {
+    proposalId: proposal._id,
+    eventId: proposal.eventId,
+    order,
+    firstName: speaker.firstName,
+    lastName: speaker.lastName,
+    email: speaker.email,
+    phone: speaker.phone,
+    tagline: speaker.tagline,
+    bio: speaker.bio,
+    headshotId: speaker.headshotId,
+    links: speaker.links,
+    isPrimary: speaker.isPrimary,
+    role: speaker.role,
+  };
+}
+
+async function applySpeakerPlan(
+  ctx: MutationCtx,
+  proposal: Doc<"proposals">,
+  plan: SpeakerPlan,
+): Promise<void> {
+  for (const [order, speaker] of plan.speakers.entries()) {
+    const patch = speakerPatch(proposal, speaker, order);
+    if (speaker.proposalSpeakerId === undefined) {
+      await ctx.db.insert("proposalSpeakers", patch);
+    } else {
+      await ctx.db.patch("proposalSpeakers", speaker.proposalSpeakerId, patch);
+    }
+  }
+  for (const row of plan.existing) {
+    if (!plan.referencedIds.has(String(row._id))) {
+      await ctx.db.delete("proposalSpeakers", row._id);
+    }
+  }
+}
+
+function speakerPlanChanged(
+  plan: SpeakerPlan,
+  proposal: Doc<"proposals">,
+): boolean {
+  if (plan.existing.length !== plan.speakers.length) return true;
+  return plan.speakers.some((speaker, order) => {
+    const existing = plan.existing[order];
+    if (
+      existing === undefined ||
+      speaker.proposalSpeakerId === undefined ||
+      existing._id !== speaker.proposalSpeakerId
+    ) {
+      return true;
+    }
+    return (
+      JSON.stringify(speakerPatch(proposal, speaker, order)) !==
+      JSON.stringify({
+        proposalId: existing.proposalId,
+        eventId: existing.eventId,
+        order: existing.order,
+        firstName: existing.firstName,
+        lastName: existing.lastName,
+        email: existing.email,
+        phone: existing.phone,
+        tagline: existing.tagline,
+        bio: existing.bio,
+        headshotId: existing.headshotId,
+        links: existing.links,
+        isPrimary: existing.isPrimary,
+        role: existing.role,
+      })
+    );
+  });
+}
+
+/** Full-list input, reconciled in place by stable proposal-speaker id. */
 export async function setSpeakers(
   ctx: MutationCtx,
   user: Doc<"users">,
@@ -974,67 +1203,9 @@ export async function setSpeakers(
   speakers: SpeakerInput[],
 ): Promise<void> {
   const { proposal, event } = await loadEditableProposal(ctx, user, proposalId);
-
-  if (speakers.length > MAX_SPEAKERS) {
-    throw new ConvexError({
-      code: "too_many_speakers",
-      message: `A proposal can list at most ${MAX_SPEAKERS} speakers.`,
-    });
-  }
-  const cleaned = speakers.map((s) => {
-    const rawEmail = s.email?.trim();
-    return {
-      ...s,
-      firstName: assertText(s.firstName, {
-        label: "Speaker first name",
-        max: 80,
-      }),
-      lastName: assertText(s.lastName, { label: "Speaker last name", max: 80 }),
-      email:
-        rawEmail !== undefined && rawEmail.length > 0
-          ? normalizeEmail(rawEmail)
-          : undefined,
-      // Speaker links end up as hrefs on the public program (M7), so they get
-      // the same http(s)-only gate as portal profile links (lib/urls.ts).
-      links:
-        s.links === undefined
-          ? undefined
-          : {
-              website: optionalHttpUrl(s.links.website, "Speaker website link"),
-              twitter: optionalHttpUrl(s.links.twitter, "Speaker Twitter link"),
-              linkedin: optionalHttpUrl(
-                s.links.linkedin,
-                "Speaker LinkedIn link",
-              ),
-              github: optionalHttpUrl(s.links.github, "Speaker GitHub link"),
-            },
-    };
-  });
-
-  const existing = await listSpeakers(ctx, proposal._id);
-  for (const row of existing) {
-    await ctx.db.delete("proposalSpeakers", row._id);
-  }
-  for (const [index, speaker] of cleaned.entries()) {
-    await ctx.db.insert("proposalSpeakers", {
-      proposalId: proposal._id,
-      eventId: proposal.eventId,
-      order: index,
-      firstName: speaker.firstName,
-      lastName: speaker.lastName,
-      email: speaker.email,
-      phone: speaker.phone,
-      tagline: speaker.tagline,
-      bio: speaker.bio,
-      headshotId: speaker.headshotId,
-      links: speaker.links,
-      isPrimary: speaker.isPrimary,
-      role:
-        speaker.role === undefined || speaker.role.trim() === ""
-          ? undefined
-          : assertText(speaker.role, { label: "Speaker role", max: 40 }),
-    });
-  }
+  requireStandaloneDraftWrite(proposal);
+  const plan = await prepareSpeakerPlan(ctx, proposal, speakers, false);
+  await applySpeakerPlan(ctx, proposal, plan);
   await ctx.db.patch("proposals", proposal._id, { updatedAt: Date.now() });
   await unstageOnEdit(ctx, proposal, event, proposal.title);
 }
@@ -1049,18 +1220,14 @@ function invalidSubmission(message: string): never {
   throw new ConvexError({ code: "invalid_submission", message });
 }
 
-export async function submitProposal(
-  ctx: MutationCtx,
-  user: Doc<"users">,
-  proposalId: Id<"proposals">,
-): Promise<{ successMessage: string | null }> {
-  const { proposal, event } = await loadEditableProposal(ctx, user, proposalId);
-  const { def, version, row } = await requirePublishedForm(ctx, event);
-
+function validateSubmission(
+  def: FormDef,
+  answers: Record<string, AnswerValue>,
+  speakerCount: number,
+): void {
   // Required-field check runs against the CURRENT published form and only over
   // fields that are actually visible — a hidden conditional field is never
   // required (M1 conditional-logic requirement).
-  const answers = proposal.answers;
   for (const field of visibleFields(def, answers)) {
     const value = answers[field.id];
     if (field.required && isBlank(value)) {
@@ -1072,10 +1239,108 @@ export async function submitProposal(
       }
     }
   }
-  const speakers = await listSpeakers(ctx, proposal._id);
-  if (speakers.length === 0) {
+  if (speakerCount === 0) {
     invalidSubmission("Add at least one speaker before submitting.");
   }
+}
+
+function answersEqual(
+  left: Record<string, AnswerValue>,
+  right: Record<string, AnswerValue>,
+): boolean {
+  const ordered = (answers: Record<string, AnswerValue>) =>
+    Object.keys(answers)
+      .sort()
+      .map((key) => [key, answers[key]]);
+  return JSON.stringify(ordered(left)) === JSON.stringify(ordered(right));
+}
+
+const MAX_REVIEWS_PER_PROPOSAL = 500;
+
+async function reviewsInvalidatedByRevision(
+  ctx: QueryCtx,
+  proposalId: Id<"proposals">,
+): Promise<Array<Doc<"reviews">>> {
+  const reviews = await ctx.db
+    .query("reviews")
+    .withIndex("by_proposalId", (q) => q.eq("proposalId", proposalId))
+    .take(MAX_REVIEWS_PER_PROPOSAL + 1);
+  if (reviews.length > MAX_REVIEWS_PER_PROPOSAL) {
+    throw new ConvexError({
+      code: "event_too_large",
+      message: `This proposal has more than ${MAX_REVIEWS_PER_PROPOSAL} reviews. Its revision is refused rather than invalidating only part of the evaluation history.`,
+    });
+  }
+  // Include pristine assignments too. A reviewer may have an autosave queued
+  // against the old content even though the stored row is still `assigned`.
+  return reviews;
+}
+
+async function invalidateReviewsForRevision(
+  ctx: MutationCtx,
+  event: Doc<"events">,
+  proposal: Doc<"proposals">,
+  actorUserId: Id<"users">,
+  reviews: Array<Doc<"reviews">>,
+  contentVersion: number,
+): Promise<void> {
+  if (reviews.length === 0) return;
+  const now = Date.now();
+  const fromStatuses: Record<string, number> = {};
+  let invalidated = 0;
+  let conflictsCarried = 0;
+  for (const review of reviews) {
+    fromStatuses[review.status] = (fromStatuses[review.status] ?? 0) + 1;
+    // A conflict is tied to the reviewer/proposal relationship rather than a
+    // particular draft of the talk. Preserve the recusal, but advance its
+    // fence so every review row agrees with the proposal's current content.
+    if (review.status === "conflict") {
+      conflictsCarried += 1;
+      await ctx.db.patch("reviews", review._id, {
+        contentVersion,
+        updatedAt: now,
+      });
+      continue;
+    }
+    invalidated += 1;
+    await ctx.db.patch("reviews", review._id, {
+      status: "assigned",
+      answers: undefined,
+      contentVersion,
+      weightedScore: undefined,
+      score: undefined,
+      recommendation: undefined,
+      comments: undefined,
+      submittedAt: undefined,
+      updatedAt: now,
+    });
+  }
+  await logAudit(ctx, {
+    orgId: event.orgId,
+    eventId: event._id,
+    actorUserId,
+    action: "review.invalidateForProposalRevision",
+    targetType: "proposal",
+    targetId: proposal._id,
+    meta: {
+      count: invalidated,
+      conflictsCarried,
+      contentVersion,
+      fromStatuses,
+    },
+  });
+}
+
+export async function submitProposal(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  proposalId: Id<"proposals">,
+): Promise<{ successMessage: string | null }> {
+  const { proposal, event } = await loadEditableProposal(ctx, user, proposalId);
+  requireStandaloneDraftWrite(proposal);
+  const { def, version, row } = await requirePublishedForm(ctx, event);
+  const speakers = await listSpeakers(ctx, proposal._id);
+  validateSubmission(def, proposal.answers, speakers.length);
 
   const now = Date.now();
   const isResubmit = proposal.status !== "draft";
@@ -1100,7 +1365,6 @@ export async function submitProposal(
     formVersion: version,
     updatedAt: now,
   });
-
   // Emails go out AFTER this transaction commits (scheduled internal
   // mutation): a template or delivery failure must never roll back the
   // submission itself (this bit the eval run — Resend test mode + a real
@@ -1118,13 +1382,135 @@ export async function submitProposal(
     action: "cfp.submit",
     targetType: "proposal",
     targetId: proposal._id,
-    meta: { isResubmit },
+    meta: {
+      isResubmit,
+    },
   });
 
   return { successMessage: row.successMessage ?? null };
 }
 
-/** Post-commit half of `submitProposal` — runs in its own transaction so an
+/**
+ * Atomically replace every editable part of an already-submitted proposal and
+ * resubmit it. Validation and identity reconciliation finish before the first
+ * write; any later failure (including accepted-session synchronization) rolls
+ * the entire mutation back, so organizers can never observe half a revision.
+ */
+export async function resubmitProposal(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  proposalId: Id<"proposals">,
+  expectedContentVersion: number,
+  answers: Record<string, AnswerValue>,
+  speakers: SpeakerInput[],
+): Promise<{ successMessage: string | null }> {
+  const { proposal, event } = await loadEditableProposal(ctx, user, proposalId);
+  if (
+    !Number.isSafeInteger(expectedContentVersion) ||
+    expectedContentVersion < 0
+  ) {
+    throw new ConvexError({
+      code: "invalid_content_version",
+      message: "Refresh this proposal before resubmitting it.",
+    });
+  }
+  if ((proposal.contentVersion ?? 0) !== expectedContentVersion) {
+    throw new ConvexError({
+      code: "stale_proposal_content",
+      message:
+        "This proposal changed in another tab. Refresh the page before resubmitting so newer changes are not overwritten.",
+    });
+  }
+  if (proposal.status === "draft") {
+    throw new ConvexError({
+      code: "invalid_status",
+      message: "Use the initial submission action for a draft proposal.",
+    });
+  }
+  const { def, version, row } = await requirePublishedForm(ctx, event);
+  const preparedAnswers = prepareAnswers(ctx, def, answers);
+  const speakerPlan = await prepareSpeakerPlan(
+    ctx,
+    proposal,
+    speakers,
+    proposal.status === "accepted",
+  );
+  validateSubmission(def, preparedAnswers.answers, speakerPlan.speakers.length);
+
+  const contentChanged =
+    !answersEqual(proposal.answers, preparedAnswers.answers) ||
+    speakerPlanChanged(speakerPlan, proposal);
+  // Read and cap the complete affected set before any writes. A partial review
+  // reset would be worse than rejecting the revision.
+  const invalidatedReviews = contentChanged
+    ? await reviewsInvalidatedByRevision(ctx, proposal._id)
+    : [];
+  const contentVersion =
+    (proposal.contentVersion ?? 0) + (contentChanged ? 1 : 0);
+  const now = Date.now();
+  const preservesReleasedAcceptance = proposal.status === "accepted";
+
+  await applySpeakerPlan(ctx, proposal, speakerPlan);
+  await ctx.db.patch("proposals", proposal._id, {
+    answers: preparedAnswers.answers,
+    title: preparedAnswers.title,
+    status: preservesReleasedAcceptance ? "accepted" : "pending",
+    submittedAt: proposal.submittedAt ?? now,
+    formVersion: version,
+    contentVersion,
+    updatedAt: now,
+  });
+
+  if (proposal.status === "acceptQueue" || proposal.status === "declineQueue") {
+    await logAudit(ctx, {
+      orgId: event.orgId,
+      eventId: event._id,
+      actorUserId: user._id,
+      action: "decision.unstaged",
+      targetType: "proposal",
+      targetId: proposal._id,
+      meta: { from: proposal.status, reason: "submitter_resubmit" },
+    });
+  }
+  await invalidateReviewsForRevision(
+    ctx,
+    event,
+    proposal,
+    user._id,
+    invalidatedReviews,
+    contentVersion,
+  );
+
+  if (preservesReleasedAcceptance) {
+    await ctx.runMutation(internal.sessions.syncAcceptedProposalRevision, {
+      proposalId: proposal._id,
+      submittedByUserId: user._id,
+    });
+  }
+  await ctx.scheduler.runAfter(0, internal.cfp.sendSubmissionEmails, {
+    proposalId: proposal._id,
+    submittedByUserId: user._id,
+    isResubmit: true,
+  });
+  await logAudit(ctx, {
+    orgId: event.orgId,
+    eventId: event._id,
+    actorUserId: user._id,
+    action: "cfp.submit",
+    targetType: "proposal",
+    targetId: proposal._id,
+    meta: {
+      isResubmit: true,
+      contentChanged,
+      ...(preservesReleasedAcceptance
+        ? { releasedDecisionPreserved: true }
+        : {}),
+    },
+  });
+  return { successMessage: row.successMessage ?? null };
+}
+
+/** Post-commit half of submit/resubmit — runs in its own transaction so an
  * email failure can't unwind the submission. */
 export async function sendSubmissionEmails(
   ctx: MutationCtx,
@@ -1173,16 +1559,23 @@ export async function sendSubmissionEmails(
     });
   }
 
-  const adminNotice = await renderTemplate(ctx, event, "cfp.adminNotification", {
-    event: { name: event.name },
-    proposal: {
-      title,
-      speakers: speakers.map((s) => `${s.firstName} ${s.lastName}`).join(", "),
+  const adminNotice = await renderTemplate(
+    ctx,
+    event,
+    "cfp.adminNotification",
+    {
+      event: { name: event.name },
+      proposal: {
+        title,
+        speakers: speakers
+          .map((s) => `${s.firstName} ${s.lastName}`)
+          .join(", "),
+      },
+      subjectLead: isResubmit ? "Updated proposal" : "New proposal",
+      intro: isResubmit ? "A proposal was updated" : "A new proposal arrived",
+      link: eventConsoleLink(event.slug),
     },
-    subjectLead: isResubmit ? "Updated proposal" : "New proposal",
-    intro: isResubmit ? "A proposal was updated" : "A new proposal arrived",
-    link: eventConsoleLink(event.slug),
-  });
+  );
   await notifyOrganizers(ctx, event, {
     kind: "cfp.adminNotification",
     subject: adminNotice.subject,
@@ -1448,6 +1841,7 @@ export async function createManualProposal(
     title,
     answers,
     formVersion: form.version,
+    contentVersion: 0,
     submittedAt: now,
     updatedAt: now,
   });
@@ -1514,7 +1908,8 @@ export async function listFileAnswers(
             proposalTitle: p.title,
             fieldLabel: f.label,
             storageId: answer,
-            url: storageId === null ? null : await ctx.storage.getUrl(storageId),
+            url:
+              storageId === null ? null : await ctx.storage.getUrl(storageId),
           });
         }
       }),
@@ -1531,9 +1926,20 @@ export async function reopenProposal(
   until: number,
 ): Promise<void> {
   requireOrganizer(caller);
+  assertEventActive(caller.event);
   const proposal = await ctx.db.get("proposals", proposalId);
   if (proposal === null || proposal.eventId !== caller.event._id) {
     notFound("proposal", "No such proposal on this event.");
+  }
+  if (
+    proposal.status !== "accepted" &&
+    !EDITABLE_STATUSES.has(proposal.status)
+  ) {
+    throw new ConvexError({
+      code: "invalid_status",
+      message:
+        "Only undecided or accepted proposals can be reopened for editing.",
+    });
   }
   if (!Number.isFinite(until) || until <= Date.now()) {
     throw new ConvexError({
@@ -1549,6 +1955,12 @@ export async function reopenProposal(
     action: "cfp.reopenProposal",
     targetType: "proposal",
     targetId: proposalId,
-    meta: { until },
+    meta: {
+      until,
+      statusAtReopen: proposal.status,
+      ...(proposal.status === "accepted"
+        ? { releasedDecisionPreserved: true }
+        : {}),
+    },
   });
 }

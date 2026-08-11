@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { parseContactsCsv } from './CrmTools'
+import { contactMatchesSearch, parseContactsCsv } from './CrmTools'
 
 describe('contact CSV preview', () => {
   test('parses quoted fields and optional CRM columns', () => {
@@ -44,5 +44,27 @@ describe('contact CSV preview', () => {
       company: 'Latticework Systems',
       bio: 'Leads the build-tooling platform team.',
     })
+  })
+})
+
+describe('contact search', () => {
+  const contact = {
+    firstName: 'Dana',
+    lastName: 'Kowalski',
+    email: 'dana@example.com',
+    company: 'Signal Harbor',
+    jobTitle: 'AI Engineer',
+    tags: ['AI Experts'],
+  } as Parameters<typeof contactMatchesSearch>[0]
+
+  test('matches a full name spanning the separate name fields', () => {
+    expect(contactMatchesSearch(contact, 'Dana Kowalski')).toBe(true)
+  })
+
+  test('keeps partial and CRM-attribute search behavior', () => {
+    expect(contactMatchesSearch(contact, 'dana')).toBe(true)
+    expect(contactMatchesSearch(contact, 'AI Engineer')).toBe(true)
+    expect(contactMatchesSearch(contact, 'AI Experts')).toBe(true)
+    expect(contactMatchesSearch(contact, 'not present')).toBe(false)
   })
 })

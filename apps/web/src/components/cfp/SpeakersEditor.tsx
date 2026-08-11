@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { speakerName } from './model'
 import type * as React from 'react'
-import type { Doc } from '@convex/_generated/dataModel'
+import type { Doc, Id } from '@convex/_generated/dataModel'
 import {
   Badge,
   Button,
+  Callout,
   Card,
   DescriptionList,
   Field,
@@ -16,8 +17,9 @@ import {
 } from '~/ds'
 
 // The speaker list editor, shared by the wizard's Participants step and the
-// manage page. Replace-all semantics: the whole list is written on every save,
-// so the local draft is the single source of truth while editing.
+// manage page. The whole list is sent on every save, with persisted ids so the
+// backend can reconcile existing rows in place while the local draft remains
+// the single source of truth during editing.
 
 export const MAX_SPEAKERS = 10
 
@@ -44,6 +46,8 @@ const HANDLE_INPUT = {
 
 export type SpeakerDraft = {
   key: string
+  /** Persisted identity; absent only for a speaker added in this editor. */
+  proposalSpeakerId?: Id<'proposalSpeakers'>
   firstName: string
   lastName: string
   email: string
@@ -89,6 +93,7 @@ export function speakersFromDocs(
   if (docs.length === 0) return [emptySpeaker(true)]
   return docs.map((doc, index) => ({
     key: doc._id,
+    proposalSpeakerId: doc._id,
     firstName: doc.firstName,
     lastName: doc.lastName,
     email: doc.email ?? '',
@@ -104,7 +109,8 @@ export function speakersFromDocs(
   }))
 }
 
-type SpeakerInput = {
+export type SpeakerInput = {
+  proposalSpeakerId?: Id<'proposalSpeakers'>
   firstName: string
   lastName: string
   email?: string
@@ -138,6 +144,7 @@ export function speakersToInput(
     }
     const hasLinks = Object.values(links).some((v) => v !== undefined)
     return {
+      proposalSpeakerId: draft.proposalSpeakerId,
       firstName: draft.firstName.trim(),
       lastName: draft.lastName.trim(),
       email: trimmed(draft.email),
@@ -181,11 +188,14 @@ export function SpeakersEditor({
   speakers,
   onChange,
   disabled = false,
+  lockExistingRemoval = false,
   self,
 }: {
   speakers: Array<SpeakerDraft>
   onChange: (next: Array<SpeakerDraft>) => void
   disabled?: boolean
+  /** Accepted proposals retain materialized speakers until organizer withdrawal. */
+  lockExistingRemoval?: boolean
   /** Signed-in user's details, for the "That's me" quick fill. */
   self?: SelfDetails
 }) {
@@ -212,8 +222,22 @@ export function SpeakersEditor({
 
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-4)',
+      }}
     >
+      {lockExistingRemoval &&
+      speakers.some((speaker) => speaker.proposalSpeakerId !== undefined) ? (
+        <Callout
+          tone="attention"
+          title="Existing speakers stay on this session"
+        >
+          You can add a coauthor, but a speaker already materialized from this
+          accepted proposal can only be withdrawn by an organizer.
+        </Callout>
+      ) : null}
       {speakers.map((speaker, index) => (
         <SpeakerCard
           key={speaker.key}
@@ -221,6 +245,9 @@ export function SpeakersEditor({
           index={index}
           disabled={disabled}
           canRemove={speakers.length > 1}
+          removalLocked={
+            lockExistingRemoval && speaker.proposalSpeakerId !== undefined
+          }
           self={self}
           onPatch={(patch) => {
             update(speaker.key, patch)
@@ -267,6 +294,7 @@ function SpeakerCard({
   index,
   disabled,
   canRemove,
+  removalLocked,
   self,
   onPatch,
   onRemove,
@@ -276,6 +304,7 @@ function SpeakerCard({
   index: number
   disabled: boolean
   canRemove: boolean
+  removalLocked: boolean
   self?: SelfDetails
   onPatch: (patch: Partial<SpeakerDraft>) => void
   onRemove: () => void
@@ -300,7 +329,11 @@ function SpeakerCard({
       }
       actions={
         <div
-          style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+          }}
         >
           {speaker.isPrimary ? (
             <Badge tone="brand">Primary</Badge>
@@ -315,7 +348,7 @@ function SpeakerCard({
               label={`Remove ${named.length > 0 ? named : `speaker ${index + 1}`}`}
               size="sm"
               onClick={onRemove}
-              disabled={disabled}
+              disabled={disabled || removalLocked}
             />
           ) : null}
         </div>
@@ -530,7 +563,11 @@ export function SpeakersSummary({
 }) {
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-4)',
+      }}
     >
       {speakers.map((speaker, index) => {
         const named = speakerName(speaker)

@@ -6,6 +6,7 @@ import type { InstanceRow } from './model'
 import type { Id } from '@convex/_generated/dataModel'
 import { Button, Callout, Dialog, Field, Input, Textarea } from '~/ds'
 import { TaskCommentThread } from '~/components/tasks/TaskCommentThread'
+import { UploadVersionList } from '~/components/tasks/UploadVersionList'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
@@ -588,55 +589,11 @@ function UploadsDialog({
             or you can attach it here on their behalf.
           </p>
         ) : (
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            {uploads.map((file) => (
-              <li
-                key={file.uploadId}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 'var(--space-3)',
-                  flexWrap: 'wrap',
-                  minHeight: 'var(--row-height-md)',
-                  borderBottom: 'var(--space-px) solid var(--border-subtle)',
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 'var(--text-xs)',
-                    color: 'var(--text-tertiary)',
-                  }}
-                >
-                  v{file.version}
-                </span>
-                {file.url === null ? (
-                  <span style={{ color: 'var(--text-tertiary)' }}>
-                    {file.filename} (unavailable)
-                  </span>
-                ) : (
-                  <a
-                    href={file.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{ color: 'var(--text-link)' }}
-                  >
-                    {file.filename}
-                  </a>
-                )}
-                {file.approvedAt === undefined ? null : (
-                  <span
-                    style={{
-                      font: 'var(--type-caption)',
-                      color: 'var(--text-success)',
-                    }}
-                  >
-                    Approved
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
+          <UploadVersionList
+            uploads={uploads}
+            timezone={timezone}
+            rowSize="md"
+          />
         )}
         <p
           style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}

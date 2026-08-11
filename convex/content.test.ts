@@ -37,7 +37,13 @@ async function seedSession(t: TestT) {
 describe("sessions content history (W5)", () => {
   test("edits record attributed revisions and restore brings the older content back", async () => {
     const t = setupTest();
-    const { alice, eventSlug, sessionId } = await seedSession(t);
+    const { eventSlug, sessionId } = await seedSession(t);
+    // Same account, refreshed from canonical OIDC claims on the next ensure.
+    const alice = await signIn(t, "alice", {
+      name: undefined,
+      givenName: "Jordan",
+      familyName: "Alvarez",
+    });
 
     await alice.mutation(api.sessions.updateContent, {
       eventSlug,
@@ -48,8 +54,7 @@ describe("sessions content history (W5)", () => {
     await alice.mutation(api.sessions.updateContent, {
       eventSlug,
       sessionId,
-      description:
-        "Original abstract. Now with a live demo. Bring a laptop.",
+      description: "Original abstract. Now with a live demo. Bring a laptop.",
     });
 
     const revisions = await alice.query(api.sessions.listRevisions, {
@@ -57,7 +62,8 @@ describe("sessions content history (W5)", () => {
       sessionId,
     });
     expect(revisions).toHaveLength(2);
-    expect(revisions[0].editorName).toBe("alice");
+    expect(revisions[0].editorName).toBe("Jordan Alvarez");
+    expect(revisions[0].editorEmail).toBe("alice@example.com");
     expect(revisions[0].editedAt).toBeGreaterThan(0);
     // Newest first: the top row's `before` is the state after edit #1.
     expect(revisions[0].before.description).toBe(

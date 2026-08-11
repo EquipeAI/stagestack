@@ -182,7 +182,12 @@ export const markNotApplicable = eventMutation({
   args: { instanceId: v.id("taskInstances"), reason: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await Tasks.markNotApplicable(ctx, ctx.caller, args.instanceId, args.reason);
+    await Tasks.markNotApplicable(
+      ctx,
+      ctx.caller,
+      args.instanceId,
+      args.reason,
+    );
     return null;
   },
 });
@@ -329,7 +334,9 @@ export const filesLibrary = eventQuery({
     }),
   ),
   handler: async (ctx) => {
-    return await Tasks.filesLibrary(ctx, ctx.caller);
+    return Tasks.legacyLibraryFileRows(
+      await Tasks.filesLibrary(ctx, ctx.caller, { includeHeadshots: false }),
+    );
   },
 });
 
@@ -345,7 +352,57 @@ export const exportBundle = eventQuery({
     }),
   ),
   handler: async (ctx, args) => {
-    return await Tasks.exportBundle(ctx, ctx.caller, args.instanceIds);
+    return await Tasks.exportBundle(
+      ctx,
+      ctx.caller,
+      args.instanceIds.map((id) => `task:${id}`),
+      true,
+    );
+  },
+});
+
+// Expanded files API. Versioned names keep Convex-first deployments safe for
+// an older web bundle that still consumes the task-only contracts above.
+
+export const filesLibraryV2 = eventQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      fileId: v.string(),
+      kind: v.union(v.literal("task"), v.literal("headshot")),
+      instanceId: v.union(vv.id("taskInstances"), v.null()),
+      requirementTitle: v.string(),
+      sessionId: v.union(vv.id("sessions"), v.null()),
+      sessionTitle: v.string(),
+      speakerName: v.union(v.string(), v.null()),
+      sourceFilename: v.union(v.string(), v.null()),
+      filename: v.string(),
+      version: v.union(v.number(), v.null()),
+      versionCount: v.union(v.number(), v.null()),
+      uploadedByName: v.union(v.string(), v.null()),
+      uploadedAt: v.union(v.number(), v.null()),
+      url: v.union(v.string(), v.null()),
+      commentCount: v.number(),
+    }),
+  ),
+  handler: async (ctx) => {
+    return await Tasks.filesLibrary(ctx, ctx.caller);
+  },
+});
+
+export const exportBundleV2 = eventQuery({
+  args: { fileIds: v.array(v.string()) },
+  returns: v.array(
+    v.object({
+      filename: v.string(),
+      url: v.union(v.string(), v.null()),
+      sessionTitle: v.string(),
+      speakerName: v.union(v.string(), v.null()),
+      requirementTitle: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Tasks.exportBundle(ctx, ctx.caller, args.fileIds);
   },
 });
 
@@ -369,6 +426,7 @@ export const taskComments = eventQuery({
       ctx.caller.user,
       ctx.caller.event,
       args.instanceId,
+      "organizer",
     );
   },
 });

@@ -8,6 +8,7 @@ import {
   MAX_HEADSHOT_STORED_BYTES_PER_USER_GLOBAL,
   MAX_HEADSHOT_STORED_TICKETS_PER_USER,
   MAX_HEADSHOT_STORED_TICKETS_PER_USER_GLOBAL,
+  MAX_SPEAKER_CUSTOM_VALUES_BYTES,
 } from "./model/speakers";
 import {
   createEvent,
@@ -61,7 +62,10 @@ function largeMetadataPng(): Uint8Array {
   view.setUint32(0, data.byteLength);
   chunk.set(new TextEncoder().encode("tEXt"), 4);
   chunk.set(data, 8);
-  view.setUint32(8 + data.byteLength, crc32(chunk.subarray(4, 8 + data.length)));
+  view.setUint32(
+    8 + data.byteLength,
+    crc32(chunk.subarray(4, 8 + data.length)),
+  );
   const output = new Uint8Array(base.byteLength + chunk.byteLength);
   // Signature + IHDR is 33 bytes in the canonical fixture.
   output.set(base.subarray(0, 33));
@@ -563,9 +567,9 @@ describe("bound speaker headshot uploads", () => {
         expiresAt: 0,
       });
     });
-    expect(
-      await t.mutation(internal.headshotUploads.cleanupExpired, {}),
-    ).toBe(0);
+    expect(await t.mutation(internal.headshotUploads.cleanupExpired, {})).toBe(
+      0,
+    );
     expect(
       (await uploadRows(t)).find((row) => row._id === completeTicket.uploadId)
         ?.status,
@@ -623,9 +627,9 @@ describe("bound speaker headshot uploads", () => {
         expiresAt: 0,
       });
     });
-    expect(
-      await t.mutation(internal.headshotUploads.cleanupExpired, {}),
-    ).toBe(0);
+    expect(await t.mutation(internal.headshotUploads.cleanupExpired, {})).toBe(
+      0,
+    );
     await alice.mutation(internal.headshotUploads.fail, {
       uploadId: failedTicket.uploadId,
     });
@@ -693,10 +697,9 @@ describe("bound speaker headshot uploads", () => {
         contentType: IMAGE_TYPE,
       });
       expect(
-        await alice.mutation(
-          internal.headshotUploads.beginStorageAttempt,
-          { uploadId: ticket.uploadId },
-        ),
+        await alice.mutation(internal.headshotUploads.beginStorageAttempt, {
+          uploadId: ticket.uploadId,
+        }),
       ).toEqual({ reserved: true });
       // Simulate termination after storage.store returned to the runtime but
       // before recordSource durably captured the id.
@@ -1211,9 +1214,9 @@ describe("bound speaker headshot uploads", () => {
         cleanupAfter: 0,
       });
     });
-    expect(
-      await t.mutation(internal.headshotUploads.cleanupExpired, {}),
-    ).toBe(1);
+    expect(await t.mutation(internal.headshotUploads.cleanupExpired, {})).toBe(
+      1,
+    );
     expect(await storageExists(t, first.storageId)).toBe(false);
     expect(
       (await uploadRows(t)).find((row) => row._id === first.uploadId)?.status,
@@ -1222,6 +1225,63 @@ describe("bound speaker headshot uploads", () => {
       ctx.db.query("headshotUploadUsage").unique(),
     );
     expect(usageAfter?.ticketCount).toBe(1);
+  });
+});
+
+describe("speaker custom value payloads", () => {
+  test("enforces the aggregate UTF-8 byte budget atomically", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, eventContactId } = await setupSpeaker(t);
+    const fieldIds = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("event missing");
+      const ids: Array<Id<"customFields">> = [];
+      for (let index = 0; index < 11; index += 1) {
+        ids.push(
+          await ctx.db.insert("customFields", {
+            eventId: event._id,
+            name: `Travel detail ${index}`,
+            kind: "text",
+            appliesTo: "speaker",
+            order: index,
+          }),
+        );
+      }
+      return ids;
+    });
+    const values = Object.fromEntries(
+      fieldIds.map((fieldId) => [fieldId, "€".repeat(1_000)]),
+    );
+    const accepted = Object.fromEntries(Object.entries(values).slice(0, 10));
+    expect(
+      new TextEncoder().encode(JSON.stringify(accepted)).length,
+    ).toBeLessThanOrEqual(MAX_SPEAKER_CUSTOM_VALUES_BYTES);
+    expect(
+      new TextEncoder().encode(JSON.stringify(values)).length,
+    ).toBeGreaterThan(MAX_SPEAKER_CUSTOM_VALUES_BYTES);
+
+    await alice.mutation(api.speakers.setCustomValues, {
+      eventSlug,
+      eventContactId,
+      values: accepted,
+    });
+    await expectRejectedWith(
+      alice.mutation(api.speakers.setCustomValues, {
+        eventSlug,
+        eventContactId,
+        values,
+      }),
+      "custom_values_too_large",
+    );
+    expect(
+      await t.run(
+        async (ctx) =>
+          (await ctx.db.get("eventContacts", eventContactId))?.customValues,
+      ),
+    ).toEqual(accepted);
   });
 });
 
@@ -1246,6 +1306,11 @@ describe("speaker CSV merge side effects", () => {
       eventSlug,
       participantId,
       to: "confirmed",
+    });
+    await alice.mutation(api.sessions.setContentStatus, {
+      eventSlug,
+      sessionId,
+      to: "approved",
     });
     await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
     await alice.mutation(api.publish.setSession, {
@@ -1413,6 +1478,11 @@ describe("speaker CSV merge side effects", () => {
         // Just below the projection guard until the 4KB profile is added.
         description: "x".repeat(919_000),
       });
+    });
+    await alice.mutation(api.sessions.setContentStatus, {
+      eventSlug,
+      sessionId,
+      to: "approved",
     });
     await alice.mutation(api.publish.setSession, {
       eventSlug,

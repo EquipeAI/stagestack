@@ -32,6 +32,22 @@ async function messageRows(t: TestT): Promise<Array<Doc<"messages">>> {
   return await t.run(async (ctx) => ctx.db.query("messages").collect());
 }
 
+function speakerInput(speaker: Doc<"proposalSpeakers">) {
+  return {
+    proposalSpeakerId: speaker._id,
+    firstName: speaker.firstName,
+    lastName: speaker.lastName,
+    email: speaker.email,
+    phone: speaker.phone,
+    tagline: speaker.tagline,
+    bio: speaker.bio,
+    headshotId: speaker.headshotId,
+    links: speaker.links,
+    isPrimary: speaker.isPrimary,
+    role: speaker.role,
+  };
+}
+
 // ── Substitution (pure) ──────────────────────────────────────────────────
 
 describe("substitution", () => {
@@ -392,7 +408,13 @@ describe("lifecycle sends render through templates", () => {
     };
     await bob.mutation(api.cfp.submitProposal, { proposalId });
     await drain();
-    await bob.mutation(api.cfp.submitProposal, { proposalId });
+    const submitted = await bob.query(api.cfp.getMyProposal, { proposalId });
+    await bob.mutation(api.cfp.resubmitProposal, {
+      proposalId,
+      expectedContentVersion: submitted.proposal.contentVersion ?? 0,
+      answers: submitted.proposal.answers,
+      speakers: submitted.speakers.map(speakerInput),
+    });
     await drain();
 
     const confirmations = (await messageRows(t)).filter(

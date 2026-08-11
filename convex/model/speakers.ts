@@ -36,6 +36,8 @@ const HEADSHOT_UPLOAD_TTL_MS = 60 * 60 * 1000;
 const HEADSHOT_UPLOAD_LEASE_MS = 15 * 60 * 1000;
 const HEADSHOT_REFERENCE_SCAN = 1000;
 const HEADSHOT_CLEANUP_RETRY_MS = 24 * 60 * 60 * 1000;
+const MAX_HEADSHOT_FILENAME = 300;
+export const MAX_SPEAKER_CUSTOM_VALUES_BYTES = 32 * 1024;
 export const MAX_HEADSHOT_STORED_BYTES_PER_USER = 50 * 1024 * 1024;
 export const MAX_HEADSHOT_STORED_TICKETS_PER_USER = 50;
 export const MAX_HEADSHOT_STORED_BYTES_PER_USER_GLOBAL = 50 * 1024 * 1024;
@@ -76,7 +78,28 @@ export type HeadshotSourceDetails = {
   size?: number;
 };
 
-function cleanHeadshotIntent(contentType: string, size: number) {
+function cleanHeadshotFilename(
+  filename: string | undefined,
+): string | undefined {
+  if (filename === undefined) return undefined;
+  const cleaned = filename.normalize("NFKC").trim();
+  if (
+    cleaned.length === 0 ||
+    cleaned.length > MAX_HEADSHOT_FILENAME ||
+    cleaned === "." ||
+    cleaned === ".." ||
+    /[\\/\u0000-\u001f\u007f]/.test(cleaned)
+  ) {
+    invalidHeadshot("The photo filename must be a safe basename.");
+  }
+  return cleaned;
+}
+
+function cleanHeadshotIntent(
+  contentType: string,
+  size: number,
+  filename?: string,
+) {
   const normalizedType = supportedHeadshotType(contentType);
   if (normalizedType === null)
     invalidHeadshot("Choose a JPEG, PNG, or WebP image for the headshot.");
@@ -86,7 +109,11 @@ function cleanHeadshotIntent(contentType: string, size: number) {
   if (size > MAX_HEADSHOT_SOURCE_BYTES) {
     invalidHeadshot("Source headshots must be 4 MB or smaller.");
   }
-  return { contentType: normalizedType, size };
+  return {
+    contentType: normalizedType,
+    size,
+    filename: cleanHeadshotFilename(filename),
+  };
 }
 
 function uploadMatchesScope(
@@ -179,10 +206,7 @@ async function loadFlexibleHeadshotReferences(
 }
 
 type HeadshotReferenceState =
-  | "unreferenced"
-  | "referenced"
-  | "retryableAmbiguous"
-  | "ambiguous";
+  "unreferenced" | "referenced" | "retryableAmbiguous" | "ambiguous";
 
 async function headshotReferenceState(
   ctx: QueryCtx,
@@ -309,8 +333,8 @@ async function reconcileHeadshotReservation(
   quotaState: Doc<"headshotUploads">["quotaState"],
 ): Promise<void> {
   const currentBytes = upload.reservedBytes ?? 0;
-  const currentBlobCount = upload.reservedBlobCount ??
-    (currentBytes > 0 ? 1 : 0);
+  const currentBlobCount =
+    upload.reservedBlobCount ?? (currentBytes > 0 ? 1 : 0);
   if (currentBytes === nextBytes && currentBlobCount === nextBlobCount) {
     await ctx.db.patch("headshotUploads", upload._id, { quotaState });
     return;
@@ -531,11 +555,7 @@ export async function markHeadshotOutputKnownDeleted(
 }
 
 type HeadshotDeletionResult =
-  | "deleted"
-  | "referenced"
-  | "retryableAmbiguous"
-  | "ambiguous"
-  | "unowned";
+  "deleted" | "referenced" | "retryableAmbiguous" | "ambiguous" | "unowned";
 
 /** Delete only a blob that is both owned by this exact ticket and no longer
  * referenced by any directory/snapshot/other ticket. Bounded-scan ambiguity
@@ -580,9 +600,13 @@ async function deleteOwnedHeadshotIfUnreferenced(
 export async function beginHeadshotUpload(
   ctx: MutationCtx,
   scope: HeadshotUploadScope,
-  intent: { contentType: string; size: number },
+  intent: { contentType: string; size: number; filename?: string },
 ): Promise<{ uploadId: Id<"headshotUploads"> }> {
-  const cleaned = cleanHeadshotIntent(intent.contentType, intent.size);
+  const cleaned = cleanHeadshotIntent(
+    intent.contentType,
+    intent.size,
+    intent.filename,
+  );
   const now = Date.now();
   const uploadId = await ctx.db.insert("headshotUploads", {
     orgId: scope.orgId,
@@ -592,6 +616,7 @@ export async function beginHeadshotUpload(
     purpose: "speakerHeadshot",
     expectedContentType: cleaned.contentType,
     expectedSize: cleaned.size,
+    originalFilename: cleaned.filename,
     status: "pending",
     createdAt: now,
     expiresAt: now + HEADSHOT_UPLOAD_TTL_MS,
@@ -773,10 +798,7 @@ export async function cleanupHeadshotSource(
   sourceStorageId: Id<"_storage">,
 ): Promise<boolean> {
   const upload = await ctx.db.get("headshotUploads", uploadId);
-  if (
-    upload === null ||
-    upload.sourceStorageId !== sourceStorageId
-  ) {
+  if (upload === null || upload.sourceStorageId !== sourceStorageId) {
     return false;
   }
   if (
@@ -1357,11 +1379,9 @@ export async function retireReplacedHeadshot(
     status: "replaced",
     replacedAt: now,
   });
-  await ctx.scheduler.runAfter(
-    0,
-    internal.headshotUploads.cleanupReplacement,
-    { uploadId: ownership._id },
-  );
+  await ctx.scheduler.runAfter(0, internal.headshotUploads.cleanupReplacement, {
+    uploadId: ownership._id,
+  });
 }
 
 /** Organizer edit of a speaker's event snapshot (CNT-10). Also refreshes the
@@ -1582,7 +1602,7 @@ export async function beginOrganizerHeadshotUpload(
   ctx: MutationCtx,
   caller: EventCaller,
   eventContactId: Id<"eventContacts">,
-  intent: { contentType: string; size: number },
+  intent: { contentType: string; size: number; filename?: string },
 ): Promise<{ uploadId: Id<"headshotUploads"> }> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
@@ -1680,6 +1700,13 @@ export async function setCustomValues(
       continue;
     }
     cleaned[key] = text.slice(0, 2000);
+  }
+  const encodedBytes = new TextEncoder().encode(JSON.stringify(cleaned)).length;
+  if (encodedBytes > MAX_SPEAKER_CUSTOM_VALUES_BYTES) {
+    throw new ConvexError({
+      code: "custom_values_too_large",
+      message: `Speaker custom values must use at most ${MAX_SPEAKER_CUSTOM_VALUES_BYTES / 1024} KiB in total.`,
+    });
   }
   await ctx.db.patch("eventContacts", contact._id, { customValues: cleaned });
   await logAudit(ctx, {

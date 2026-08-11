@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useConvex, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { FunctionReturnType } from 'convex/server'
-import type { Id } from '@convex/_generated/dataModel'
 import {
   Button,
   Card,
@@ -25,7 +24,7 @@ import { pushToast } from '~/components/toast'
 // jszip is dynamically imported so it never enters the everyday bundle
 // (same pattern as the abstracts exporters).
 
-type FileRow = FunctionReturnType<typeof api.tasks.filesLibrary>[number]
+type FileRow = FunctionReturnType<typeof api.tasks.filesLibraryV2>[number]
 
 type Grouping = 'session' | 'speaker' | 'flat'
 type ZipState = 'idle' | 'generating' | 'ready' | 'error'
@@ -43,7 +42,7 @@ export function FilesPanel({
   eventSlug: string
   timezone: string
 }) {
-  const files = useQuery(api.tasks.filesLibrary, { eventSlug })
+  const files = useQuery(api.tasks.filesLibraryV2, { eventSlug })
   const convex = useConvex()
   // null means the initial "all latest files" selection. An explicit empty
   // Set means the organizer really deselected everything; it must never be
@@ -69,12 +68,11 @@ export function FilesPanel({
     )
   }
 
-  const selectedIds =
-    selected ?? new Set(files.map((row) => row.instanceId as string))
+  const selectedIds = selected ?? new Set(files.map((row) => row.fileId))
   const allSelected = selectedIds.size === files.length
   const toggleAll = () => {
     setSelected(
-      allSelected ? new Set() : new Set(files.map((row) => row.instanceId)),
+      allSelected ? new Set() : new Set(files.map((row) => row.fileId)),
     )
   }
   const toggleOne = (id: string) => {
@@ -90,10 +88,9 @@ export function FilesPanel({
     setZipState('generating')
     void (async () => {
       try {
-        const instanceIds = [...selectedIds] as Array<Id<'taskInstances'>>
-        const bundle = await convex.query(api.tasks.exportBundle, {
+        const bundle = await convex.query(api.tasks.exportBundleV2, {
           eventSlug,
-          instanceIds,
+          fileIds: [...selectedIds],
         })
         const { added, skipped } = await buildZip(bundle, grouping, eventSlug)
         if (added === 0) {
@@ -148,6 +145,9 @@ export function FilesPanel({
             }}
           >
             {countLabel(files.length, 'file', 'files')}
+            {
+              ' · Complete view · 120 files · 64 headshots/sessions · 16 additional task contacts max'
+            }
             {selectedIds.size > 0 ? ` · ${selectedIds.size} selected` : ''}
           </span>
         }
@@ -204,7 +204,7 @@ export function FilesPanel({
 
       <Card padded={false}>
         <DataTable
-          rowKey="instanceId"
+          rowKey="fileId"
           selectedIds={[...selectedIds]}
           rows={files}
           columns={[
@@ -214,9 +214,9 @@ export function FilesPanel({
               header: <Checkbox checked={allSelected} onChange={toggleAll} />,
               cell: (row: FileRow) => (
                 <Checkbox
-                  checked={selectedIds.has(row.instanceId)}
+                  checked={selectedIds.has(row.fileId)}
                   onChange={() => {
-                    toggleOne(row.instanceId)
+                    toggleOne(row.fileId)
                   }}
                 />
               ),
@@ -224,21 +224,42 @@ export function FilesPanel({
             {
               key: 'filename',
               header: 'File',
-              cell: (row: FileRow) =>
-                row.url === null ? (
-                  <span style={{ color: 'var(--text-tertiary)' }}>
-                    {row.filename} (unavailable)
-                  </span>
-                ) : (
-                  <a
-                    href={row.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{ color: 'var(--text-link)' }}
-                  >
-                    {row.filename}
-                  </a>
-                ),
+              cell: (row: FileRow) => (
+                <span
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    gap: 'var(--space-1)',
+                  }}
+                >
+                  {row.url === null ? (
+                    <span style={{ color: 'var(--text-tertiary)' }}>
+                      {row.filename} (unavailable)
+                    </span>
+                  ) : (
+                    <a
+                      href={row.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      download={row.filename}
+                      style={{ color: 'var(--text-link)' }}
+                    >
+                      {row.filename}
+                    </a>
+                  )}
+                  {row.sourceFilename === null ? null : (
+                    <span
+                      style={{
+                        font: 'var(--type-caption)',
+                        color: 'var(--text-tertiary)',
+                      }}
+                    >
+                      Source: {row.sourceFilename}
+                    </span>
+                  )}
+                </span>
+              ),
             },
             {
               key: 'requirementTitle',
@@ -264,6 +285,11 @@ export function FilesPanel({
               cell: (row: FileRow) => row.speakerName ?? 'Session task',
             },
             {
+              key: 'uploadedByName',
+              header: 'Uploader',
+              cell: (row: FileRow) => row.uploadedByName ?? 'Unknown',
+            },
+            {
               key: 'uploadedAt',
               header: 'Uploaded',
               cell: (row: FileRow) => (
@@ -276,7 +302,9 @@ export function FilesPanel({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {formatDateTime(row.uploadedAt, timezone)}
+                  {row.uploadedAt === null
+                    ? 'Unknown'
+                    : formatDateTime(row.uploadedAt, timezone)}
                 </span>
               ),
             },
@@ -293,34 +321,42 @@ export function FilesPanel({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  v{row.version} ·{' '}
-                  {countLabel(row.versionCount, 'version', 'versions')}
+                  {row.version === null || row.versionCount === null
+                    ? 'History unavailable'
+                    : `v${row.version} · ${countLabel(
+                        row.versionCount,
+                        'version',
+                        'versions',
+                      )}`}
                 </span>
               ),
             },
             {
               key: 'comments',
               header: 'Comments',
-              cell: (row: FileRow) => (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  iconLeft="mail"
-                  onClick={() => {
-                    setThreadFor(row)
-                  }}
-                >
-                  {row.commentCount === 0
-                    ? 'Comment'
-                    : String(row.commentCount)}
-                </Button>
-              ),
+              cell: (row: FileRow) =>
+                row.instanceId === null ? (
+                  <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    iconLeft="mail"
+                    onClick={() => {
+                      setThreadFor(row)
+                    }}
+                  >
+                    {row.commentCount === 0
+                      ? 'Comment'
+                      : String(row.commentCount)}
+                  </Button>
+                ),
             },
           ]}
         />
       </Card>
 
-      {threadFor === null ? null : (
+      {threadFor === null || threadFor.instanceId === null ? null : (
         <Dialog
           open
           width={560}
@@ -355,7 +391,7 @@ export function FilesPanel({
 // ── ZIP assembly ─────────────────────────────────────────────────────────
 
 export type BundleFile = FunctionReturnType<
-  typeof api.tasks.exportBundle
+  typeof api.tasks.exportBundleV2
 >[number]
 
 export function folderFor(file: BundleFile, grouping: Grouping): string {
