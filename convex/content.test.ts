@@ -37,12 +37,14 @@ async function seedSession(t: TestT) {
 describe("sessions content history (W5)", () => {
   test("edits record attributed revisions and restore brings the older content back", async () => {
     const t = setupTest();
-    const { eventSlug, sessionId } = await seedSession(t);
-    // Same account, refreshed from canonical OIDC claims on the next ensure.
-    const alice = await signIn(t, "alice", {
-      name: undefined,
-      givenName: "Jordan",
-      familyName: "Alvarez",
+    const { alice, eventSlug, sessionId } = await seedSession(t);
+    await t.run(async (ctx) => {
+      const organizer = await ctx.db
+        .query("users")
+        .withIndex("by_email", (q) => q.eq("email", "alice@example.com"))
+        .unique();
+      if (organizer === null) throw new Error("missing organizer");
+      await ctx.db.patch("users", organizer._id, { name: undefined });
     });
 
     await alice.mutation(api.sessions.updateContent, {
@@ -57,6 +59,17 @@ describe("sessions content history (W5)", () => {
       description: "Original abstract. Now with a live demo. Bring a laptop.",
     });
 
+    const beforeProfile = await alice.query(api.sessions.listRevisions, {
+      eventSlug,
+      sessionId,
+    });
+    expect(beforeProfile[0].editorName).toBe("Event team member");
+
+    // Revisions retain the stable editor user id, so completing a profile
+    // relabels existing history without rewriting any revision snapshots.
+    await alice.mutation(api.users.setDisplayName, {
+      displayName: "Jordan Alvarez",
+    });
     const revisions = await alice.query(api.sessions.listRevisions, {
       eventSlug,
       sessionId,

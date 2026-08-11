@@ -426,7 +426,6 @@ export const taskComments = eventQuery({
       ctx.caller.user,
       ctx.caller.event,
       args.instanceId,
-      "organizer",
     );
   },
 });

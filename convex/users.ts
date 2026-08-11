@@ -1,6 +1,11 @@
 import { ConvexError, v } from "convex/values";
 import { mutation } from "./_generated/server";
-import { canonicalIdentityName, storedPersonName } from "./model/userDisplay";
+import { authedMutation, authedQuery } from "./lib/functions";
+import {
+  canonicalIdentityName,
+  requirePersonDisplayName,
+  storedPersonName,
+} from "./model/userDisplay";
 
 // Called by the web app right after Clerk sign-in (and after any auth state
 // change). Upserts the user row keyed on tokenIdentifier — the one write that
@@ -58,5 +63,39 @@ export const ensure = mutation({
       tokenIdentifier: identity.tokenIdentifier,
       ...profile,
     });
+  },
+});
+
+/** The signed-in account's app-owned presentation profile. Delivery data is
+ * deliberately absent: a missing name must never make the UI display email. */
+export const currentProfile = authedQuery({
+  args: {},
+  returns: v.object({
+    displayName: v.union(v.string(), v.null()),
+    needsDisplayName: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    const displayName = storedPersonName(ctx.user);
+    return {
+      displayName,
+      needsDisplayName: displayName === null,
+    };
+  },
+});
+
+/** Set only the authenticated account's display label. The stable user id and
+ * tokenIdentifier remain the actor identity used by authorization and audit. */
+export const setDisplayName = authedMutation({
+  args: { displayName: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const displayName = requirePersonDisplayName(
+      args.displayName,
+      ctx.user.email,
+    );
+    if (ctx.user.name !== displayName) {
+      await ctx.db.patch("users", ctx.user._id, { name: displayName });
+    }
+    return null;
   },
 });

@@ -1505,9 +1505,23 @@ export async function listTaskComments(
   actor: Doc<"users">,
   event: Doc<"events">,
   instanceId: Id<"taskInstances">,
-  audience: "organizer" | "portal",
 ): Promise<TaskCommentRow[]> {
   const { instance } = await requireTaskAccess(ctx, actor, event, instanceId);
+  const taskContact =
+    instance.eventContactId === undefined
+      ? null
+      : await ctx.db.get("eventContacts", instance.eventContactId);
+  const participants = await ctx.db
+    .query("sessionParticipants")
+    .withIndex("by_sessionId", (q) => q.eq("sessionId", instance.sessionId))
+    .take(MAX_PARTICIPANTS_PER_SESSION);
+  const managerUserIds = new Set(
+    participants.flatMap((participant) =>
+      participant.managerUserId === undefined
+        ? []
+        : [participant.managerUserId],
+    ),
+  );
   const rows = await ctx.db
     .query("uploadComments")
     .withIndex("by_instanceId", (q) => q.eq("instanceId", instance._id))
@@ -1517,8 +1531,9 @@ export async function listTaskComments(
     Id<"users">,
     {
       personName: string | null;
-      email: string | null;
       organizer: boolean;
+      speaker: boolean;
+      manager: boolean;
     }
   >();
   for (const row of rows.sort((a, b) => a.createdAt - b.createdAt)) {
@@ -1532,9 +1547,14 @@ export async function listTaskComments(
           author,
           instance.eventContactId,
         ),
-        email: author?.email ?? null,
         organizer:
           author !== null && (await isEventOrganizer(ctx, author, event)),
+        speaker:
+          author !== null &&
+          taskContact !== null &&
+          taskContact.eventId === event._id &&
+          taskContact.userId === author._id,
+        manager: author !== null && managerUserIds.has(author._id),
       };
       authors.set(row.authorUserId, authorDetails);
     }
@@ -1542,12 +1562,16 @@ export async function listTaskComments(
       commentId: row._id,
       authorName:
         authorDetails.personName ??
-        (audience === "portal"
-          ? authorDetails.organizer
-            ? "Organizer"
-            : "Session manager"
-          : null),
-      authorEmail: audience === "organizer" ? authorDetails.email : null,
+        (authorDetails.organizer
+          ? "Organizer"
+          : authorDetails.speaker
+            ? "Speaker"
+            : authorDetails.manager
+              ? "Session manager"
+              : "Someone"),
+      // The shared thread identifies people by a human name or scoped role.
+      // Login/delivery email is not part of either audience's comment surface.
+      authorEmail: null,
       body: row.body,
       createdAt: row.createdAt,
       mine: row.authorUserId === actor._id,

@@ -146,10 +146,86 @@ describe("users.ensure", () => {
     ).toBeUndefined();
   });
 
+  test("lets only the authenticated account set a normalized display-only name", async () => {
+    const t = setupTest();
+    const namelessClaims = {
+      name: undefined,
+      givenName: undefined,
+      familyName: undefined,
+      nickname: undefined,
+    };
+    const jordan = await signIn(t, "jordan", namelessClaims);
+    const priya = await signIn(t, "priya", namelessClaims);
+
+    expect(await jordan.query(api.users.currentProfile, {})).toEqual({
+      displayName: null,
+      needsDisplayName: true,
+    });
+    await jordan.mutation(api.users.setDisplayName, {
+      displayName: "  Jordan   Alvarez  ",
+    });
+    expect(await jordan.query(api.users.currentProfile, {})).toEqual({
+      displayName: "Jordan Alvarez",
+      needsDisplayName: false,
+    });
+    expect(await priya.query(api.users.currentProfile, {})).toEqual({
+      displayName: null,
+      needsDisplayName: true,
+    });
+
+    // A later claimless provisioning pass preserves the app-owned label.
+    await jordan.mutation(api.users.ensure, {});
+    expect((await jordan.query(api.users.currentProfile, {})).displayName).toBe(
+      "Jordan Alvarez",
+    );
+
+    // A real provider name remains canonical when Clerk later supplies one.
+    const namedJordan = t.withIdentity(
+      identityFor("jordan", { ...namelessClaims, name: "Jordan A." }),
+    );
+    await namedJordan.mutation(api.users.ensure, {});
+    expect(
+      (await namedJordan.query(api.users.currentProfile, {})).displayName,
+    ).toBe("Jordan A.");
+  });
+
+  test("rejects unsafe display names and never accepts a target user id", async () => {
+    const t = setupTest();
+    const as = await signIn(t, "nameless", {
+      name: undefined,
+      givenName: undefined,
+      familyName: undefined,
+      nickname: undefined,
+    });
+    for (const displayName of [
+      "   ",
+      "nameless@example.com",
+      "Jordan\u0000Alvarez",
+      "x".repeat(201),
+    ]) {
+      await expectRejectedWith(
+        as.mutation(api.users.setDisplayName, { displayName }),
+        "invalid_display_name",
+      );
+    }
+    expect(await as.query(api.users.currentProfile, {})).toEqual({
+      displayName: null,
+      needsDisplayName: true,
+    });
+  });
+
   test("rejects an unauthenticated caller", async () => {
     const t = setupTest();
     await expectRejectedWith(
       t.mutation(api.users.ensure, {}),
+      "not_authenticated",
+    );
+    await expectRejectedWith(
+      t.query(api.users.currentProfile, {}),
+      "not_authenticated",
+    );
+    await expectRejectedWith(
+      t.mutation(api.users.setDisplayName, { displayName: "Mallory" }),
       "not_authenticated",
     );
   });

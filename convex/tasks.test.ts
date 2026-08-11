@@ -1974,11 +1974,18 @@ describe("file evidence", () => {
       reviewRequired: false,
       dueAt: DUE,
     });
-    const jordan = await signIn(t, "alice", {
-      name: undefined,
-      givenName: "Jordan",
-      familyName: "Alvarez",
+    // Reproduce the deployed account whose Clerk profile has no name. Existing
+    // comment rows retain only the user id, so completing the app-owned profile
+    // later must relabel the same history without rewriting it.
+    await t.run(async (ctx) => {
+      const user = await ctx.db
+        .query("users")
+        .withIndex("by_email", (q) => q.eq("email", "alice@example.com"))
+        .unique();
+      if (user === null) throw new Error("missing organizer");
+      await ctx.db.patch("users", user._id, { name: undefined });
     });
+    const jordan = alice;
     const priya = await signIn(t, "priya", {
       emailVerified: true,
       name: undefined,
@@ -2001,6 +2008,28 @@ describe("file evidence", () => {
       instanceId,
       body: "Please upload the final deck.",
     });
+    const beforeOrganizer = await jordan.query(api.tasks.taskComments, {
+      eventSlug,
+      instanceId,
+    });
+    const beforePortal = await priya.query(api.portal.taskComments, {
+      eventSlug,
+      instanceId,
+    });
+    expect(beforeOrganizer[0]).toMatchObject({
+      authorName: "Organizer",
+      authorEmail: null,
+      body: "Please upload the final deck.",
+    });
+    expect(beforePortal[0]).toMatchObject({
+      authorName: "Organizer",
+      authorEmail: null,
+      body: "Please upload the final deck.",
+    });
+
+    await jordan.mutation(api.users.setDisplayName, {
+      displayName: "Jordan Alvarez",
+    });
     await priya.mutation(api.portal.commentOnTask, {
       eventSlug,
       instanceId,
@@ -2010,6 +2039,14 @@ describe("file evidence", () => {
       eventSlug,
       instanceId,
       body: "Thanks — the event team is watching this thread.",
+    });
+    await t.run(async (ctx) => {
+      const helper = await ctx.db
+        .query("users")
+        .withIndex("by_email", (q) => q.eq("email", "helper@example.com"))
+        .unique();
+      if (helper === null) throw new Error("missing helper");
+      await ctx.db.delete("users", helper._id);
     });
 
     const organizerView = await jordan.query(api.tasks.taskComments, {
@@ -2031,19 +2068,19 @@ describe("file evidence", () => {
       {
         body: "Please upload the final deck.",
         authorName: "Jordan Alvarez",
-        authorEmail: "alice@example.com",
+        authorEmail: null,
         mine: true,
       },
       {
         body: "I will send it today.",
         authorName: "Priya Raman",
-        authorEmail: "priya@example.com",
+        authorEmail: null,
         mine: false,
       },
       {
         body: "Thanks — the event team is watching this thread.",
-        authorName: null,
-        authorEmail: "helper@example.com",
+        authorName: "Someone",
+        authorEmail: null,
         mine: false,
       },
     ]);
@@ -2069,7 +2106,7 @@ describe("file evidence", () => {
       },
       {
         body: "Thanks — the event team is watching this thread.",
-        authorName: "Organizer",
+        authorName: "Someone",
         authorEmail: null,
         mine: false,
       },

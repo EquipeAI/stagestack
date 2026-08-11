@@ -1,10 +1,16 @@
 import { useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { Show, SignInButton, UserButton, useUser } from '@clerk/tanstack-react-start'
+import {
+  Show,
+  SignInButton,
+  UserButton,
+  useUser,
+} from '@clerk/tanstack-react-start'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Id } from '@convex/_generated/dataModel'
 import { Button, Callout, Card, DescriptionList, EmptyState } from '~/ds'
+import { DisplayNameGate } from '~/components/DisplayNameGate'
 import { PageBody } from '~/components/PageBody'
 import { QueryBoundary } from '~/components/QueryBoundary'
 import { Mono } from '~/components/cfp/CfpChrome'
@@ -91,7 +97,9 @@ function SignedOutPortal({ eventSlug }: { eventSlug: string }) {
   return (
     <PageBody narrow>
       <Card
-        title={event === null ? 'Speaker portal' : `${event.name} · speaker portal`}
+        title={
+          event === null ? 'Speaker portal' : `${event.name} · speaker portal`
+        }
         subtitle="Confirm your sessions and keep your speaker profile current."
       >
         <div
@@ -215,7 +223,7 @@ function SpeakerPortal({ eventSlug }: { eventSlug: string }) {
   }
 
   return (
-    <>
+    <DisplayNameGate>
       {enterError === null ? null : (
         <PageBody narrow>
           <Callout tone="attention" title="Your access could not be refreshed">
@@ -229,7 +237,7 @@ function SpeakerPortal({ eventSlug }: { eventSlug: string }) {
         readOnly={false}
         emptyState={<NothingHere />}
       />
-    </>
+    </DisplayNameGate>
   )
 }
 

@@ -1,4 +1,5 @@
 import type { UserIdentity } from "convex/server";
+import { ConvexError } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 
@@ -24,6 +25,24 @@ function cleanPersonName(
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleaned)
   ) {
     return undefined;
+  }
+  return cleaned;
+}
+
+/** Validate a display-only name chosen by the authenticated account owner.
+ * The caller still owns no identity authority beyond their stable users row:
+ * this value is presentation metadata and must never authorize access. */
+export function requirePersonDisplayName(
+  value: string,
+  email: string | undefined,
+): string {
+  const cleaned = cleanPersonName(value, email);
+  if (cleaned === undefined) {
+    throw new ConvexError({
+      code: "invalid_display_name",
+      message:
+        "Enter a name up to 200 characters. Email addresses cannot be used as a display name.",
+    });
   }
   return cleaned;
 }

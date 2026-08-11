@@ -1514,13 +1514,7 @@ export async function taskComments(
   args: { eventSlug: string; instanceId: Id<"taskInstances"> },
 ): Promise<Tasks.TaskCommentRow[]> {
   const event = await eventBySlug(ctx, args.eventSlug);
-  return await Tasks.listTaskComments(
-    ctx,
-    user,
-    event,
-    args.instanceId,
-    "portal",
-  );
+  return await Tasks.listTaskComments(ctx, user, event, args.instanceId);
 }
 
 export async function commentOnTask(
