@@ -122,9 +122,14 @@ export function speakerEntries(program: PublicProgram): Array<SpeakerEntry> {
   const map = new Map<string, SpeakerEntry>()
   for (const session of sessions) {
     for (const sp of session.speakers) {
-      const entry = map.get(sp.speakerId)
+      // Blobs published before speakerId existed fall back to the name —
+      // without this, every legacy speaker collapses under one undefined key.
+      // The cast reflects the runtime reality the static type can't: stored
+      // blobs may predate the field.
+      const key = (sp.speakerId as string | undefined) ?? sp.name
+      const entry = map.get(key)
       if (entry === undefined) {
-        map.set(sp.speakerId, { speaker: sp, sessions: [session] })
+        map.set(key, { speaker: sp, sessions: [session] })
       } else {
         entry.speaker = mergeSpeaker(entry.speaker, sp)
         if (!entry.sessions.some((s) => s.sessionId === session.sessionId)) {

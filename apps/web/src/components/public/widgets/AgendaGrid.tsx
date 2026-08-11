@@ -24,7 +24,10 @@ type SessionEntry = Extract<AgendaEntry, { kind: 'session' }>
 
 const HOUR_PX = 88
 const HOUR_MS = 3_600_000
-const GENERAL = 'General'
+// Sentinel for roomless entries. NOT a display string — a real room named
+// "General" must stay distinct, so the sentinel is an impossible room name.
+const GENERAL = '\u0000general'
+const GENERAL_LABEL = 'General'
 
 function entryStart(entry: AgendaEntry): number | undefined {
   return entry.startsAt
@@ -236,7 +239,7 @@ function DayGrid({
               borderBottom: 'var(--space-px) solid var(--border-default)',
             }}
           >
-            {room}
+            {room === GENERAL ? GENERAL_LABEL : room}
           </div>
         ))}
         <div style={{ position: 'relative', height }}>

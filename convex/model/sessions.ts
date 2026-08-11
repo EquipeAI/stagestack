@@ -1008,9 +1008,12 @@ export async function listRevisions(
   if (session === null || session.eventId !== caller.event._id) {
     notFound("session", "No such session on this event.");
   }
+  // Newest 200 — descending BEFORE the take, or a long history would keep
+  // the oldest rows and drop the recent ones (codex).
   const rows = await ctx.db
     .query("sessionRevisions")
     .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+    .order("desc")
     .take(200);
   const out: RevisionRow[] = [];
   for (const row of rows) {
@@ -1067,6 +1070,21 @@ export async function sendDirectInvitation(
   const contact = await ctx.db.get("eventContacts", args.eventContactId);
   const toEmail = contact?.email?.trim();
   if (contact === null || toEmail === undefined || toEmail.length === 0) return;
+  // A decline/withdrawal (or a removed participant) that lands between the
+  // invite committing and this job running wins: no invitation goes out for
+  // a participation that no longer stands.
+  const participant = await ctx.db
+    .query("sessionParticipants")
+    .withIndex("by_sessionId", (q) => q.eq("sessionId", session._id))
+    .take(MAX_PARTICIPANTS_PER_SESSION)
+    .then((rows) => rows.find((p) => p.eventContactId === contact._id));
+  if (
+    participant === undefined ||
+    participant.state === "declined" ||
+    participant.state === "withdrawn"
+  ) {
+    return;
+  }
 
   const when = eventWhen(event);
   const invitation = await renderTemplate(ctx, event, "invitation.direct", {

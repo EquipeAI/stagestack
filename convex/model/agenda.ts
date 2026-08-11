@@ -1673,7 +1673,9 @@ export async function autoPlace(
       for (let slot = 0; slot < SLOTS_PER_DAY; slot += 1) {
         const startsAt = event.startsAt + day * DAY_MS + slot * HOUR_MS;
         const endsAt = startsAt + HOUR_MS;
-        if (endsAt > event.endsAt + DAY_MS) break outer;
+        // Nothing starts at or after the event's end (codex: the old bound
+        // let slots run a day past it).
+        if (startsAt >= event.endsAt) break outer;
         for (const roomId of roomIds) {
           const candidate: ScheduledThing = {
             type: "session",
@@ -1688,6 +1690,15 @@ export async function autoPlace(
           const conflicts = conflictsFor([...things, candidate]);
           const mine = conflicts.get(session._id) ?? [];
           if (blockers(mine).length > 0) continue;
+          // A roomless event has no room-clash signal, so a slot is
+          // exclusive: skip it when ANY placed block overlaps (otherwise
+          // everything stacks onto the first hour).
+          if (
+            roomId === undefined &&
+            things.some((thing) => overlaps(thing, candidate))
+          ) {
+            continue;
+          }
           landed = { startsAt, endsAt, roomId };
           things.push(candidate);
           break outer;

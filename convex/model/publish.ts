@@ -601,8 +601,17 @@ export async function publish(
   // alternative (a job throwing into the void while the console reports success)
   // would make the failure invisible. Re-read the event first: the lineup case
   // just patched it and `caller.event` is the pre-mutation snapshot.
-  const event = (await ctx.db.get("events", eventId)) ?? caller.event;
-  assertProgramFits(await computeProgram(ctx, event));
+  //
+  // A SHRINKING action (unpublish/disable) always passes: refusing removal
+  // because the REMAINING program is still oversized would trap the organizer
+  // (codex — the M8 unpublish rule, restated for the action shape).
+  const shrinking =
+    ("enabled" in action && !action.enabled) ||
+    ("published" in action && !action.published);
+  if (!shrinking) {
+    const event = (await ctx.db.get("events", eventId)) ?? caller.event;
+    assertProgramFits(await computeProgram(ctx, event));
+  }
   // The WRITE still happens off the hot path: one scheduled, idempotent rebuild
   // per flip, coalescing onto a single publishedPrograms row rewrite instead of
   // one rewrite (and one OCC conflict) per flip.
