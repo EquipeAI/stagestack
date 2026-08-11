@@ -35,6 +35,8 @@ type Draft = {
   firstName: string
   lastName: string
   tagline: string
+  jobTitle: string
+  company: string
   bio: string
   website: string
   twitter: string
@@ -47,6 +49,8 @@ function draftFrom(profile: PortalProfile): Draft {
     firstName: profile.firstName,
     lastName: profile.lastName,
     tagline: profile.tagline ?? '',
+    jobTitle: profile.jobTitle ?? '',
+    company: profile.company ?? '',
     bio: profile.bio ?? '',
     website: profile.links?.website ?? '',
     twitter: profile.links?.twitter ?? '',
@@ -62,6 +66,8 @@ function serverKey(profile: PortalProfile): string {
     profile.firstName,
     profile.lastName,
     profile.tagline,
+    profile.jobTitle,
+    profile.company,
     profile.bio,
     profile.headshotId,
     profile.links,
@@ -150,6 +156,8 @@ export function ProfileCard({
           firstName: draft.firstName.trim(),
           lastName: draft.lastName.trim(),
           tagline: optionalText(draft.tagline),
+          jobTitle: optionalText(draft.jobTitle),
+          company: optionalText(draft.company),
           bio: optionalText(draft.bio),
           links: anyLink ? links : undefined,
           headshotId,
@@ -257,6 +265,35 @@ export function ProfileCard({
             }}
           />
         </Field>
+
+        <FieldRow>
+          <Field
+            label="Job title"
+            htmlFor={`${idBase}-jobtitle`}
+            hint="Used where the program lists structured fields."
+          >
+            <Input
+              id={`${idBase}-jobtitle`}
+              value={draft.jobTitle}
+              disabled={disabled}
+              autoComplete="organization-title"
+              onChange={(e) => {
+                patch({ jobTitle: e.target.value })
+              }}
+            />
+          </Field>
+          <Field label="Company" htmlFor={`${idBase}-company`}>
+            <Input
+              id={`${idBase}-company`}
+              value={draft.company}
+              disabled={disabled}
+              autoComplete="organization"
+              onChange={(e) => {
+                patch({ company: e.target.value })
+              }}
+            />
+          </Field>
+        </FieldRow>
 
         <Field
           label="Bio"

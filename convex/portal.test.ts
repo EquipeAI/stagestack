@@ -204,6 +204,55 @@ describe("portal.enter (verified-email auto-claim)", () => {
     ).toHaveLength(1);
   });
 
+  test("a snapshot with a split tagline still loads the portal", async () => {
+    // Regression: snapshot time splits "Title, Company" into structured
+    // jobTitle/company (2c55f84), and `portal.context`'s returns validator
+    // rejected the extra fields — every speaker whose tagline split saw
+    // "This portal could not be loaded" (Aug 2026 eval).
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+    await alice.mutation(api.sessions.createDirect, {
+      eventSlug,
+      title: "Opening keynote",
+      speaker: {
+        firstName: "Dana",
+        lastName: "Keynote",
+        email: "dana@example.com",
+        tagline: "Principal Engineer, Acme",
+      },
+    });
+
+    const dana = await signIn(t, "dana", VERIFIED);
+    await dana.mutation(api.portal.enter, { eventSlug });
+    const context = await dana.query(api.portal.context, { eventSlug });
+    expect(context.speaking[0].eventContact).toMatchObject({
+      tagline: "Principal Engineer, Acme",
+      jobTitle: "Principal Engineer",
+      company: "Acme",
+    });
+
+    // A full-profile save must round-trip the structured fields, not clear
+    // them (`updateMyProfile` treats omitted optionals as removals).
+    await dana.mutation(api.portal.updateMyProfile, {
+      eventSlug,
+      eventContactId: context.speaking[0].eventContact._id,
+      profile: {
+        firstName: "Dana",
+        lastName: "Keynote",
+        tagline: "Principal Engineer, Acme",
+        jobTitle: "Principal Engineer",
+        company: "Acme",
+      },
+    });
+    const after = await dana.query(api.portal.context, { eventSlug });
+    expect(after.speaking[0].eventContact).toMatchObject({
+      jobTitle: "Principal Engineer",
+      company: "Acme",
+    });
+  });
+
   test("an unverified email can neither claim a snapshot nor complete a handoff", async () => {
     const t = setupTest();
     const { eventSlug, eventContactId } = await directSetup(t);
