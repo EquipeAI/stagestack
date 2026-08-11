@@ -8,6 +8,7 @@ import {
   Button,
   Callout,
   Card,
+  Checkbox,
   DataTable,
   Dialog,
   EmptyState,
@@ -22,6 +23,7 @@ import {
   Toolbar,
 } from '~/ds'
 import { ContactDetailDialog } from '~/components/contacts/ContactDetailDialog'
+import { CrmTools } from '~/components/contacts/CrmTools'
 import { PageBody } from '~/components/PageBody'
 import { EventCard, EventGrid } from '~/components/EventCard'
 import { QueryBoundary } from '~/components/QueryBoundary'
@@ -118,7 +120,7 @@ function OrgPage() {
             resetKey={orgSlug}
             title="The contact directory is not available to you"
           >
-            <ContactsTab orgSlug={orgSlug} />
+            <ContactsTab orgSlug={orgSlug} canManageCrm={isAdmin} />
           </QueryBoundary>
         ) : null}
         {tab === 'team' && isAdmin ? (
@@ -321,7 +323,13 @@ function NewEventDialog({
 
 type ContactDoc = Doc<'contacts'>
 
-function ContactsTab({ orgSlug }: { orgSlug: string }) {
+function ContactsTab({
+  orgSlug,
+  canManageCrm,
+}: {
+  orgSlug: string
+  canManageCrm: boolean
+}) {
   const [search, setSearch] = useState('')
   // One subscription for the whole directory; search and the attribute
   // filters all run locally so typing never re-subscribes.
@@ -330,6 +338,7 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
   const [editing, setEditing] = useState<ContactDoc | null>(null)
   const [tagFilter, setTagFilter] = useState('')
   const [companyFilter, setCompanyFilter] = useState('')
+  const [selected, setSelected] = useState<Array<ContactDoc['_id']>>([])
 
   const { allTags, allCompanies } = useMemo(() => {
     const tags = new Set<string>()
@@ -375,6 +384,21 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
         gap: 'var(--space-4)',
       }}
     >
+      {contacts !== undefined && canManageCrm ? (
+        <CrmTools
+          orgSlug={orgSlug}
+          contacts={contacts}
+          selected={selected}
+          search={search}
+          tag={tagFilter}
+          company={companyFilter}
+          onSearch={setSearch}
+          onTag={setTagFilter}
+          onCompany={setCompanyFilter}
+          onClearSelection={() => setSelected([])}
+          onOpenContact={setEditing}
+        />
+      ) : null}
       <Toolbar
         left={
           <SearchInput
@@ -473,6 +497,45 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
             rowKey="_id"
             onRowClick={(row: ContactDoc) => setEditing(row)}
             columns={[
+              ...(canManageCrm
+                ? [
+                    {
+                      key: 'select',
+                      header: 'Select',
+                      cell: (row: ContactDoc) => (
+                        <span onClick={(event) => event.stopPropagation()}>
+                          <Checkbox
+                            label={
+                              <span
+                                style={{
+                                  position: 'absolute',
+                                  width: 'var(--space-px)',
+                                  height: 'var(--space-px)',
+                                  padding: 0,
+                                  margin: 'calc(-1 * var(--space-px))',
+                                  overflow: 'hidden',
+                                  clip: 'rect(0, 0, 0, 0)',
+                                  whiteSpace: 'nowrap',
+                                  border: 0,
+                                }}
+                              >
+                                Select {row.firstName} {row.lastName}
+                              </span>
+                            }
+                            checked={selected.includes(row._id)}
+                            onChange={(event) =>
+                              setSelected((current) =>
+                                event.target.checked
+                                  ? [...new Set([...current, row._id])]
+                                  : current.filter((id) => id !== row._id),
+                              )
+                            }
+                          />
+                        </span>
+                      ),
+                    },
+                  ]
+                : []),
               {
                 key: 'name',
                 header: 'Name',
@@ -534,6 +597,7 @@ function ContactsTab({ orgSlug }: { orgSlug: string }) {
         <ContactDetailDialog
           orgSlug={orgSlug}
           contact={editing}
+          showCrmActivity={canManageCrm}
           onClose={() => setEditing(null)}
         />
       ) : null}

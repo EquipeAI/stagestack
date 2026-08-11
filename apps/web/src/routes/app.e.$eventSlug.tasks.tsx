@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { useQuery } from 'convex/react'
+import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { InstanceRow, TaskStatus } from '~/components/tasks/model'
 import {
@@ -28,6 +28,8 @@ import {
   speakerLabel,
 } from '~/components/tasks/model'
 import { useNow } from '~/components/tasks/useNow'
+import { usePending } from '~/lib/usePending'
+import { pushToast } from '~/components/toast'
 
 export const Route = createFileRoute('/app/e/$eventSlug/tasks')({
   component: TasksRoute,
@@ -141,6 +143,8 @@ function RequirementsPanel({
         right={newButton}
       />
 
+      <ReminderControls eventSlug={eventSlug} />
+
       {requirements === undefined ? (
         <p style={{ color: 'var(--text-tertiary)' }}>Loading requirements…</p>
       ) : requirements.length === 0 ? (
@@ -173,6 +177,62 @@ function RequirementsPanel({
         />
       ) : null}
     </div>
+  )
+}
+
+function ReminderControls({ eventSlug }: { eventSlug: string }) {
+  const now = useNow()
+  const status = useQuery(api.reminders.automationStatus, { eventSlug, now })
+  const sendNow = useMutation(api.reminders.sendOutstandingNow)
+  const { pending, error, run } = usePending()
+
+  return (
+    <Card
+      title="Task reminders"
+      subtitle={
+        status === undefined
+          ? 'Loading reminder automation…'
+          : status.enabled
+            ? status.cadenceDays === null
+              ? `Due-soon and overdue tasks are evaluated hourly and retried no more than daily. No general reminder cadence is set. Next evaluation around ${new Date(status.nextEvaluationAt ?? now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
+              : `Automatic reminders are evaluated hourly and respect the ${status.cadenceDays}-day cadence. If that cadence is turned off, due-soon and overdue tasks still use a daily safety reminder. Next evaluation around ${new Date(status.nextEvaluationAt ?? now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
+            : 'Automatic reminders are off because this event is archived.'
+      }
+      actions={
+        <Button
+          iconLeft="mail"
+          disabled={pending}
+          onClick={() => {
+            if (
+              !window.confirm(
+                'Send one consolidated reminder now to everyone with an outstanding, reminder-enabled task?',
+              )
+            ) {
+              return
+            }
+            void run(async () => {
+              const result = await sendNow({ eventSlug })
+              pushToast(
+                `${result.sent} accepted · ${result.failed} failed · ${result.skipped} skipped`,
+                `${result.includedTasks} outstanding ${result.includedTasks === 1 ? 'task was' : 'tasks were'} included in the attempts. Only provider-accepted reminders reset their tasks' cadence clock.`,
+                'mail',
+              )
+            })
+          }}
+        >
+          {pending ? 'Sending…' : 'Send reminders now'}
+        </Button>
+      }
+    >
+      {error === null ? (
+        <span style={{ color: 'var(--text-tertiary)' }}>
+          Manual sends are marked separately in the comms log and reset the
+          cadence clock for included tasks to avoid a duplicate automatic send.
+        </span>
+      ) : (
+        <Callout tone="blocked">{error}</Callout>
+      )}
+    </Card>
   )
 }
 

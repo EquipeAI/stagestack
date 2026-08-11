@@ -1,4 +1,5 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
@@ -7,6 +8,8 @@ import { escapeHtml, sendLoggedEmail, siteUrl } from "./model/comms";
 import { renderTemplate } from "./model/templates";
 import { routeParticipant, type AudienceRecipient } from "./model/audiences";
 import { takeAll } from "./model/validation";
+import { eventMutation, eventQuery, requireOrganizer } from "./lib/functions";
+import { logAudit } from "./model/audit";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Scheduled reminders (M5). Hourly cron, driven by crons.ts.
@@ -17,7 +20,9 @@ import { takeAll } from "./model/validation";
 // event or one failing render aborts only that event, never the whole sweep.
 //
 // The rules this file exists to enforce (MILESTONES M4/M5):
-//  • Unconfirmed speakers get PARTICIPATION reminders, never task chasing.
+//  • Unconfirmed speakers normally get PARTICIPATION reminders, not task
+//    chasing. The due-date fallback is the narrow exception: a dated task must
+//    still reach an awaiting direct speaker when general cadence is off.
 //  • ONE consolidated message per recipient per event per sweep — never one per
 //    task, and never a separate task email AND participation email to the same
 //    recipient in a single run (MILESTONES M5:86).
@@ -25,18 +30,24 @@ import { takeAll } from "./model/validation";
 //    claiming a portal never reroutes it (M4:87).
 //  • Cadence = per-requirement override ?? event default; `remindersDisabled`
 //    on a requirement silences it entirely.
-//  • Overdue raises dashboard urgency, NOT email frequency: nothing here reads
-//    `dueAt` to shorten a cadence.
+//  • Due-soon and overdue work has a daily safety cadence even when the event
+//    has no general cadence. This is the actual due-date automation promised
+//    to speakers, not an organizer-only "send now" shortcut.
 //  • Reminders stop on completion, withdrawal and session cancellation, which
 //    falls out of the status/state filters below.
 //
-// Idempotence inside a cadence window comes from `lastRemindedAt`, which is
-// stamped at CREATION (so the first reminder waits a full cadence) and again on
-// every included item after a send: a second sweep an hour later finds nothing
-// eligible and sends zero emails.
+// Idempotence inside a cadence window comes from `lastRemindedAt`, stamped only
+// after a provider accepts the message. Configured cadence uses document
+// creation as its initial baseline; due-date safety is eligible immediately
+// upon entering the window, then respects the daily stamp.
 // ─────────────────────────────────────────────────────────────────────────
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** A task enters fallback due-date chasing during the 48-hour window named by
+ * the product rubric. When no cadence is configured, one attempt per day is
+ * the anti-spam floor. */
+const DUE_SOON_MS = 2 * DAY_MS;
+const DUE_REMINDER_CADENCE_DAYS = 1;
 
 /** How long past `endsAt` the sweep keeps chasing. A week covers post-event
  * collection (slides, recordings); after that, silence — an event that never
@@ -56,6 +67,10 @@ const CONTACT_SCAN = 2000;
 const SESSION_SCAN = 1000;
 /** Never fan one sweep of one event out past this many addresses. */
 const MAX_RECIPIENTS_PER_EVENT = 200;
+/** Each dispatcher transaction advances every discovery source by one bounded
+ * page, then schedules a continuation. Historical overdue tasks therefore
+ * cannot exhaust one mutation or permanently hide newer work behind them. */
+const DISCOVERY_PAGE_SIZE = 100;
 
 /** Statuses that still need action from a speaker/manager. */
 function isActionable(status: Doc<"taskInstances">["status"]): boolean {
@@ -209,6 +224,19 @@ function taskParticipant(
   graph: EventGraph,
   instance: Doc<"taskInstances">,
 ): Doc<"sessionParticipants"> | undefined {
+  const participant = instanceParticipant(graph, instance);
+  if (participant === undefined || participant.state !== "confirmed") {
+    return undefined;
+  }
+  return participant;
+}
+
+/** Resolve the person accountable for a task without silently erasing an
+ * awaiting speaker. Declined/withdrawn people are no longer chaseable. */
+function instanceParticipant(
+  graph: EventGraph,
+  instance: Doc<"taskInstances">,
+): Doc<"sessionParticipants"> | undefined {
   let participant: Doc<"sessionParticipants"> | undefined;
   if (instance.participantId !== undefined) {
     participant = graph.participantById.get(instance.participantId);
@@ -219,17 +247,66 @@ function taskParticipant(
         p.eventContactId === instance.eventContactId,
     );
   }
-  if (participant === undefined || participant.state !== "confirmed") {
+  if (
+    participant === undefined ||
+    participant.state === "declined" ||
+    participant.state === "withdrawn"
+  ) {
     return undefined;
   }
   return participant;
 }
 
+function dueDriven(instance: Doc<"taskInstances">, now: number): boolean {
+  return instance.dueAt <= now + DUE_SOON_MS;
+}
+
+/** An explicit requirement/event cadence remains authoritative. When neither
+ * exists, due-soon/overdue work gets the daily fallback instead of going dark. */
+function reminderCadenceDays(
+  instance: Doc<"taskInstances">,
+  requirement: Doc<"requirements">,
+  eventCadence: number | undefined,
+  now: number,
+): number | undefined {
+  const configured = requirement.reminderCadenceDays ?? eventCadence;
+  if (configured !== undefined) return configured;
+  return dueDriven(instance, now) ? DUE_REMINDER_CADENCE_DAYS : undefined;
+}
+
+function usesDueDateFallback(
+  instance: Doc<"taskInstances">,
+  requirement: Doc<"requirements">,
+  eventCadence: number | undefined,
+  now: number,
+): boolean {
+  return (
+    requirement.reminderCadenceDays === undefined &&
+    eventCadence === undefined &&
+    dueDriven(instance, now)
+  );
+}
+
+async function providerAccepted(
+  ctx: MutationCtx,
+  messageId: Id<"messages">,
+): Promise<boolean> {
+  const logged = await ctx.db.get("messages", messageId);
+  return logged !== null && logged.deliveryStatus !== "failed";
+}
+
 // ── The per-event sweep ────────────────────────────────────────────────────
 
 type EventSweepResult = {
+  /** Provider-accepted task messages. */
   taskEmails: number;
+  /** Provider-accepted participation messages. */
   participationEmails: number;
+  /** Attempts refused before they left StageStack. Failed buckets are not
+   * stamped, so the next hourly evaluation retries them. */
+  failedEmails: number;
+  /** Distinct speakers/managers with no reachable address. */
+  skippedRecipients: number;
   /** Distinct recipients dropped by MAX_RECIPIENTS_PER_EVENT this run —
    * visible in the result instead of silently truncated (M8). They are not
    * stamped, so the next sweep picks them up. */
@@ -239,6 +316,8 @@ type EventSweepResult = {
 const EMPTY_SWEEP: EventSweepResult = {
   taskEmails: 0,
   participationEmails: 0,
+  failedEmails: 0,
+  skippedRecipients: 0,
   deferredRecipients: 0,
 };
 
@@ -249,9 +328,6 @@ async function runEventSweep(
   now: number,
 ): Promise<EventSweepResult> {
   const eventCadence = event.reminderCadenceDays;
-  if (eventCadence === undefined) {
-    return EMPTY_SWEEP;
-  }
 
   const [requirements, instances] = await Promise.all([
     takeAll(
@@ -273,6 +349,7 @@ async function runEventSweep(
 
   const buckets = new Map<string, Bucket>();
   const deferred = new Set<string>();
+  const skippedContacts = new Set<Id<"eventContacts">>();
 
   // ── (a) Task sections ──
   for (const instance of instances) {
@@ -281,19 +358,51 @@ async function runEventSweep(
     if (requirement === undefined || !requirement.active) continue;
     if (requirement.remindersDisabled === true) continue;
 
-    const cadenceDays = requirement.reminderCadenceDays ?? eventCadence;
+    const cadenceDays = reminderCadenceDays(
+      instance,
+      requirement,
+      eventCadence,
+      now,
+    );
+    if (cadenceDays === undefined) continue;
     if (cadenceDays <= 0) continue;
-    const since = now - (instance.lastRemindedAt ?? 0);
-    if (since < cadenceDays * DAY_MS) continue;
+    const dueDateFallback = usesDueDateFallback(
+      instance,
+      requirement,
+      eventCadence,
+      now,
+    );
+    // A configured cadence starts at assignment. Due-date safety is different:
+    // once an incomplete task enters the 48-hour window, its first reminder is
+    // eligible at the next hourly evaluation; only an accepted send starts the
+    // daily anti-spam clock.
+    const baseline =
+      instance.lastRemindedAt ??
+      (dueDateFallback ? Number.NEGATIVE_INFINITY : instance._creationTime);
+    if (now - baseline < cadenceDays * DAY_MS) continue;
 
     const session = graph.sessionById.get(instance.sessionId);
     if (session === undefined || session.status !== "planned") continue;
 
-    const participant = taskParticipant(graph, instance);
+    const participant = dueDateFallback
+      ? instanceParticipant(graph, instance)
+      : taskParticipant(graph, instance);
     if (participant === undefined) continue;
 
-    const recipient = routeFor(graph, participant, "task");
-    if (recipient === null) continue;
+    // Ordinary task ownership follows the manager. In the due-date safety
+    // window an awaiting direct speaker is still the legitimate addressee;
+    // otherwise assigning them a dated task could never trigger SPK-16.
+    const recipient = routeFor(
+      graph,
+      participant,
+      dueDateFallback && participant.state !== "confirmed"
+        ? "personal"
+        : "task",
+    );
+    if (recipient === null) {
+      skippedContacts.add(participant.eventContactId);
+      continue;
+    }
     const bucket = bucketFor(buckets, recipient);
     if (bucket === null) {
       deferred.add(recipient.email);
@@ -311,7 +420,7 @@ async function runEventSweep(
   }
 
   // ── (b) Participation sections ──
-  if (eventCadence > 0) {
+  if (eventCadence !== undefined && eventCadence > 0) {
     for (const participant of graph.participants) {
       if (participant.state !== "awaiting") continue;
       const session = graph.sessionById.get(participant.sessionId);
@@ -320,7 +429,10 @@ async function runEventSweep(
       if (since < eventCadence * DAY_MS) continue;
 
       const recipient = routeFor(graph, participant, "personal");
-      if (recipient === null) continue;
+      if (recipient === null) {
+        skippedContacts.add(participant.eventContactId);
+        continue;
+      }
       const bucket = bucketFor(buckets, recipient);
       if (bucket === null) {
         deferred.add(recipient.email);
@@ -339,6 +451,7 @@ async function runEventSweep(
   // always sum to the number of messages actually sent (M8).
   let taskEmails = 0;
   let participationEmails = 0;
+  let failedEmails = 0;
   for (const bucket of buckets.values()) {
     const hasTasks = bucket.taskLines.length > 0;
     const hasParticipation = bucket.participationLines.length > 0;
@@ -390,7 +503,7 @@ async function runEventSweep(
       kind = "reminder.participation";
     }
 
-    await sendLoggedEmail(ctx, {
+    const messageId = await sendLoggedEmail(ctx, {
       orgId: event.orgId,
       eventId: event._id,
       toEmail: bucket.recipient.email,
@@ -402,8 +515,14 @@ async function runEventSweep(
       context: {
         instanceIds: bucket.taskInstanceIds,
         participantIds: bucket.participantIds,
+        renderedSubject: subject,
+        renderedBody: html,
       },
     });
+    if (!(await providerAccepted(ctx, messageId))) {
+      failedEmails += 1;
+      continue;
+    }
     for (const instanceId of bucket.taskInstanceIds) {
       await ctx.db.patch("taskInstances", instanceId, { lastRemindedAt: now });
     }
@@ -420,20 +539,163 @@ async function runEventSweep(
       `reminders: event ${event._id} deferred ${deferred.size} recipients past MAX_RECIPIENTS_PER_EVENT=${MAX_RECIPIENTS_PER_EVENT}`,
     );
   }
-  return { taskEmails, participationEmails, deferredRecipients: deferred.size };
+  return {
+    taskEmails,
+    participationEmails,
+    failedEmails,
+    skippedRecipients: skippedContacts.size,
+    deferredRecipients: deferred.size,
+  };
 }
 
 // ── The sweep: cheap dispatcher + one independent mutation per event ──────
 
-/** Archived events stop automations entirely (MILESTONES M0); no cadence
- * means reminders are off; and the sweep stops chasing POST_EVENT_GRACE_DAYS
- * after the event ends, whether or not anyone remembered to archive it. */
+/** Archived events stop automations entirely (MILESTONES M0), and the sweep
+ * stops chasing POST_EVENT_GRACE_DAYS after the event ends whether or not
+ * anyone remembered to archive it. A missing general cadence does NOT disable
+ * the due-date safety automation. */
 function sweepEligible(event: Doc<"events">, now: number): boolean {
   if (event.archivedAt !== undefined) return false;
-  if (event.reminderCadenceDays === undefined) return false;
   if (now > event.endsAt + POST_EVENT_GRACE_DAYS * DAY_MS) return false;
   return true;
 }
+
+const vDiscoverySource = v.union(
+  v.literal("eventCadence"),
+  v.literal("requirementCadence"),
+  v.literal("pendingDue"),
+  v.literal("changesRequestedDue"),
+);
+type DiscoverySource =
+  "eventCadence" | "requirementCadence" | "pendingDue" | "changesRequestedDue";
+type DiscoveryResult = {
+  eventIds: Array<Id<"events">>;
+  dispatched: number;
+};
+
+async function dispatchEvents(
+  ctx: MutationCtx,
+  eventIds: Iterable<Id<"events">>,
+  now: number,
+): Promise<number> {
+  let dispatched = 0;
+  for (const eventId of eventIds) {
+    const event = await ctx.db.get("events", eventId);
+    if (event === null || !sweepEligible(event, now)) continue;
+    const state = await ctx.db
+      .query("reminderDispatchStates")
+      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+      .unique();
+    // Sources and their continuation pages run as independent transactions.
+    // This indexed read + write is the durable serialization point: Convex
+    // retries a concurrent contender, which then observes this run and skips.
+    // `>=` also prevents a delayed old continuation from replacing a newer
+    // run and making that newer run dispatchable twice.
+    if (state !== null && state.lastRunAt >= now) continue;
+    if (state === null) {
+      await ctx.db.insert("reminderDispatchStates", {
+        eventId,
+        lastRunAt: now,
+        dispatchCount: 1,
+      });
+    } else {
+      await ctx.db.patch("reminderDispatchStates", state._id, {
+        lastRunAt: now,
+        dispatchCount: state.dispatchCount + 1,
+      });
+    }
+    await ctx.scheduler.runAfter(0, internal.reminders.sweepEvent, {
+      eventId,
+      now,
+    });
+    dispatched += 1;
+  }
+  return dispatched;
+}
+
+/** One indexed source and one page per execution. Convex permits only one
+ * paginated query in a function, so independent workers keep every source
+ * bounded while allowing each to advance at its own pace. */
+export const sweepSource = internalMutation({
+  args: {
+    source: vDiscoverySource,
+    paginationOpts: paginationOptsValidator,
+    now: v.number(),
+    /** Initial calls return IDs to the root for cross-source deduplication;
+     * continuation calls dispatch their own newly discovered events. */
+    dispatch: v.boolean(),
+  },
+  returns: v.object({
+    eventIds: v.array(v.id("events")),
+    dispatched: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const eventIds = new Set<Id<"events">>();
+    let isDone: boolean;
+    let continueCursor: string;
+    if (args.source === "eventCadence") {
+      const result = await ctx.db
+        .query("events")
+        .withIndex("by_reminderCadenceDays", (q) =>
+          q.gte("reminderCadenceDays", 0),
+        )
+        .paginate(args.paginationOpts);
+      for (const event of result.page) eventIds.add(event._id);
+      isDone = result.isDone;
+      continueCursor = result.continueCursor;
+    } else if (args.source === "requirementCadence") {
+      const result = await ctx.db
+        .query("requirements")
+        .withIndex("by_reminderCadenceDays", (q) =>
+          q.gte("reminderCadenceDays", 0),
+        )
+        .paginate(args.paginationOpts);
+      for (const requirement of result.page) {
+        eventIds.add(requirement.eventId);
+      }
+      isDone = result.isDone;
+      continueCursor = result.continueCursor;
+    } else if (args.source === "pendingDue") {
+      const result = await ctx.db
+        .query("taskInstances")
+        .withIndex("by_status_and_dueAt", (q) =>
+          q.eq("status", "pending").lte("dueAt", args.now + DUE_SOON_MS),
+        )
+        .paginate(args.paginationOpts);
+      for (const instance of result.page) eventIds.add(instance.eventId);
+      isDone = result.isDone;
+      continueCursor = result.continueCursor;
+    } else {
+      const result = await ctx.db
+        .query("taskInstances")
+        .withIndex("by_status_and_dueAt", (q) =>
+          q
+            .eq("status", "changesRequested")
+            .lte("dueAt", args.now + DUE_SOON_MS),
+        )
+        .paginate(args.paginationOpts);
+      for (const instance of result.page) eventIds.add(instance.eventId);
+      isDone = result.isDone;
+      continueCursor = result.continueCursor;
+    }
+
+    const dispatched = args.dispatch
+      ? await dispatchEvents(ctx, eventIds, args.now)
+      : 0;
+    if (!isDone) {
+      await ctx.scheduler.runAfter(0, internal.reminders.sweepSource, {
+        source: args.source,
+        paginationOpts: {
+          cursor: continueCursor,
+          numItems: DISCOVERY_PAGE_SIZE,
+        },
+        now: args.now,
+        dispatch: true,
+      });
+    }
+    return { eventIds: [...eventIds], dispatched };
+  },
+});
 
 export const sweep = internalMutation({
   args: {
@@ -441,38 +703,34 @@ export const sweep = internalMutation({
     now: v.optional(v.number()),
   },
   returns: v.object({
-    /** Eligible events dispatched, each as its own scheduled mutation. */
+    /** Eligible events dispatched from the first bounded page of each source. */
     events: v.number(),
   }),
   handler: async (ctx, args) => {
     const now = args.now ?? Date.now();
-    // SELECTS the events it needs instead of scanning the head of the table
-    // (H5). The old `take(500)` over an unindexed `events` scan meant the
-    // 501st event never got a reminder — invisibly, because a cron that
-    // dispatches 500 of 700 events looks exactly like a healthy one.
-    //
-    // `by_reminderCadenceDays` + `gte(0)` is "the field is present", i.e.
-    // exactly the events that opted into reminders (cadence is validated 1-90
-    // and absent means off, so no real row is excluded by the bound). There is
-    // deliberately NO cap left here: the range only contains opted-in events,
-    // each costs one read, and the work per event happens in its own
-    // scheduled mutation — so a failure in one event's sweep (oversized graph,
-    // template render throw, an `event_too_large` refusal) cannot starve the
-    // rest, and there is no truncation point for an event to fall off.
-    let dispatched = 0;
-    for await (const event of ctx.db
-      .query("events")
-      .withIndex("by_reminderCadenceDays", (q) =>
-        q.gte("reminderCadenceDays", 0),
-      )) {
-      if (!sweepEligible(event, now)) continue;
-      await ctx.scheduler.runAfter(0, internal.reminders.sweepEvent, {
-        eventId: event._id,
-        now,
-      });
-      dispatched += 1;
+    const eventIds = new Set<Id<"events">>();
+    const sources: DiscoverySource[] = [
+      "eventCadence",
+      "requirementCadence",
+      "pendingDue",
+      "changesRequestedDue",
+    ];
+    for (const source of sources) {
+      const result: DiscoveryResult = await ctx.runMutation(
+        internal.reminders.sweepSource,
+        {
+          source,
+          paginationOpts: {
+            cursor: null,
+            numItems: DISCOVERY_PAGE_SIZE,
+          },
+          now,
+          dispatch: false,
+        },
+      );
+      for (const eventId of result.eventIds) eventIds.add(eventId);
     }
-    return { events: dispatched };
+    return { events: await dispatchEvents(ctx, eventIds, now) };
   },
 });
 
@@ -485,6 +743,8 @@ export const sweepEvent = internalMutation({
   returns: v.object({
     taskEmails: v.number(),
     participationEmails: v.number(),
+    failedEmails: v.number(),
+    skippedRecipients: v.number(),
     deferredRecipients: v.number(),
   }),
   handler: async (ctx, args) => {
@@ -496,5 +756,181 @@ export const sweepEvent = internalMutation({
     }
     const graph = await loadGraph(ctx, event);
     return await runEventSweep(ctx, event, graph, args.now);
+  },
+});
+
+/** Organizer-triggered reminder for the outstanding task set. It deliberately
+ * excludes participation reminders and uses a distinct kind/sender so the log
+ * never presents a manual action as automation. */
+export const sendOutstandingNow = eventMutation({
+  args: {},
+  returns: v.object({
+    sent: v.number(),
+    failed: v.number(),
+    skipped: v.number(),
+    includedTasks: v.number(),
+  }),
+  handler: async (ctx) => {
+    requireOrganizer(ctx.caller);
+    if (ctx.caller.event.archivedAt !== undefined) {
+      throw new ConvexError({
+        code: "event_archived",
+        message: "Archived events cannot send reminders.",
+      });
+    }
+    const event = ctx.caller.event;
+    const graph = await loadGraph(ctx, event);
+    const [requirements, instances] = await Promise.all([
+      takeAll(
+        ctx.db
+          .query("requirements")
+          .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+        REQUIREMENT_SCAN,
+        "requirements",
+      ),
+      takeAll(
+        ctx.db
+          .query("taskInstances")
+          .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+        INSTANCE_SCAN,
+        "tasks",
+      ),
+    ]);
+    const requirementById = new Map(requirements.map((row) => [row._id, row]));
+    const buckets = new Map<string, Bucket>();
+    const skippedContacts = new Set<Id<"eventContacts">>();
+
+    for (const instance of instances) {
+      if (!isActionable(instance.status)) continue;
+      const requirement = requirementById.get(instance.requirementId);
+      if (
+        requirement === undefined ||
+        !requirement.active ||
+        requirement.remindersDisabled === true
+      ) {
+        continue;
+      }
+      const session = graph.sessionById.get(instance.sessionId);
+      if (session === undefined || session.status !== "planned") continue;
+      const participant = instanceParticipant(graph, instance);
+      if (participant === undefined) continue;
+      const recipient = routeFor(
+        graph,
+        participant,
+        participant.state === "confirmed" ? "task" : "personal",
+      );
+      if (recipient === null) {
+        skippedContacts.add(participant.eventContactId);
+        continue;
+      }
+      let bucket = buckets.get(recipient.email);
+      if (bucket === undefined) {
+        if (buckets.size >= MAX_RECIPIENTS_PER_EVENT) {
+          throw new ConvexError({
+            code: "audience_too_large",
+            message: `This reminder would reach more than ${MAX_RECIPIENTS_PER_EVENT} recipients. Narrow the outstanding set first.`,
+          });
+        }
+        bucket = {
+          recipient,
+          taskInstanceIds: [],
+          taskLines: [],
+          participantIds: [],
+          participationLines: [],
+        };
+        buckets.set(recipient.email, bucket);
+      }
+      bucket.taskInstanceIds.push(instance._id);
+      const who = speakerLabel(graph, participant);
+      bucket.taskLines.push(
+        `<strong>${escapeHtml(requirement.title)}</strong>${
+          who ? ` for ${escapeHtml(who)}` : ""
+        } — ${escapeHtml(session.title)} (due ${escapeHtml(
+          due(instance.dueAt, event.timezone),
+        )})`,
+      );
+    }
+
+    const now = Date.now();
+    let sent = 0;
+    let failed = 0;
+    for (const bucket of buckets.values()) {
+      const rendered = await renderTemplate(ctx, event, "reminder.tasks", {
+        event: { name: event.name },
+        speaker: {
+          firstName: bucket.recipient.firstName,
+          lastName: bucket.recipient.lastName,
+        },
+        link: `${siteUrl()}/portal/${event.slug}`,
+        tasks: list(bucket.taskLines),
+      });
+      const messageId = await sendLoggedEmail(ctx, {
+        orgId: event.orgId,
+        eventId: event._id,
+        toEmail: bucket.recipient.email,
+        kind: "reminder.tasks.manual",
+        subject: rendered.subject,
+        html: rendered.html,
+        sentByUserId: ctx.caller.user._id,
+        replyTo: event.replyTo,
+        context: {
+          instanceIds: bucket.taskInstanceIds,
+          manual: true,
+          renderedSubject: rendered.subject,
+          renderedBody: rendered.html,
+        },
+      });
+      if (!(await providerAccepted(ctx, messageId))) {
+        failed += 1;
+        continue;
+      }
+      sent += 1;
+      // Treat a manual reminder as the latest reminder for cadence purposes,
+      // preventing the hourly automation from duplicating it immediately.
+      for (const instanceId of bucket.taskInstanceIds) {
+        await ctx.db.patch("taskInstances", instanceId, {
+          lastRemindedAt: now,
+        });
+      }
+    }
+    const includedTasks = [...buckets.values()].reduce(
+      (total, bucket) => total + bucket.taskInstanceIds.length,
+      0,
+    );
+    const skipped = skippedContacts.size;
+    await logAudit(ctx, {
+      orgId: event.orgId,
+      eventId: event._id,
+      actorUserId: ctx.caller.user._id,
+      action: "reminders.sendOutstandingNow",
+      targetType: "event",
+      targetId: event._id,
+      meta: { sent, failed, skipped, includedTasks },
+    });
+    return { sent, failed, skipped, includedTasks };
+  },
+});
+
+/** Honest automation evidence for the task UI: this is the next hourly
+ * evaluation, not a promise that an email will be due at that instant. */
+export const automationStatus = eventQuery({
+  args: { now: v.number() },
+  returns: v.object({
+    enabled: v.boolean(),
+    cadenceDays: v.union(v.number(), v.null()),
+    nextEvaluationAt: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    requireOrganizer(ctx.caller);
+    const cadenceDays = ctx.caller.event.reminderCadenceDays ?? null;
+    const enabled = ctx.caller.event.archivedAt === undefined;
+    const hour = 60 * 60 * 1000;
+    return {
+      enabled,
+      cadenceDays,
+      nextEvaluationAt: enabled
+        ? Math.floor(args.now / hour) * hour + hour
+        : null,
+    };
   },
 });

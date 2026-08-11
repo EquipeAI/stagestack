@@ -17,6 +17,7 @@ import { publicProposalStatus } from "./cfp";
 import * as Publish from "./publish";
 import * as Sessions from "./sessions";
 import * as Tasks from "./tasks";
+import * as Speakers from "./speakers";
 import { assertEventActive, assertText, normalizeEmail } from "./validation";
 import { optionalHttpUrl } from "../lib/urls";
 
@@ -92,7 +93,6 @@ export type PortalProfileInput = {
   company?: string;
   bio?: string;
   links?: PortalLinks;
-  headshotId?: Id<"_storage">;
 };
 
 /** The publishable snapshot as the owning speaker sees it, plus a resolved
@@ -156,7 +156,6 @@ function validateProfile(input: PortalProfileInput): PortalProfileInput {
             linkedin: optionalLink(input.links.linkedin, "LinkedIn"),
             github: optionalLink(input.links.github, "GitHub"),
           },
-    headshotId: input.headshotId,
   };
 }
 
@@ -298,7 +297,9 @@ async function buildContext(
     const view = await profileView(ctx, contact);
     const rows = await ctx.db
       .query("sessionParticipants")
-      .withIndex("by_eventContactId", (q) => q.eq("eventContactId", contact._id))
+      .withIndex("by_eventContactId", (q) =>
+        q.eq("eventContactId", contact._id),
+      )
       .take(SESSION_FETCH);
     for (const row of rows) {
       if (row.eventId !== event._id) continue;
@@ -556,8 +557,7 @@ export async function enterPortal(
   if (identity.emailVerified !== true) {
     throw new ConvexError({
       code: "email_unverified",
-      message:
-        "Verify your email address to enter the speaker portal.",
+      message: "Verify your email address to enter the speaker portal.",
     });
   }
 
@@ -681,10 +681,7 @@ async function requireOwnParticipation(
     notFound("participation", "No such participation.");
   }
   if (participant.managerUserId === user._id) return participant;
-  const contact = await ctx.db.get(
-    "eventContacts",
-    participant.eventContactId,
-  );
+  const contact = await ctx.db.get("eventContacts", participant.eventContactId);
   if (contact !== null && contact.userId === user._id) return participant;
   notFound("participation", "No such participation.");
 }
@@ -719,8 +716,9 @@ async function requireManagedSession(
  * for future events; other events' snapshots stay exactly as they were
  * (MILESTONES M0/M3).
  *
- * Omitted optional fields are cleared — the portal form submits the whole
- * profile, so "absent" means "the speaker removed it".
+ * Omitted optional text/link fields are cleared — the portal form submits the
+ * whole textual profile. Headshots have their own ticketed attach/remove
+ * mutations so a stale form submission cannot overwrite a reactive upload.
  */
 export async function updateMyProfile(
   ctx: MutationCtx,
@@ -751,7 +749,10 @@ export async function updateMyProfile(
   // A published program renders this profile (name, bio, headshot, links):
   // the served blob follows the edit without waiting for an organizer
   // republish (eval finding: published pages served stale speaker data).
-  await Publish.requestRebuild(ctx, event._id);
+  // Profile text/headshots can grow the one-document projection. Rebuild in
+  // this transaction so the profile save rolls back with an actionable size
+  // error instead of leaving the public page silently stale.
+  await Publish.republishIfPublished(ctx, event._id);
   await logAudit(ctx, {
     orgId: event.orgId,
     eventId: event._id,
@@ -761,6 +762,145 @@ export async function updateMyProfile(
     targetId: contact._id,
     meta: { refreshedDirectory: contact.contactId !== undefined },
   });
+}
+
+export async function removeMyHeadshot(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  args: {
+    eventSlug: string;
+    eventContactId: Id<"eventContacts">;
+  },
+): Promise<void> {
+  const event = await eventBySlug(ctx, args.eventSlug);
+  const contact = await requireOwnEventContact(
+    ctx,
+    user,
+    event,
+    args.eventContactId,
+  );
+  assertEventActive(event);
+  if (contact.headshotId === undefined) return;
+  const previousHeadshotId = contact.headshotId;
+  let refreshedDirectory = false;
+  await ctx.db.patch("eventContacts", contact._id, { headshotId: undefined });
+  if (contact.contactId !== undefined) {
+    const directory = await ctx.db.get("contacts", contact.contactId);
+    // Another event may have refreshed the reusable directory profile after
+    // this snapshot was created. Never erase that newer cross-event photo.
+    if (directory?.headshotId === previousHeadshotId) {
+      await ctx.db.patch("contacts", directory._id, {
+        headshotId: undefined,
+      });
+      refreshedDirectory = true;
+    }
+  }
+  await Tasks.recomputeProfileEvidence(ctx, contact._id);
+  await Publish.republishIfPublished(ctx, event._id);
+  await Speakers.retireReplacedHeadshot(
+    ctx,
+    contact._id,
+    previousHeadshotId,
+    undefined,
+  );
+  await logAudit(ctx, {
+    orgId: event.orgId,
+    eventId: event._id,
+    actorUserId: user._id,
+    action: "portal.removeHeadshot",
+    targetType: "eventContact",
+    targetId: contact._id,
+    meta: { refreshedDirectory },
+  });
+}
+
+function portalHeadshotScope(
+  event: Doc<"events">,
+  contact: Doc<"eventContacts">,
+  user: Doc<"users">,
+): Speakers.HeadshotUploadScope {
+  return {
+    orgId: event.orgId,
+    eventId: event._id,
+    eventContactId: contact._id,
+    actorUserId: user._id,
+  };
+}
+
+export async function beginMyHeadshotUpload(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  args: {
+    eventSlug: string;
+    eventContactId: Id<"eventContacts">;
+    contentType: string;
+    size: number;
+  },
+): Promise<{ uploadId: Id<"headshotUploads"> }> {
+  const event = await eventBySlug(ctx, args.eventSlug);
+  const contact = await requireOwnEventContact(
+    ctx,
+    user,
+    event,
+    args.eventContactId,
+  );
+  assertEventActive(event);
+  return await Speakers.beginHeadshotUpload(
+    ctx,
+    portalHeadshotScope(event, contact, user),
+    { contentType: args.contentType, size: args.size },
+  );
+}
+
+export async function discardMyHeadshotUpload(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  args: {
+    eventSlug: string;
+    eventContactId: Id<"eventContacts">;
+    uploadId: Id<"headshotUploads">;
+  },
+): Promise<void> {
+  const event = await eventBySlug(ctx, args.eventSlug);
+  const contact = await requireOwnEventContact(
+    ctx,
+    user,
+    event,
+    args.eventContactId,
+  );
+  await Speakers.discardHeadshotUpload(
+    ctx,
+    portalHeadshotScope(event, contact, user),
+    args.uploadId,
+  );
+}
+
+/** Attach a newly uploaded photo without overwriting unrelated form fields
+ * that the speaker may still be editing in the browser. */
+export async function attachMyHeadshot(
+  ctx: MutationCtx,
+  user: Doc<"users">,
+  args: {
+    eventSlug: string;
+    eventContactId: Id<"eventContacts">;
+    uploadId: Id<"headshotUploads">;
+  },
+): Promise<void> {
+  const event = await eventBySlug(ctx, args.eventSlug);
+  const contact = await requireOwnEventContact(
+    ctx,
+    user,
+    event,
+    args.eventContactId,
+  );
+  await Speakers.attachRegisteredHeadshot(
+    ctx,
+    portalHeadshotScope(event, contact, user),
+    event,
+    contact,
+    args.uploadId,
+    "portal.attachHeadshot",
+  );
 }
 
 /**
@@ -877,10 +1017,7 @@ export async function withdrawParticipation(
   await Publish.requestRebuild(ctx, event._id);
 
   const session = await ctx.db.get("sessions", participant.sessionId);
-  const contact = await ctx.db.get(
-    "eventContacts",
-    participant.eventContactId,
-  );
+  const contact = await ctx.db.get("eventContacts", participant.eventContactId);
   const speakerName = contact === null ? "A speaker" : fullName(contact);
   const title = session?.title ?? "a session";
 
@@ -894,7 +1031,10 @@ export async function withdrawParticipation(
         `<p><a href="${portalLink(event.slug)}">Open the event</a></p>`,
       ].join("\n"),
     ),
-    context: { participantId: participant._id, sessionId: participant.sessionId },
+    context: {
+      participantId: participant._id,
+      sessionId: participant.sessionId,
+    },
   });
 
   await logAudit(ctx, {

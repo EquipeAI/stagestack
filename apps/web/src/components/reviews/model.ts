@@ -31,7 +31,7 @@ export function isUnfinished(assignment: Assignment): boolean {
 
 /** A locked review is evidence: it is shown, never edited. */
 export function isEditable(assignment: Assignment): boolean {
-  return assignment.status !== 'locked'
+  return assignment.status !== 'locked' && assignment.status !== 'conflict'
 }
 
 /**
@@ -117,7 +117,12 @@ export function readableAnswers(
     }
     if (fieldId === 'talkTitle' && text === proposalTitle) continue
     if (text === '—') continue
-    rows.push({ fieldId, label: field?.label ?? fieldLabel(fieldId), text, href })
+    rows.push({
+      fieldId,
+      label: field?.label ?? fieldLabel(fieldId),
+      text,
+      href,
+    })
   }
   return rows.sort((a, b) => {
     const rank = (id: string) => (id === 'abstract' ? 0 : 1)
@@ -131,5 +136,7 @@ export function speakerName(speaker: ReviewerSpeaker): string {
 
 /** "3 of 12 reviewed" — counts are concrete and mono everywhere. */
 export function submittedCount(assignments: ReadonlyArray<Assignment>): number {
-  return assignments.filter((row) => !isUnfinished(row)).length
+  return assignments.filter(
+    (row) => row.status === 'submitted' || row.status === 'locked',
+  ).length
 }

@@ -14,7 +14,9 @@ import {
   downloadFileBundle,
   exportCsv,
   exportReviewsCsv,
+  exportReviewsXlsx,
   exportXlsx,
+  reviewCompletion,
   slug,
 } from './exporters'
 import type { ConvexReactClient } from 'convex/react'
@@ -45,7 +47,8 @@ export function ViewsMenu({
   onDelete: (name: string) => void
 }) {
   const active =
-    [...BUILT_IN_VIEWS, ...saved].find((v) => sameView(v.search, search))?.name ?? null
+    [...BUILT_IN_VIEWS, ...saved].find((v) => sameView(v.search, search))
+      ?.name ?? null
 
   return (
     <Popover
@@ -75,7 +78,11 @@ export function ViewsMenu({
               {saved.map((view) => (
                 <div
                   key={view.name}
-                  style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 'var(--space-1)',
+                  }}
                 >
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <MenuItem
@@ -93,7 +100,9 @@ export function ViewsMenu({
                       >
                         {view.name}
                       </span>
-                      {view.name === active ? <Icon name="check" size={14} /> : null}
+                      {view.name === active ? (
+                        <Icon name="check" size={14} />
+                      ) : null}
                     </MenuItem>
                   </span>
                   <IconButton
@@ -177,7 +186,12 @@ export function StatusChips({
         gap: 'var(--space-2)',
       }}
     >
-      <Chip label="All" count={counts.all ?? 0} on={active.length === 0} onClick={onClear} />
+      <Chip
+        label="All"
+        count={counts.all ?? 0}
+        on={active.length === 0}
+        onClick={onClear}
+      />
       {STATUS_ORDER.map((status) => (
         <Chip
           key={status}
@@ -246,7 +260,13 @@ export function ColumnsMenu({
   return (
     <Popover label="Columns" icon="columns-3" width="16rem">
       {() => (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-3)',
+          }}
+        >
           {COLUMNS.map((column) => (
             <Switch
               key={column.id}
@@ -281,138 +301,267 @@ export function ExportMenu({
   visibleCount: number
 }) {
   const [busy, setBusy] = useState(false)
+  const [exportResult, setExportResult] = useState<string | null>(null)
   const base = `${slug(eventName)}-proposals`
 
   return (
-    <Popover label="Export" icon="download" width="20rem" disabled={busy}>
-      {(close) => (
-        <>
-          <MenuLabel>
-            {visibleCount} {visibleCount === 1 ? 'proposal' : 'proposals'} in this view
-          </MenuLabel>
-          <MenuItem
-            onClick={() => {
-              exportCsv(buildInput(), base)
-              pushToast('CSV exported', `${visibleCount} rows, visible columns + every answer.`)
-              close()
-            }}
-          >
-            Export CSV
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              setBusy(true)
-              void exportXlsx(buildInput(), base)
-                .then(() => {
-                  pushToast('XLSX exported', `${visibleCount} rows, one sheet.`)
-                })
-                .catch(() => pushToast('Export failed', 'The workbook could not be built.'))
-                .finally(() => {
-                  setBusy(false)
-                  close()
-                })
-            }}
-          >
-            Export XLSX
-          </MenuItem>
-          <ReviewsCsvItem
-            eventSlug={eventSlug}
-            base={base}
-            buildInput={buildInput}
-            onDone={close}
-          />
-          <MenuLabel>Attachments</MenuLabel>
-          <FileBundleItem eventSlug={eventSlug} base={base} onDone={close} />
-        </>
+    <div
+      style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}
+    >
+      <Popover label="Export" icon="download" width="21rem" disabled={busy}>
+        {(close) => (
+          <>
+            <MenuLabel>
+              Exactly {visibleCount} loaded{' '}
+              {visibleCount === 1 ? 'proposal' : 'proposals'} in this view
+            </MenuLabel>
+            <MenuItem
+              onClick={() => {
+                setExportResult(null)
+                exportCsv(buildInput(), base)
+                setExportResult(
+                  `CSV ready: ${visibleCount} proposal ${visibleCount === 1 ? 'row' : 'rows'} downloaded.`,
+                )
+                pushToast(
+                  'CSV exported',
+                  `${visibleCount} rows, visible columns + every answer.`,
+                )
+                close()
+              }}
+            >
+              Export CSV
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setExportResult(null)
+                setBusy(true)
+                void exportXlsx(buildInput(), base)
+                  .then(() => {
+                    setExportResult(
+                      `XLSX ready: ${visibleCount} proposal ${visibleCount === 1 ? 'row' : 'rows'} downloaded.`,
+                    )
+                    pushToast(
+                      'XLSX exported',
+                      `${visibleCount} rows, one sheet.`,
+                    )
+                  })
+                  .catch(() =>
+                    pushToast(
+                      'Export failed',
+                      'The workbook could not be built.',
+                    ),
+                  )
+                  .finally(() => {
+                    setBusy(false)
+                    close()
+                  })
+              }}
+            >
+              Export XLSX
+            </MenuItem>
+            <ReviewsCsvItem
+              eventSlug={eventSlug}
+              base={base}
+              buildInput={buildInput}
+              onResult={setExportResult}
+              onDone={close}
+            />
+            <MenuLabel>Attachments</MenuLabel>
+            <FileBundleItem eventSlug={eventSlug} base={base} onDone={close} />
+          </>
+        )}
+      </Popover>
+      {exportResult === null ? null : (
+        <span
+          role="status"
+          style={{
+            font: 'var(--type-caption)',
+            color: 'var(--status-success-fg)',
+          }}
+        >
+          {exportResult}
+        </span>
       )}
-    </Popover>
+    </div>
   )
 }
 
 /**
  * One review row per proposal on screen. Assignment progress is already in
- * memory (the table subscribes to it); the recommendation split lives in the
- * per-proposal summary, fetched here in small batches at click time — and only
- * for proposals that actually have assignments.
+ * per-proposal summary, fetched here in small batches at click time. The export
+ * never trusts the table's concurrently loading progress subscription, because
+ * clicking before that query resolves must not label every proposal unassigned.
  */
 async function buildReviewRows(
   convex: ConvexReactClient,
   eventSlug: string,
   input: ExportInput,
 ): Promise<Array<ReviewExportRow>> {
+  if (input.progress === undefined) {
+    throw new Error('Review progress is still loading.')
+  }
   const out: Array<ReviewExportRow> = []
   const batchSize = 8
   for (let i = 0; i < input.rows.length; i += batchSize) {
     const batch = input.rows.slice(i, i + batchSize)
-    out.push(
-      ...(await Promise.all(
-        batch.map(async (row) => {
-          const p = input.progress?.[row.proposal._id]
-          const base = {
-            title: displayTitle(row.proposal),
-            status: ABSTRACT_STATUS_LABEL[row.proposal.status],
-            assigned: p?.assigned ?? 0,
-            submitted: p?.submitted ?? 0,
-            avgScore: p?.avgScore ?? null,
-          }
-          if (p === undefined || p.assigned === 0) {
-            return { ...base, acceptCount: 0, neutralCount: 0, declineCount: 0 }
-          }
-          const summary = await convex.query(api.reviews.summary, {
-            eventSlug,
-            proposalId: row.proposal._id,
-          })
+    const results = await Promise.all(
+      batch.map(async (row) => {
+        const p = input.progress?.[row.proposal._id]
+        const base = {
+          title: displayTitle(row.proposal),
+          status: ABSTRACT_STATUS_LABEL[row.proposal.status],
+          assigned: p?.assigned ?? 0,
+          submitted: p?.submitted ?? 0,
+          avgScore: p?.avgScore ?? null,
+        }
+        if (p === undefined) {
           return {
             ...base,
-            avgScore: summary.aggregate.avgScore,
-            acceptCount: summary.aggregate.recommendations.accept,
-            neutralCount: summary.aggregate.recommendations.neutral,
-            declineCount: summary.aggregate.recommendations.decline,
+            reviewStatus: 'Not assigned',
+            recommendationSummary: 'No submitted recommendations',
+            acceptCount: 0,
+            neutralCount: 0,
+            declineCount: 0,
+            criteria: {},
           }
-        }),
-      )),
+        }
+        const summary = await convex.query(api.reviews.summary, {
+          eventSlug,
+          proposalId: row.proposal._id,
+        })
+        const criterionTotals = new Map<
+          string,
+          { label: string; total: number; count: number }
+        >()
+        for (const review of summary.reviews) {
+          if (review.status !== 'submitted' && review.status !== 'locked') {
+            continue
+          }
+          for (const field of review.scorecard) {
+            if (field.kind !== 'numeric') continue
+            const value = review.answers?.[field.id]
+            if (typeof value !== 'number') continue
+            const key = `${review.roundId ?? 'legacy'}:${field.id}`
+            const total = criterionTotals.get(key) ?? {
+              label: `${field.label} (${review.roundName})`,
+              total: 0,
+              count: 0,
+            }
+            total.total += value
+            total.count += 1
+            criterionTotals.set(key, total)
+          }
+        }
+        const criteria: Record<
+          string,
+          { label: string; value: number }
+        > = {}
+        for (const [key, total] of criterionTotals) {
+          criteria[key] = {
+            label: total.label,
+            value: Number((total.total / total.count).toFixed(2)),
+          }
+        }
+        const { recommendations } = summary.aggregate
+        const completion = reviewCompletion(
+          summary.aggregate.submittedCount,
+          summary.reviews,
+        )
+        const recommendationSummary = [
+          recommendations.accept > 0 ? `Accept ${recommendations.accept}` : '',
+          recommendations.neutral > 0
+            ? `Neutral ${recommendations.neutral}`
+            : '',
+          recommendations.decline > 0
+            ? `Decline ${recommendations.decline}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')
+        return {
+          ...base,
+          assigned: completion.assigned,
+          submitted: summary.aggregate.submittedCount,
+          avgScore: summary.aggregate.avgScore,
+          reviewStatus:
+            summary.reviews.length === 0 ? 'Not assigned' : completion.label,
+          recommendationSummary:
+            recommendationSummary === ''
+              ? 'No submitted recommendations'
+              : recommendationSummary,
+          acceptCount: recommendations.accept,
+          neutralCount: recommendations.neutral,
+          declineCount: recommendations.decline,
+          criteria,
+        }
+      }),
     )
+    out.push(...results)
   }
   return out
 }
 
-/** The reviews sheet (ABS-13): one row per visible proposal. */
+/** The review results sheet (ABS-13): exactly one row per loaded proposal. */
 function ReviewsCsvItem({
   eventSlug,
   base,
   buildInput,
+  onResult,
   onDone,
 }: {
   eventSlug: string
   base: string
   buildInput: () => ExportInput
+  onResult: (message: string | null) => void
   onDone: () => void
 }) {
   const convex = useConvex()
   const [busy, setBusy] = useState(false)
+  const progressReady = buildInput().progress !== undefined
+
+  const runExport = (format: 'csv' | 'xlsx') => {
+    onResult(null)
+    setBusy(true)
+    void buildReviewRows(convex, eventSlug, buildInput())
+      .then(async (rows) => {
+        if (format === 'csv') exportReviewsCsv(rows, `${base}-reviews`)
+        else await exportReviewsXlsx(rows, `${base}-reviews`)
+        const message = `${format.toUpperCase()} ready: ${rows.length} review result ${rows.length === 1 ? 'row' : 'rows'} downloaded.`
+        onResult(message)
+        pushToast(
+          `Review results ${format.toUpperCase()} exported`,
+          `${rows.length} rows with status, recommendations, aggregate and criterion scores.`,
+        )
+      })
+      .catch(() =>
+        pushToast('Export failed', 'The review summaries could not be read.'),
+      )
+      .finally(() => {
+        setBusy(false)
+        onDone()
+      })
+  }
 
   return (
-    <MenuItem
-      disabled={busy}
-      onClick={() => {
-        setBusy(true)
-        void buildReviewRows(convex, eventSlug, buildInput())
-          .then((rows) => {
-            exportReviewsCsv(rows, `${base}-reviews`)
-            pushToast(
-              'Reviews exported',
-              `${rows.length} ${rows.length === 1 ? 'proposal' : 'proposals'}, progress and recommendations.`,
-            )
-          })
-          .catch(() => pushToast('Export failed', 'The review summaries could not be read.'))
-          .finally(() => {
-            setBusy(false)
-            onDone()
-          })
-      }}
-    >
-      {busy ? 'Reading reviews…' : 'Reviews (CSV)'}
-    </MenuItem>
+    <>
+      <MenuLabel>Review results · loaded proposals only</MenuLabel>
+      <MenuItem
+        disabled={busy || !progressReady}
+        onClick={() => runExport('csv')}
+      >
+        {busy
+          ? 'Reading review results…'
+          : progressReady
+            ? 'Review results (CSV)'
+            : 'Loading review progress…'}
+      </MenuItem>
+      <MenuItem
+        disabled={busy || !progressReady}
+        onClick={() => runExport('xlsx')}
+      >
+        {busy ? 'Reading review results…' : 'Review results (XLSX)'}
+      </MenuItem>
+    </>
   )
 }
 
@@ -443,7 +592,10 @@ function FileBundleItem({
       onClick={() => {
         if (files === undefined) return
         if (files.length === 0) {
-          pushToast('No files to download', 'No proposal has a file answer yet.')
+          pushToast(
+            'No files to download',
+            'No proposal has a file answer yet.',
+          )
           onDone()
           return
         }
@@ -455,7 +607,9 @@ function FileBundleItem({
               failed === 0 ? undefined : `${failed} could not be fetched.`,
             )
           })
-          .catch(() => pushToast('Bundle failed', 'The zip could not be built.'))
+          .catch(() =>
+            pushToast('Bundle failed', 'The zip could not be built.'),
+          )
           .finally(() => {
             setBusy(false)
             onDone()

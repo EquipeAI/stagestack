@@ -1,5 +1,9 @@
 import { v } from "convex/values";
-import { eventMemberMutation, eventMutation, eventQuery } from "./lib/functions";
+import {
+  eventMemberMutation,
+  eventMutation,
+  eventQuery,
+} from "./lib/functions";
 import { vv } from "./lib/validators";
 import { vAnswerValue } from "./shared/formDef";
 import { vReviewAnswers, vScorecard } from "./shared/scorecard";
@@ -42,6 +46,7 @@ const vReviewerSpeaker = v.object({
 
 const vAggregate = v.object({
   count: v.number(),
+  conflictCount: v.number(),
   submittedCount: v.number(),
   avgScore: v.union(v.number(), v.null()),
   recommendations: v.object({
@@ -275,6 +280,7 @@ export const summary = eventQuery({
         reviewerName: v.union(v.string(), v.null()),
         reviewerEmail: v.union(v.string(), v.null()),
         status: vReviewStatus,
+        roundId: v.union(vv.id("reviewRounds"), v.null()),
         roundName: v.string(),
         scorecard: vScorecard,
         answers: v.optional(vReviewAnswers),
@@ -301,6 +307,7 @@ export const progress = eventQuery({
     v.object({
       assigned: v.number(),
       submitted: v.number(),
+      conflicts: v.number(),
       avgScore: v.union(v.number(), v.null()),
     }),
   ),
@@ -332,7 +339,11 @@ export const reviewerProgress = eventQuery({
 /** Consolidated nudge to lagging reviewers (ABS-09). */
 export const remind = eventMutation({
   args: { reviewerUserIds: v.array(v.id("users")) },
-  returns: v.object({ sent: v.number(), skipped: v.number() }),
+  returns: v.object({
+    sent: v.number(),
+    failed: v.number(),
+    skipped: v.number(),
+  }),
   handler: async (ctx, args) => {
     return await Reviews.remindReviewers(ctx, ctx.caller, args.reviewerUserIds);
   },

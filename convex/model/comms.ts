@@ -204,6 +204,7 @@ const BULK_KIND_PREFIXES = ["reminder."];
 export function isBulkKind(kind: string): boolean {
   return (
     kind === ONE_OFF_KIND ||
+    kind === "crm.bulkOutreach" ||
     BULK_KIND_PREFIXES.some((prefix) => kind.startsWith(prefix))
   );
 }
@@ -249,10 +250,14 @@ const MESSAGE_SCAN = 2000;
 
 export type OneOffTarget =
   | { kind: "contact"; eventContactId: Id<"eventContacts"> }
+  | { kind: "contacts"; eventContactIds: Array<Id<"eventContacts">> }
   | { kind: "audience"; audience: AudienceKind };
 
 export type OneOffResult = {
+  /** Messages the provider accepted for delivery. */
   sent: number;
+  /** Messages the provider refused before they left StageStack. */
+  failed: number;
   /** Speakers in the audience we had no reachable address for. */
   skipped: number;
 };
@@ -322,6 +327,33 @@ export async function sendOneOff(
   let skipped = 0;
   if (args.to.kind === "contact") {
     recipients = [await contactRecipient(ctx, event, args.to.eventContactId)];
+  } else if (args.to.kind === "contacts") {
+    const uniqueIds = [...new Set(args.to.eventContactIds)];
+    if (uniqueIds.length === 0 || uniqueIds.length > MAX_AUDIENCE) {
+      throw new ConvexError({
+        code: "invalid_audience",
+        message: `Choose between 1 and ${MAX_AUDIENCE} speakers.`,
+      });
+    }
+    recipients = [];
+    for (const eventContactId of uniqueIds) {
+      const contact = await ctx.db.get("eventContacts", eventContactId);
+      if (contact === null || contact.eventId !== event._id) {
+        notFound("contact", "No such contact on this event.");
+      }
+      const email = contact.email?.trim().toLowerCase();
+      if (email === undefined || email.length === 0) {
+        skipped += 1;
+        continue;
+      }
+      recipients.push({
+        email,
+        firstName: contact.firstName,
+        lastName: contact.lastName,
+        eventContactId: contact._id,
+        userId: contact.userId,
+      });
+    }
   } else {
     const resolved = await resolveAudience(
       ctx,
@@ -340,13 +372,26 @@ export async function sendOneOff(
     recipients = resolved.recipients;
     skipped = resolved.skipped;
   }
-  if (recipients.length === 0) {
+  if (recipients.length === 0 && args.to.kind !== "contacts") {
     throw new ConvexError({
       code: "empty_audience",
       message: "Nobody in this audience has a reachable email address.",
     });
   }
 
+  // A selected set can contain two event snapshots for the same real inbox.
+  // IDs are deduped above to protect the read, but delivery is deduped by the
+  // normalized address so that person still receives exactly one message.
+  const recipientsByEmail = new Map<string, AudienceRecipient>();
+  for (const recipient of recipients) {
+    const email = normalizeLogAddress(recipient.email);
+    if (recipientsByEmail.has(email)) continue;
+    recipientsByEmail.set(email, { ...recipient, email });
+  }
+  recipients = [...recipientsByEmail.values()];
+
+  let sent = 0;
+  let failed = 0;
   for (const recipient of recipients) {
     const vars = {
       event: { name: event.name },
@@ -363,21 +408,30 @@ export async function sendOneOff(
         ? undefined
         : ((await ctx.db.get("eventContacts", recipient.eventContactId))
             ?.contactId ?? undefined);
-    await sendLoggedEmail(ctx, {
+    const renderedSubject = substituteSubject(subject, vars);
+    const renderedBody = emailShell(substituteHtml(body, vars));
+    const messageId = await sendLoggedEmail(ctx, {
       orgId: event.orgId,
       eventId: event._id,
       contactId,
       toEmail: recipient.email,
       kind: ONE_OFF_KIND,
-      subject: substituteSubject(subject, vars),
-      html: emailShell(substituteHtml(body, vars)),
+      subject: renderedSubject,
+      html: renderedBody,
       sentByUserId: caller.user._id,
       replyTo: event.replyTo,
       context:
-        args.to.kind === "contact"
-          ? { eventContactId: args.to.eventContactId }
-          : { audience: args.to.audience },
+        args.to.kind === "audience"
+          ? { audience: args.to.audience, renderedSubject, renderedBody }
+          : {
+              eventContactId: recipient.eventContactId,
+              renderedSubject,
+              renderedBody,
+            },
     });
+    const logged = await ctx.db.get("messages", messageId);
+    if (logged?.deliveryStatus === "failed") failed += 1;
+    else sent += 1;
   }
 
   await logAudit(ctx, {
@@ -388,12 +442,18 @@ export async function sendOneOff(
     targetType: "event",
     targetId: event._id,
     meta: {
-      target: args.to.kind === "contact" ? "contact" : args.to.audience,
-      sent: recipients.length,
+      target:
+        args.to.kind === "audience"
+          ? args.to.audience
+          : args.to.kind === "contact"
+            ? "contact"
+            : "selectedContacts",
+      sent,
+      failed,
       skipped,
     },
   });
-  return { sent: recipients.length, skipped };
+  return { sent, failed, skipped };
 }
 
 // ── Delivery health (CFP-08) ─────────────────────────────────────────────
@@ -489,7 +549,9 @@ export async function contactLog(
       ? []
       : await ctx.db
           .query("messages")
-          .withIndex("by_contactId", (q) => q.eq("contactId", contact.contactId))
+          .withIndex("by_contactId", (q) =>
+            q.eq("contactId", contact.contactId),
+          )
           .order("desc")
           .take(MESSAGE_SCAN);
 

@@ -47,7 +47,6 @@ const vProfileInput = v.object({
   company: v.optional(v.string()),
   bio: v.optional(v.string()),
   links: v.optional(vLinks),
-  headshotId: v.optional(v.id("_storage")),
 });
 
 const vProfileView = v.object({
@@ -189,15 +188,33 @@ export const updateMyProfile = authedMutation({
   },
 });
 
-// Minting an upload URL costs storage the moment it's used; cap the rate per
-// portal user the same way the CFP wizard does.
+export const removeMyHeadshot = authedMutation({
+  args: {
+    eventSlug: v.string(),
+    eventContactId: v.id("eventContacts"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Portal.removeMyHeadshot(ctx, ctx.user, args);
+    return null;
+  },
+});
+
+// Cap ticket minting per portal user the same way the CFP wizard does.
 const uploadLimiter = new RateLimiter(components.rateLimiter, {
   portalUploadPerUser: { kind: "token bucket", rate: 10, period: HOUR },
 });
 
-export const generateHeadshotUploadUrl = authedMutation({
-  args: { eventSlug: v.string(), eventContactId: v.id("eventContacts") },
-  returns: v.string(),
+export const beginHeadshotUpload = authedMutation({
+  args: {
+    eventSlug: v.string(),
+    eventContactId: v.id("eventContacts"),
+    contentType: v.string(),
+    size: v.number(),
+  },
+  returns: v.object({
+    uploadId: vv.id("headshotUploads"),
+  }),
   handler: async (ctx, args) => {
     const event = await Portal.requireEventForPortal(ctx, args.eventSlug);
     await Portal.requireOwnEventContact(
@@ -215,7 +232,33 @@ export const generateHeadshotUploadUrl = authedMutation({
         message: "Too many uploads — try again in a little while.",
       });
     }
-    return await ctx.storage.generateUploadUrl();
+    return await Portal.beginMyHeadshotUpload(ctx, ctx.user, args);
+  },
+});
+
+export const discardHeadshotUpload = authedMutation({
+  args: {
+    eventSlug: v.string(),
+    eventContactId: v.id("eventContacts"),
+    uploadId: v.id("headshotUploads"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Portal.discardMyHeadshotUpload(ctx, ctx.user, args);
+    return null;
+  },
+});
+
+export const attachHeadshot = authedMutation({
+  args: {
+    eventSlug: v.string(),
+    eventContactId: v.id("eventContacts"),
+    uploadId: v.id("headshotUploads"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Portal.attachMyHeadshot(ctx, ctx.user, args);
+    return null;
   },
 });
 

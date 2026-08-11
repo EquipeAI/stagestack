@@ -103,9 +103,14 @@ function QueueView({
     )
   }
 
-  const current = assignments.find((row) => row.reviewId === selectedId) ?? null
-  const unfinished = assignments.filter(isUnfinished)
-  const done = submittedCount(assignments)
+  const actionableAssignments = assignments.filter(
+    (row) => row.status !== 'conflict',
+  )
+  const conflictCount = assignments.length - actionableAssignments.length
+  const current =
+    actionableAssignments.find((row) => row.reviewId === selectedId) ?? null
+  const unfinished = actionableAssignments.filter(isUnfinished)
+  const done = submittedCount(actionableAssignments)
 
   const advance = ({ revised }: { revised: boolean }) => {
     if (revised) return
@@ -123,7 +128,7 @@ function QueueView({
     >
       <PageHeader
         title="Reviews"
-        description={`${done} of ${assignments.length} submitted · ${unfinished.length} still waiting on you`}
+        description={`${done} of ${actionableAssignments.length} submitted · ${unfinished.length} still waiting on you${conflictCount === 0 ? '' : ` · ${conflictCount} conflict${conflictCount === 1 ? '' : 's'} excluded`}`}
       />
       <div
         style={{

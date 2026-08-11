@@ -291,10 +291,12 @@ function RevisionHistoryDialog({
   const restoreRevision = useMutation(api.sessions.restoreRevision)
   const { pending, error, run } = usePending()
   const [confirming, setConfirming] = useState<string | null>(null)
+  const [restored, setRestored] = useState<RevisionRow['before'] | null>(null)
 
   const restore = (revision: RevisionRow) => {
     void run(async () => {
       await restoreRevision({ eventSlug, revisionId: revision.revisionId })
+      setRestored(revision.before)
       pushToast(
         'Version restored',
         `"${session.title}" is back to how it was before ${formatDateTime(revision.editedAt, timezone)}. The restore itself is recorded as a new revision.`,
@@ -325,6 +327,27 @@ function RevisionHistoryDialog({
         }}
       >
         {error === null ? null : <Callout tone="blocked">{error}</Callout>}
+        {restored === null ? null : (
+          <Callout tone="info">
+            <div
+              role="status"
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--space-1)',
+              }}
+            >
+              <strong>
+                Restored snapshot is now the current session content.
+              </strong>
+              <span>Title: {fieldValue(restored, 'title')}</span>
+              <span>
+                Description: {clip(fieldValue(restored, 'description'))}
+              </span>
+              <span>Format: {fieldValue(restored, 'format') || '(empty)'}</span>
+            </div>
+          </Callout>
+        )}
 
         {revisions === undefined ? (
           <p style={{ color: 'var(--text-tertiary)' }}>Loading history…</p>

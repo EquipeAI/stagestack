@@ -61,11 +61,19 @@ describe("library CRUD", () => {
     expect(lib.tags).toHaveLength(1);
     expect(lib.tags[0].order).toBe(0);
     expect(lib.rooms[0]).toMatchObject({ name: "Main Stage", capacity: 500 });
+    expect(lib.customFields).toHaveLength(2);
     expect(lib.customFields[0]).toMatchObject({
+      name: "Travel preferences",
+      kind: "text",
+      appliesTo: "speaker",
+      order: 0,
+    });
+    expect(lib.customFields[1]).toMatchObject({
       name: "Session length",
       kind: "select",
       appliesTo: "session",
       options: ["25m", "45m"],
+      order: 1,
     });
 
     await alice.mutation(api.library.update, {
@@ -97,7 +105,9 @@ describe("library CRUD", () => {
     });
     const afterRemove = await alice.query(api.library.list, { eventSlug });
     expect(afterRemove.tags).toEqual([]);
-    expect(afterRemove.customFields).toEqual([]);
+    expect(afterRemove.customFields).toEqual([
+      expect.objectContaining({ name: "Travel preferences", order: 0 }),
+    ]);
     expect(afterRemove.tracks).toHaveLength(2);
   });
 

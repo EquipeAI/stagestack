@@ -3,7 +3,15 @@ import { useMutation } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { FunctionReturnType } from 'convex/server'
 import type * as React from 'react'
-import { Button, Callout, DataTable, Dialog, Field, Select } from '~/ds'
+import {
+  Button,
+  Callout,
+  DataTable,
+  Dialog,
+  Field,
+  Select,
+  Textarea,
+} from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
@@ -83,6 +91,21 @@ export function ImportCsvDialog({
   const [mapping, setMapping] = useState<Mapping>({})
   const [parsing, setParsing] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
+  const [pastedCsv, setPastedCsv] = useState('')
+
+  const setGrid = (grid: Array<Array<unknown>>, source: string) => {
+    if (grid.length < 2) {
+      throw new Error(
+        'That CSV has no data rows — the first row must be column headers.',
+      )
+    }
+    const [head, ...body] = grid
+    const headers = head.map((cell) => String(cell).trim())
+    const rows = body.map((line) => line.map((cell) => String(cell).trim()))
+    setFilename(source)
+    setParsed({ headers, rows })
+    setMapping(guessMapping(headers))
+  }
 
   const parse = async (file: File) => {
     setParsing(true)
@@ -99,19 +122,32 @@ export function ImportCsvDialog({
         blankrows: false,
         defval: '',
       })
-      if (grid.length < 2) {
-        throw new Error(
-          'That file has no data rows — the first row must be column headers.',
-        )
-      }
-      const [head, ...body] = grid
-      const headers = head.map((cell) => String(cell).trim())
-      const rows = body.map((line) => line.map((cell) => String(cell).trim()))
-      setFilename(file.name)
-      setParsed({ headers, rows })
-      setMapping(guessMapping(headers))
+      setGrid(grid, file.name)
     } catch (err) {
       setError(errorMessage(err, 'That file could not be read as a CSV.'))
+      setFilename(null)
+      setParsed(null)
+    } finally {
+      setParsing(false)
+    }
+  }
+
+  const parsePaste = async () => {
+    setParsing(true)
+    setError(null)
+    setResult(null)
+    try {
+      const XLSX = await import('xlsx')
+      const book = XLSX.read(pastedCsv, { type: 'string', raw: true })
+      const sheet = book.Sheets[book.SheetNames[0]]
+      const grid = XLSX.utils.sheet_to_json<Array<unknown>>(sheet, {
+        header: 1,
+        blankrows: false,
+        defval: '',
+      })
+      setGrid(grid, 'Pasted CSV')
+    } catch (err) {
+      setError(errorMessage(err, 'That text could not be read as CSV.'))
       setFilename(null)
       setParsed(null)
     } finally {
@@ -146,7 +182,7 @@ export function ImportCsvDialog({
     void run(async () => {
       const outcome = await importRows({
         eventSlug,
-        rows: mappedRows.slice(0, MAX_ROWS),
+        rows: mappedRows,
       })
       setResult(outcome)
       pushToast(
@@ -183,13 +219,14 @@ export function ImportCsvDialog({
               pending ||
               parsing ||
               parsed === null ||
+              overflow ||
               result !== null
             }
           >
             {pending
               ? 'Importing…'
-              : `Import ${Math.min(mappedRows.length, MAX_ROWS)} row${
-                  Math.min(mappedRows.length, MAX_ROWS) === 1 ? '' : 's'
+              : `Import ${mappedRows.length} row${
+                  mappedRows.length === 1 ? '' : 's'
                 }`}
           </Button>
         </>
@@ -235,13 +272,50 @@ export function ImportCsvDialog({
           </div>
         </Field>
 
+        <Field
+          label="Or paste CSV"
+          htmlFor="speaker-csv-paste"
+          hint="Useful in browser automation and when a CSV file is not available. It uses the same mapping, preview and import rules."
+        >
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 'var(--space-2)',
+            }}
+          >
+            <Textarea
+              id="speaker-csv-paste"
+              rows={5}
+              value={pastedCsv}
+              disabled={parsing || pending}
+              placeholder={
+                'firstName,lastName,email\nAda,Lovelace,ada@example.com'
+              }
+              onChange={(event) => {
+                setPastedCsv(event.target.value)
+              }}
+            />
+            <div>
+              <Button
+                size="sm"
+                iconLeft="clipboard"
+                disabled={parsing || pending || pastedCsv.trim() === ''}
+                onClick={() => void parsePaste()}
+              >
+                Preview pasted CSV
+              </Button>
+            </div>
+          </div>
+        </Field>
+
         {overflow ? (
           <Callout
             tone="attention"
-            title={`Only the first ${MAX_ROWS} rows import`}
+            title={`This import is over the ${MAX_ROWS}-row limit`}
           >
-            The file has {mappedRows.length} rows and one import takes at most{' '}
-            {MAX_ROWS}. Import, then re-run with the remainder in a second file.
+            Nothing will be truncated. Split these {mappedRows.length} rows into
+            files of at most {MAX_ROWS} rows and import each file.
           </Callout>
         ) : null}
 

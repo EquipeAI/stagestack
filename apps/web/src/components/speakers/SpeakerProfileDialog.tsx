@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
+import { useAuth } from '@clerk/tanstack-react-start'
 import { useMutation } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Doc, Id } from '@convex/_generated/dataModel'
@@ -19,6 +20,7 @@ import {
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
+import { isSupportedHeadshot, uploadHeadshot } from '~/lib/headshotUpload'
 
 // Organizer-side edit of one speaker's event snapshot (SPK-15 / CNT-10):
 // the profile fields the portal lets a speaker edit themselves, plus the
@@ -73,18 +75,18 @@ export function SpeakerProfileDialog({
   archived: boolean
   onClose: () => void
 }) {
+  const { getToken } = useAuth()
   const updateProfile = useMutation(api.speakers.updateProfile)
   const setCustomValues = useMutation(api.speakers.setCustomValues)
-  const generateUploadUrl = useMutation(api.tasks.generateUploadUrl)
+  const beginHeadshotUpload = useMutation(api.speakers.beginHeadshotUpload)
+  const attachHeadshot = useMutation(api.speakers.attachHeadshot)
+  const discardHeadshot = useMutation(api.speakers.discardHeadshotUpload)
   const { pending, error, setError, run } = usePending()
 
   const [draft, setDraft] = useState<Draft>(() => draftFrom(row))
   const [values, setValues] = useState<CustomValues>(() => ({
     ...row.customValues,
   }))
-  const [headshotId, setHeadshotId] = useState<Id<'_storage'> | undefined>(
-    undefined,
-  )
   const [localPhoto, setLocalPhoto] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
 
@@ -93,20 +95,51 @@ export function SpeakerProfileDialog({
   }
 
   const upload = async (file: File) => {
+    if (!isSupportedHeadshot(file)) {
+      return setError('Choose a JPEG, PNG, or WebP image for the headshot.')
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      return setError('Source headshots must be 4 MB or smaller.')
+    }
     setUploading(true)
     setError(null)
+    let uploadId: Id<'headshotUploads'> | undefined
     try {
-      const url = await generateUploadUrl({ eventSlug })
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': file.type },
-        body: file,
+      const token = await getToken({ template: 'convex' })
+      if (token === null) throw new Error('Sign in to upload a headshot.')
+      const ticket = await beginHeadshotUpload({
+        eventSlug,
+        eventContactId: row.eventContactId,
+        contentType: file.type,
+        size: file.size,
       })
-      if (!res.ok) throw new Error('Upload failed.')
-      const { storageId } = (await res.json()) as { storageId: Id<'_storage'> }
-      setHeadshotId(storageId)
+      uploadId = ticket.uploadId
+      await uploadHeadshot({
+        convexUrl: import.meta.env.VITE_CONVEX_URL,
+        convexSiteUrl: import.meta.env.VITE_CONVEX_SITE_URL,
+        uploadId,
+        token,
+        file,
+      })
+      await attachHeadshot({
+        eventSlug,
+        eventContactId: row.eventContactId,
+        uploadId,
+      })
       setLocalPhoto(URL.createObjectURL(file))
+      pushToast(
+        'Photo saved',
+        'The headshot is attached now. Other unsaved speaker edits are still here.',
+        'check',
+      )
     } catch (err) {
+      if (uploadId !== undefined) {
+        await discardHeadshot({
+          eventSlug,
+          eventContactId: row.eventContactId,
+          uploadId,
+        }).catch(() => undefined)
+      }
       setError(errorMessage(err, 'That photo could not be uploaded.'))
     } finally {
       setUploading(false)
@@ -137,7 +170,6 @@ export function SpeakerProfileDialog({
           company: draft.company,
           tagline: draft.tagline,
           bio: draft.bio,
-          ...(headshotId === undefined ? {} : { headshotId }),
           // Prefilled from the roster, so what's on screen IS the truth:
           // clearing a field clears the stored link.
           links: {
@@ -230,7 +262,7 @@ export function SpeakerProfileDialog({
               <Button as="label" size="sm" iconLeft="upload">
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   style={{ display: 'none' }}
                   onChange={(e) => {
                     const file = e.target.files?.[0]
@@ -242,6 +274,17 @@ export function SpeakerProfileDialog({
               </Button>
             )}
           </div>
+          {localPhoto !== null ? (
+            <p
+              style={{
+                margin: 'var(--space-2) 0 0',
+                font: 'var(--type-caption)',
+                color: 'var(--text-tertiary)',
+              }}
+            >
+              Photo saved. Other edits still need Save speaker.
+            </p>
+          ) : null}
         </Field>
 
         <div

@@ -121,7 +121,8 @@ async function publicationFlags(
     "publication flags",
   );
   const map = new Map<string, boolean>();
-  for (const f of flags) map.set(flagKey(f.targetType, f.targetId), f.published);
+  for (const f of flags)
+    map.set(flagKey(f.targetType, f.targetId), f.published);
   return map;
 }
 
@@ -248,7 +249,9 @@ export async function computeProgram(
     if (!sessionPublic) continue;
 
     const sessionParticipants = participantsBySession.get(session._id) ?? [];
-    const confirmed = sessionParticipants.filter((p) => p.state === "confirmed");
+    const confirmed = sessionParticipants.filter(
+      (p) => p.state === "confirmed",
+    );
 
     const speakers: PublicSpeaker[] = [];
     for (const p of confirmed) {
@@ -348,14 +351,30 @@ export async function computeProgram(
 /** The program is one document (schema: publishedPrograms.program), so it must
  * stay under Convex's 1MiB document cap. Guard well below it: past this, an
  * explicit publish is refused with the largest sessions named, so the fix
- * (unpublish some of them) is obvious. Unpublishing always passes the guard —
- * the flag flip lands before the recompute in the same transaction, so the
- * recomputed blob no longer contains the unpublished content. */
+ * (unpublish some of them) is obvious. A strict reduction always passes, even
+ * when a legacy projection remains above the soft limit, so removal can never
+ * be trapped behind the guard. */
 const MAX_PROGRAM_BYTES = 900 * 1024;
 
-function assertProgramFits(program: PublicProgram): void {
-  const bytes = new TextEncoder().encode(JSON.stringify(program)).length;
-  if (bytes <= MAX_PROGRAM_BYTES) return;
+function programBytes(program: PublicProgram): number {
+  return new TextEncoder().encode(JSON.stringify(program)).length;
+}
+
+function assertProgramFits(
+  program: PublicProgram,
+  existing?: PublicProgram,
+): void {
+  const bytes = programBytes(program);
+  // A legacy projection may predate the 900KiB soft guard while still fitting
+  // under Convex's 1MiB document cap. Never let the soft guard trap privacy
+  // removal: an oversized replacement may land only when it is a strict byte
+  // reduction. Equal-size and growing oversized replacements remain refused.
+  if (
+    bytes <= MAX_PROGRAM_BYTES ||
+    (existing !== undefined && bytes < programBytes(existing))
+  ) {
+    return;
+  }
   const largest = [...program.lineup]
     .map((s) => ({ title: s.title, bytes: JSON.stringify(s).length }))
     .sort((a, b) => b.bytes - a.bytes)
@@ -393,10 +412,11 @@ function canonical(value: unknown): string {
  *
  * `publishedBy` set  = an explicit organizer publish: it CREATES the row for a
  *   never-published event, records the publisher, and enforces the size guard.
- * `publishedBy` unset = a forced propagation (withdraw/decline/rename): it only
- *   rewrites an EXISTING blob, keeps the last explicit publisher on record, and
- *   is never blocked by the size guard (suppressions only shrink the blob, and a
- *   privacy transition must always land).
+ * `publishedBy` unset = a forced propagation (withdraw/decline/rename/profile):
+ *   it only rewrites an EXISTING blob and keeps the last explicit publisher on
+ *   record. The size guard still refuses oversized growth and equal-size
+ *   replacements, while strict reductions remain possible so privacy removal
+ *   cannot leave the previous projection stale.
  *
  * Idempotent by construction: it recomputes from current state rather than
  * applying a delta, so running it twice — or out of order with another rebuild —
@@ -432,12 +452,13 @@ export async function rebuildProgram(
   }
 
   const program = await computeProgram(ctx, event);
-  if (publishedBy !== undefined) assertProgramFits(program);
+  assertProgramFits(program, existing.program as PublicProgram);
   // Coalescing: several flag flips in quick succession each schedule a rebuild,
   // and every rebuild after the first recomputes the same bytes. Skipping the
   // write there costs nothing (the served blob is already right) and avoids both
   // a meaningless version bump and OCC contention on this single row.
-  if (canonical(existing.program) === canonical(program)) return existing.version;
+  if (canonical(existing.program) === canonical(program))
+    return existing.version;
   const version = existing.version + 1;
   await ctx.db.replace("publishedPrograms", existing._id, {
     eventId,
@@ -563,9 +584,18 @@ export async function publish(
     case "session": {
       const session = await ctx.db.get("sessions", action.sessionId);
       if (session === null || session.eventId !== eventId) {
-        throw new ConvexError({ code: "not_found", message: "No such session." });
+        throw new ConvexError({
+          code: "not_found",
+          message: "No such session.",
+        });
       }
-      await setFlag(ctx, eventId, "session", action.sessionId, action.published);
+      await setFlag(
+        ctx,
+        eventId,
+        "session",
+        action.sessionId,
+        action.published,
+      );
       // Listing a session publicly IS approving its content — one click does
       // both, so the publish console never strands a session behind a second
       // gate. Un-listing does NOT un-approve (editorial state is stickier).
@@ -583,7 +613,13 @@ export async function publish(
       if (item === null || item.eventId !== eventId) {
         throw new ConvexError({ code: "not_found", message: "No such item." });
       }
-      await setFlag(ctx, eventId, "agendaItem", action.itemId, action.published);
+      await setFlag(
+        ctx,
+        eventId,
+        "agendaItem",
+        action.itemId,
+        action.published,
+      );
       break;
     }
   }
@@ -693,7 +729,8 @@ export async function publishState(
     publishedSessionIds,
     publishedAgendaItemIds,
     acceptedSessions: planned.length,
-    releasedSessions: planned.filter((s) => s.releasedSlot !== undefined).length,
+    releasedSessions: planned.filter((s) => s.releasedSlot !== undefined)
+      .length,
   };
 }
 

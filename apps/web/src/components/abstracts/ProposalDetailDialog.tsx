@@ -391,15 +391,19 @@ function ReviewPanel({
 
   const { aggregate } = summary
   const recommendation = `${aggregate.recommendations.accept} accept · ${aggregate.recommendations.decline} decline · ${aggregate.recommendations.neutral} neutral`
+  const conflicts =
+    aggregate.conflictCount === 0
+      ? ''
+      : ` · ${aggregate.conflictCount} conflict${aggregate.conflictCount === 1 ? '' : 's'} excluded`
 
   return (
     <Card
       variant="flat"
       title="Reviews"
       subtitle={
-        aggregate.count === 0
+        aggregate.count === 0 && aggregate.conflictCount === 0
           ? 'Nobody is assigned to this proposal yet.'
-          : `${aggregate.submittedCount}/${aggregate.count} submitted${aggregate.avgScore === null ? '' : ` · avg ${aggregate.avgScore.toFixed(1)}`} · ${recommendation}`
+          : `${aggregate.submittedCount}/${aggregate.count} submitted${aggregate.avgScore === null ? '' : ` · avg ${aggregate.avgScore.toFixed(1)}`} · ${recommendation}${conflicts}`
       }
     >
       {summary.reviews.length === 0 ? (

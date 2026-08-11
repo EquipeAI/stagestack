@@ -1,4 +1,6 @@
-import { v } from "convex/values";
+import { HOUR, RateLimiter } from "@convex-dev/rate-limiter";
+import { ConvexError, v } from "convex/values";
+import { components } from "./_generated/api";
 import { eventMutation, eventQuery } from "./lib/functions";
 import { vv } from "./lib/validators";
 import * as Speakers from "./model/speakers";
@@ -18,6 +20,14 @@ const vParticipationState = v.union(
   v.literal("declined"),
   v.literal("withdrawn"),
 );
+
+const uploadLimiter = new RateLimiter(components.rateLimiter, {
+  organizerHeadshotUploadPerUser: {
+    kind: "token bucket",
+    rate: 10,
+    period: HOUR,
+  },
+});
 
 export const roster = eventQuery({
   args: { search: v.optional(v.string()) },
@@ -85,6 +95,70 @@ export const updateProfile = eventMutation({
       ctx.caller,
       args.eventContactId,
       args.patch,
+    );
+    return null;
+  },
+});
+
+export const beginHeadshotUpload = eventMutation({
+  args: {
+    eventContactId: v.id("eventContacts"),
+    contentType: v.string(),
+    size: v.number(),
+  },
+  returns: v.object({
+    uploadId: vv.id("headshotUploads"),
+  }),
+  handler: async (ctx, args) => {
+    const limit = await uploadLimiter.limit(
+      ctx,
+      "organizerHeadshotUploadPerUser",
+      { key: ctx.caller.user._id },
+    );
+    if (!limit.ok) {
+      throw new ConvexError({
+        code: "rate_limited",
+        message: "Too many uploads — try again in a little while.",
+      });
+    }
+    return await Speakers.beginOrganizerHeadshotUpload(
+      ctx,
+      ctx.caller,
+      args.eventContactId,
+      { contentType: args.contentType, size: args.size },
+    );
+  },
+});
+
+export const discardHeadshotUpload = eventMutation({
+  args: {
+    eventContactId: v.id("eventContacts"),
+    uploadId: v.id("headshotUploads"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Speakers.discardOrganizerHeadshotUpload(
+      ctx,
+      ctx.caller,
+      args.eventContactId,
+      args.uploadId,
+    );
+    return null;
+  },
+});
+
+export const attachHeadshot = eventMutation({
+  args: {
+    eventContactId: v.id("eventContacts"),
+    uploadId: v.id("headshotUploads"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Speakers.attachHeadshot(
+      ctx,
+      ctx.caller,
+      args.eventContactId,
+      args.uploadId,
     );
     return null;
   },

@@ -34,6 +34,13 @@ crons.interval(
   {},
 );
 
+crons.interval(
+  "cleanup expired headshot uploads",
+  { minutes: 15 },
+  internal.headshotUploads.cleanupExpired,
+  {},
+);
+
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const cleanupResend = internalMutation({

@@ -18,6 +18,7 @@ import {
   Button,
   Callout,
   Card,
+  Checkbox,
   Dialog,
   Field,
   Input,
@@ -36,7 +37,7 @@ import { pushToast } from '~/components/toast'
 /** convex/model/audiences.ts — one send never fans out past this. */
 const MAX_AUDIENCE = 200
 
-type Mode = 'contact' | 'audience'
+type Mode = 'contact' | 'selection' | 'audience'
 
 export function SendPanel({
   eventSlug,
@@ -48,6 +49,7 @@ export function SendPanel({
   const now = useNow()
   const send = useMutation(api.comms.sendOneOff)
   const contacts = useEventContacts(eventSlug)
+  const roster = useQuery(api.speakers.roster, { eventSlug })
   const audiences = useLastLoaded(
     useQuery(api.comms.listAudiences, { eventSlug, now }),
   )
@@ -55,6 +57,8 @@ export function SendPanel({
 
   const [mode, setMode] = useState<Mode>('contact')
   const [contactId, setContactId] = useState<Id<'eventContacts'> | ''>('')
+  const [selectedIds, setSelectedIds] = useState<Array<Id<'eventContacts'>>>([])
+  const [contactFilter, setContactFilter] = useState('')
   const [audience, setAudience] = useState<AudienceKind>('allSpeakers')
   const [subject, setSubject] = useState('')
   const [message, setMessage] = useState('')
@@ -62,7 +66,21 @@ export function SendPanel({
 
   const audienceRow = audiences?.find((row) => row.kind === audience)
   const recipientCount =
-    mode === 'contact' ? (contactId === '' ? 0 : 1) : (audienceRow?.count ?? 0)
+    mode === 'contact'
+      ? contactId === ''
+        ? 0
+        : 1
+      : mode === 'selection'
+        ? selectedIds.length
+        : (audienceRow?.count ?? 0)
+  const selectableContacts = (roster ?? []).map((contact) => ({
+    eventContactId: contact.eventContactId,
+    name:
+      `${contact.firstName} ${contact.lastName}`.trim() || 'Unnamed speaker',
+  }))
+  const filteredContacts = selectableContacts.filter((contact) =>
+    contact.name.toLowerCase().includes(contactFilter.trim().toLowerCase()),
+  )
 
   const vars = useMemo(() => sampleVars(eventName), [eventName])
   // A one-off send builds its own tiny variable bag, so anything outside it —
@@ -77,6 +95,9 @@ export function SendPanel({
 
   const blocked = (() => {
     if (mode === 'contact' && contactId === '') return 'Choose a recipient.'
+    if (mode === 'selection' && selectedIds.length === 0) {
+      return 'Choose at least one speaker.'
+    }
     if (mode === 'audience' && audiences === undefined) {
       return 'Counting the audience…'
     }
@@ -92,14 +113,17 @@ export function SendPanel({
   })()
 
   const contactName =
-    contacts?.find((c) => c.eventContactId === contactId)?.name ?? 'this speaker'
+    contacts?.find((c) => c.eventContactId === contactId)?.name ??
+    'this speaker'
 
   const submit = () => {
     if (mode === 'contact' && contactId === '') return
     const to =
       mode === 'contact' && contactId !== ''
         ? ({ kind: 'contact', eventContactId: contactId } as const)
-        : ({ kind: 'audience', audience } as const)
+        : mode === 'selection'
+          ? ({ kind: 'contacts', eventContactIds: selectedIds } as const)
+          : ({ kind: 'audience', audience } as const)
     void run(async () => {
       const result = await send({
         eventSlug,
@@ -112,31 +136,52 @@ export function SendPanel({
       setSubject('')
       setMessage('')
       pushToast(
-        `${result.sent} ${result.sent === 1 ? 'email' : 'emails'} sent`,
-        result.skipped === 0
-          ? 'Recorded in the comms log for every recipient.'
-          : `${result.skipped} skipped — no reachable address. Recorded in the comms log for the rest.`,
+        `${result.sent} accepted · ${result.failed} failed · ${result.skipped} skipped`,
+        result.failed > 0
+          ? 'Provider-refused messages did not leave StageStack. Every attempt is recorded in the comms log.'
+          : result.skipped === 0
+            ? 'The provider accepted every message, and each is recorded in the comms log.'
+            : `${result.skipped} had no reachable address. The provider accepted the rest.`,
       )
     })
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-5)',
+      }}
+    >
       <Card
         title="Recipients"
         subtitle="Audiences are derived from event state — StageStack has no imported lists."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-4)',
+          }}
+        >
           <RadioGroup
             name="send-mode"
             row
             value={mode}
             options={[
               { value: 'contact', label: 'One contact' },
+              { value: 'selection', label: 'Selected speakers' },
               { value: 'audience', label: 'Audience' },
             ]}
             onChange={(value) => {
-              setMode(value === 'audience' ? 'audience' : 'contact')
+              setMode(
+                value === 'audience'
+                  ? 'audience'
+                  : value === 'selection'
+                    ? 'selection'
+                    : 'contact',
+              )
               setError(null)
             }}
           />
@@ -146,8 +191,8 @@ export function SendPanel({
               <p style={{ color: 'var(--text-tertiary)' }}>Loading speakers…</p>
             ) : contacts.length === 0 ? (
               <Callout tone="neutral" title="No speakers yet">
-                Speakers appear here once a session has participants. Until
-                then there is nobody to write to.
+                Speakers appear here once a session has participants. Until then
+                there is nobody to write to.
               </Callout>
             ) : (
               <Field
@@ -164,6 +209,88 @@ export function SendPanel({
                     setContactId(value as Id<'eventContacts'>)
                   }}
                 />
+              </Field>
+            )
+          ) : mode === 'selection' ? (
+            roster === undefined ? (
+              <p style={{ color: 'var(--text-tertiary)' }}>Loading speakers…</p>
+            ) : (
+              <Field
+                label="Speakers"
+                htmlFor="send-contact-filter"
+                hint={`${selectedIds.length} selected. Search, then select the currently filtered group.`}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 'var(--space-2)',
+                  }}
+                >
+                  <Input
+                    id="send-contact-filter"
+                    value={contactFilter}
+                    placeholder="Filter speakers…"
+                    disabled={pending}
+                    onChange={(event) => setContactFilter(event.target.value)}
+                  />
+                  <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                    <Button
+                      size="sm"
+                      disabled={pending || filteredContacts.length === 0}
+                      onClick={() => {
+                        setSelectedIds((current) => [
+                          ...new Set([
+                            ...current,
+                            ...filteredContacts.map((c) => c.eventContactId),
+                          ]),
+                        ])
+                      }}
+                    >
+                      Select filtered ({filteredContacts.length})
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={pending || selectedIds.length === 0}
+                      onClick={() => setSelectedIds([])}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                  <div
+                    style={{
+                      maxHeight: '16rem',
+                      overflowY: 'auto',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 'var(--space-2)',
+                    }}
+                  >
+                    {filteredContacts.map((contact) => (
+                      <Checkbox
+                        key={contact.eventContactId}
+                        label={contact.name}
+                        checked={selectedIds.includes(contact.eventContactId)}
+                        disabled={pending}
+                        onChange={(event) => {
+                          setSelectedIds((current) =>
+                            event.target.checked
+                              ? [
+                                  ...new Set([
+                                    ...current,
+                                    contact.eventContactId,
+                                  ]),
+                                ]
+                              : current.filter(
+                                  (id) => id !== contact.eventContactId,
+                                ),
+                          )
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
               </Field>
             )
           ) : (
@@ -216,7 +343,9 @@ export function SendPanel({
               style={{
                 font: 'var(--type-caption)',
                 color:
-                  blocked === null ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+                  blocked === null
+                    ? 'var(--text-tertiary)'
+                    : 'var(--text-secondary)',
                 marginRight: 'auto',
               }}
             >
@@ -225,7 +354,10 @@ export function SendPanel({
             </span>
             {error === null ? null : (
               <span
-                style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}
+                style={{
+                  font: 'var(--type-caption)',
+                  color: 'var(--text-danger)',
+                }}
               >
                 {error}
               </span>
@@ -243,7 +375,13 @@ export function SendPanel({
           </div>
         }
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-4)',
+          }}
+        >
           <Field label="Subject" htmlFor="send-subject" required>
             <Input
               id="send-subject"
@@ -278,18 +416,38 @@ export function SendPanel({
             />
           </Field>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 'var(--space-2)',
+            }}
+          >
             <span
-              style={{ font: 'var(--type-label)', color: 'var(--text-secondary)' }}
+              style={{
+                font: 'var(--type-label)',
+                color: 'var(--text-secondary)',
+              }}
             >
               Variables
             </span>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 'var(--space-2)',
+              }}
+            >
               {ONE_OFF_VARS.map((path) => (
                 <VariableChip key={path} path={path} />
               ))}
             </div>
-            <p style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}>
+            <p
+              style={{
+                font: 'var(--type-caption)',
+                color: 'var(--text-tertiary)',
+              }}
+            >
               These are resolved per recipient. A one-off send knows nothing
               about a proposal or a task, so only these names have values here —
               anything else renders as nothing.
@@ -305,7 +463,10 @@ export function SendPanel({
           {subject.trim() === '' ? null : (
             <div style={previewLine}>
               <span
-                style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}
+                style={{
+                  font: 'var(--type-caption)',
+                  color: 'var(--text-tertiary)',
+                }}
               >
                 Subject, as Ada Lovelace would see it
               </span>
@@ -325,7 +486,9 @@ export function SendPanel({
           description={
             mode === 'contact'
               ? `Sends 1 email to ${contactName} now, and it is recorded in the comms log.`
-              : `Sends ${recipientCount} ${recipientCount === 1 ? 'email' : 'emails'} to ${AUDIENCE_META[audience].label.toLowerCase()} now — they are recorded in the comms log.`
+              : mode === 'selection'
+                ? `Sends to ${recipientCount} selected speakers now. The result reports exact accepted, failed and skipped counts, and each attempt is recorded in the comms log.`
+                : `Sends ${recipientCount} ${recipientCount === 1 ? 'email' : 'emails'} to ${AUDIENCE_META[audience].label.toLowerCase()} now — they are recorded in the comms log.`
           }
           onClose={
             pending
@@ -350,11 +513,20 @@ export function SendPanel({
             </>
           }
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 'var(--space-3)',
+            }}
+          >
             {error === null ? null : <Callout tone="blocked">{error}</Callout>}
             <div style={previewLine}>
               <span
-                style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}
+                style={{
+                  font: 'var(--type-caption)',
+                  color: 'var(--text-tertiary)',
+                }}
               >
                 Subject
               </span>
@@ -362,7 +534,12 @@ export function SendPanel({
                 {renderDraftSubject(subject, vars)}
               </span>
             </div>
-            <p style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}>
+            <p
+              style={{
+                font: 'var(--type-caption)',
+                color: 'var(--text-tertiary)',
+              }}
+            >
               This cannot be recalled once it leaves.
             </p>
           </div>

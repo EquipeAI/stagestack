@@ -39,6 +39,7 @@ const PARTICIPANT_SCAN = 5000;
 const INSTANCE_SCAN = 8000;
 const CONTACT_SCAN = 2000;
 const UPLOAD_SCAN = 200;
+const FILE_LIBRARY_SCAN = 2000;
 const MAX_PARTICIPANTS_PER_SESSION = 100;
 
 const MAX_TITLE = 200;
@@ -67,7 +68,10 @@ export function isOpen(instance: Doc<"taskInstances">): boolean {
   return !SETTLED.has(instance.status);
 }
 
-export function isOverdue(instance: Doc<"taskInstances">, now: number): boolean {
+export function isOverdue(
+  instance: Doc<"taskInstances">,
+  now: number,
+): boolean {
   return isOpen(instance) && instance.dueAt < now;
 }
 
@@ -237,10 +241,9 @@ async function insertInstance(
     eventContactId: args.eventContactId,
     status: await initialStatus(ctx, cache, requirement, args.eventContactId),
     dueAt: requirement.dueAt,
-    // Fix 2: stamp creation time so the FIRST reminder is due one full cadence
-    // AFTER assignment — not at the next hourly sweep (undefined would read as
-    // epoch 0 and fire immediately).
-    lastRemindedAt: now,
+    // `lastRemindedAt` is reserved for a provider-accepted send. General
+    // cadence uses `_creationTime` as its initial baseline, while due-soon
+    // safety reminders intentionally run at the next hourly evaluation.
     updatedAt: now,
   });
 }
@@ -276,9 +279,16 @@ async function instantiateRequirement(
   let created = 0;
   for (const session of sessions) {
     if (session.status !== "planned") continue;
-    created += await instantiateOne(ctx, cache, requirement, session._id, seen, {
-      participants: participants.filter((p) => p.sessionId === session._id),
-    });
+    created += await instantiateOne(
+      ctx,
+      cache,
+      requirement,
+      session._id,
+      seen,
+      {
+        participants: participants.filter((p) => p.sessionId === session._id),
+      },
+    );
   }
   return created;
 }
@@ -332,7 +342,10 @@ async function instantiateOne(
     if (participant.state === "withdrawn") continue;
     // Once per unique speaker: a contact already owing this requirement on any
     // session (including this one) is skipped.
-    const key = participantScopeKey(requirement._id, participant.eventContactId);
+    const key = participantScopeKey(
+      requirement._id,
+      participant.eventContactId,
+    );
     if (seen.has(key)) continue;
     seen.add(key);
     await insertInstance(ctx, cache, requirement, {
@@ -868,15 +881,32 @@ export async function attachUpload(
     max: MAX_FILENAME,
     code: "invalid_filename",
   });
+  if (
+    filename === "." ||
+    filename === ".." ||
+    /[\\/\u0000-\u001f\u007f]/.test(filename)
+  ) {
+    throw new ConvexError({
+      code: "invalid_filename",
+      message:
+        "File names cannot contain path separators or control characters.",
+    });
+  }
 
-  const existing = await ctx.db
+  const latest = await ctx.db
     .query("uploads")
-    .withIndex("by_taskInstanceId", (q) =>
-      q.eq("taskInstanceId", instance._id),
-    )
-    .take(UPLOAD_SCAN);
-  const version =
-    existing.reduce((max, row) => Math.max(max, row.version), 0) + 1;
+    .withIndex("by_taskInstanceId", (q) => q.eq("taskInstanceId", instance._id))
+    .order("desc")
+    .first();
+  if (latest !== null && latest.version >= UPLOAD_SCAN) {
+    throw new ConvexError({
+      code: "upload_version_limit",
+      message: `A task can keep at most ${UPLOAD_SCAN} file versions.`,
+    });
+  }
+  // `by_taskInstanceId` is ordered by `_creationTime` after the indexed key.
+  // Versions are append-only, so the newest row is the authoritative max.
+  const version = (latest?.version ?? 0) + 1;
   const uploadId = await ctx.db.insert("uploads", {
     eventId: event._id,
     taskInstanceId: instance._id,
@@ -926,12 +956,17 @@ export async function listUploads(
   const { instance } = await requireTaskAccess(ctx, user, event, instanceId);
   const rows = await ctx.db
     .query("uploads")
-    .withIndex("by_taskInstanceId", (q) =>
-      q.eq("taskInstanceId", instance._id),
-    )
-    .take(UPLOAD_SCAN);
+    .withIndex("by_taskInstanceId", (q) => q.eq("taskInstanceId", instance._id))
+    .order("desc")
+    .take(UPLOAD_SCAN + 1);
+  if (rows.length > UPLOAD_SCAN) {
+    throw new ConvexError({
+      code: "upload_version_limit",
+      message: `This task has more than ${UPLOAD_SCAN} file versions. The history is refused rather than silently truncated.`,
+    });
+  }
   const out: UploadRow[] = [];
-  for (const row of rows.sort((a, b) => b.version - a.version)) {
+  for (const row of rows) {
     out.push({
       uploadId: row._id,
       filename: row.filename,
@@ -949,12 +984,11 @@ async function latestUpload(
   ctx: QueryCtx,
   instanceId: Id<"taskInstances">,
 ): Promise<Doc<"uploads"> | null> {
-  const rows = await ctx.db
+  return await ctx.db
     .query("uploads")
     .withIndex("by_taskInstanceId", (q) => q.eq("taskInstanceId", instanceId))
-    .take(UPLOAD_SCAN);
-  if (rows.length === 0) return null;
-  return rows.reduce((best, row) => (row.version > best.version ? row : best));
+    .order("desc")
+    .first();
 }
 
 // ── Review gate (organizer only) ─────────────────────────────────────────
@@ -1495,7 +1529,14 @@ export async function filesLibrary(
   const uploads = await ctx.db
     .query("uploads")
     .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
-    .take(2000);
+    .take(FILE_LIBRARY_SCAN + 1);
+  if (uploads.length > FILE_LIBRARY_SCAN) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 2,000 uploaded file versions. Export a smaller event before building a complete bundle.",
+    });
+  }
   const byInstance = new Map<Id<"taskInstances">, Array<Doc<"uploads">>>();
   for (const upload of uploads) {
     const list = byInstance.get(upload.taskInstanceId) ?? [];
@@ -1505,7 +1546,14 @@ export async function filesLibrary(
   const comments = await ctx.db
     .query("uploadComments")
     .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
-    .take(2000);
+    .take(FILE_LIBRARY_SCAN + 1);
+  if (comments.length > FILE_LIBRARY_SCAN) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 2,000 file comments. The files library cannot report complete counts safely.",
+    });
+  }
   const commentCount = new Map<Id<"taskInstances">, number>();
   for (const comment of comments) {
     commentCount.set(
@@ -1518,7 +1566,10 @@ export async function filesLibrary(
   for (const [instanceId, list] of byInstance) {
     const instance = await ctx.db.get("taskInstances", instanceId);
     if (instance === null) continue;
-    const requirement = await ctx.db.get("requirements", instance.requirementId);
+    const requirement = await ctx.db.get(
+      "requirements",
+      instance.requirementId,
+    );
     const session = await ctx.db.get("sessions", instance.sessionId);
     const contact =
       instance.eventContactId === undefined
@@ -1565,9 +1616,7 @@ export async function exportBundle(
   const wanted =
     instanceIds.length === 0
       ? all
-      : all.filter((row) =>
-          instanceIds.some((id) => id === row.instanceId),
-        );
+      : all.filter((row) => instanceIds.some((id) => id === row.instanceId));
   return wanted.map((row) => ({
     filename: row.filename,
     url: row.url,

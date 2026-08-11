@@ -44,7 +44,21 @@ import { sendLoggedEmail, siteUrl } from "./comms";
 const MAX_BULK = 500;
 /** Ceiling for the event-wide review scans backing the progress map. */
 const REVIEW_SCAN = 5000;
+const REVIEW_SUMMARY_SCAN = 200;
 const MAX_SPEAKERS_PER_PROPOSAL = 40;
+
+function assertCompleteScan(
+  rows: unknown[],
+  limit: number,
+  what: string,
+): void {
+  if (rows.length > limit) {
+    throw new ConvexError({
+      code: "event_too_large",
+      message: `This event has more than ${limit} ${what}. The operation is refused rather than using a partial result.`,
+    });
+  }
+}
 
 /** Proposals that may be reviewed: submitted and not yet decided. Queued
  * proposals stay reviewable — staging is an internal, reversible step. */
@@ -114,7 +128,8 @@ export async function listRoundDocs(
   const rounds = await ctx.db
     .query("reviewRounds")
     .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-    .take(MAX_ROUNDS);
+    .take(MAX_ROUNDS + 1);
+  assertCompleteScan(rounds, MAX_ROUNDS, "review rounds");
   return rounds.sort((a, b) => a.order - b.order);
 }
 
@@ -333,6 +348,18 @@ export async function updateRound(
   });
 }
 
+async function completeRoundPool(
+  ctx: QueryCtx,
+  roundId: Id<"reviewRounds">,
+): Promise<Array<Doc<"roundReviewers">>> {
+  const pool = await ctx.db
+    .query("roundReviewers")
+    .withIndex("by_roundId_and_userId", (q) => q.eq("roundId", roundId))
+    .take(MAX_POOL + 1);
+  assertCompleteScan(pool, MAX_POOL, "reviewers in one round");
+  return pool;
+}
+
 export async function deleteRound(
   ctx: MutationCtx,
   caller: EventCaller,
@@ -351,7 +378,8 @@ export async function deleteRound(
     .withIndex("by_eventId_and_reviewerUserId", (q) =>
       q.eq("eventId", caller.event._id),
     )
-    .take(REVIEW_SCAN);
+    .take(REVIEW_SCAN + 1);
+  assertCompleteScan(anyReview, REVIEW_SCAN, "reviews");
   if (
     anyReview.some(
       (r) => r.roundId === roundId || (isFirst && r.roundId === undefined),
@@ -359,10 +387,7 @@ export async function deleteRound(
   ) {
     invalidStatus("This round has reviews — it can't be deleted.");
   }
-  const pool = await ctx.db
-    .query("roundReviewers")
-    .withIndex("by_roundId_and_userId", (q) => q.eq("roundId", roundId))
-    .take(MAX_POOL);
+  const pool = await completeRoundPool(ctx, roundId);
   for (const member of pool) {
     await ctx.db.delete("roundReviewers", member._id);
   }
@@ -398,10 +423,7 @@ export async function listRounds(
   const rounds = await listRoundDocs(ctx, caller.event._id);
   const out: RoundListEntry[] = [];
   for (const round of rounds) {
-    const pool = await ctx.db
-      .query("roundReviewers")
-      .withIndex("by_roundId_and_userId", (q) => q.eq("roundId", round._id))
-      .take(MAX_POOL);
+    const pool = await completeRoundPool(ctx, round._id);
     const members: PoolMember[] = [];
     for (const member of pool) {
       const user = await ctx.db.get("users", member.userId);
@@ -429,6 +451,13 @@ async function ensurePoolMembership(
     )
     .unique();
   if (existing === null) {
+    const pool = await completeRoundPool(ctx, roundId);
+    if (pool.length >= MAX_POOL) {
+      throw new ConvexError({
+        code: "reviewer_pool_full",
+        message: `A review round can have at most ${MAX_POOL} reviewers.`,
+      });
+    }
     await ctx.db.insert("roundReviewers", { eventId, roundId, userId });
   }
 }
@@ -550,7 +579,8 @@ export async function assignReviewers(
     .withIndex("by_eventId_and_reviewerUserId", (q) =>
       q.eq("eventId", caller.event._id).eq("reviewerUserId", reviewerUserId),
     )
-    .take(REVIEW_SCAN);
+    .take(REVIEW_SCAN + 1);
+  assertCompleteScan(existing, REVIEW_SCAN, "reviews for one reviewer");
   const already = new Set(
     existing
       .filter((r) => (r.roundId ?? firstRoundId) === round._id)
@@ -592,7 +622,12 @@ export async function assignReviewers(
     action: "review.assign",
     targetType: "user",
     targetId: reviewerUserId,
-    meta: { assigned, skipped, requested: proposalIds.length, roundId: round._id },
+    meta: {
+      assigned,
+      skipped,
+      requested: proposalIds.length,
+      roundId: round._id,
+    },
   });
   return { assigned, skipped };
 }
@@ -619,10 +654,7 @@ export async function autoDistribute(
   requireOrganizer(caller);
   assertEventActive(caller.event);
   const round = await requireRound(ctx, caller, roundId);
-  const pool = await ctx.db
-    .query("roundReviewers")
-    .withIndex("by_roundId_and_userId", (q) => q.eq("roundId", round._id))
-    .take(MAX_POOL);
+  const pool = await completeRoundPool(ctx, round._id);
   if (pool.length === 0) {
     throw new ConvexError({
       code: "empty_pool",
@@ -649,7 +681,8 @@ export async function autoDistribute(
       .withIndex("by_eventId_and_status", (q) =>
         q.eq("eventId", caller.event._id),
       )
-      .take(REVIEW_SCAN);
+      .take(REVIEW_SCAN + 1);
+    assertCompleteScan(all, REVIEW_SCAN, "proposals");
     candidates = all.filter((p) => REVIEWABLE.has(p.status));
   }
 
@@ -664,7 +697,8 @@ export async function autoDistribute(
     .withIndex("by_eventId_and_reviewerUserId", (q) =>
       q.eq("eventId", caller.event._id),
     )
-    .take(REVIEW_SCAN);
+    .take(REVIEW_SCAN + 1);
+  assertCompleteScan(reviews, REVIEW_SCAN, "reviews");
   const inRound = reviews.filter(
     (r) => (r.roundId ?? firstRoundId) === round._id,
   );
@@ -676,7 +710,10 @@ export async function autoDistribute(
     pairs.add(`${review.proposalId}:${review.reviewerUserId}`);
     if (review.status === "conflict") continue;
     if (load.has(review.reviewerUserId)) {
-      load.set(review.reviewerUserId, (load.get(review.reviewerUserId) ?? 0) + 1);
+      load.set(
+        review.reviewerUserId,
+        (load.get(review.reviewerUserId) ?? 0) + 1,
+      );
     }
     perProposalCount.set(
       review.proposalId,
@@ -839,7 +876,8 @@ export async function myAssignments(
     .withIndex("by_eventId_and_reviewerUserId", (q) =>
       q.eq("eventId", caller.event._id).eq("reviewerUserId", caller.user._id),
     )
-    .take(REVIEW_SCAN);
+    .take(REVIEW_SCAN + 1);
+  assertCompleteScan(reviews, REVIEW_SCAN, "reviews for one reviewer");
 
   // Reviewers see evaluation content and professional identity only
   // (MILESTONES M2): contact-detail fields never cross the wire — neither
@@ -1024,7 +1062,9 @@ export async function saveReviewDraft(
     invalidStatus("This review is locked — ask an organizer to reopen it.");
   }
   if (review.status === "submitted") {
-    invalidStatus("This review is already submitted — submit again to revise it.");
+    invalidStatus(
+      "This review is already submitted — submit again to revise it.",
+    );
   }
   if (review.status === "conflict") {
     invalidStatus("You declared a conflict on this one.");
@@ -1062,7 +1102,9 @@ export async function submitReview(
   if (review.status === "conflict") {
     // A declared conflict is a recusal, not a pause: only an organizer
     // reassigning (unassign + assign) puts this proposal back in play.
-    invalidStatus("You declared a conflict on this one — ask an organizer to reassign it.");
+    invalidStatus(
+      "You declared a conflict on this one — ask an organizer to reassign it.",
+    );
   }
   const round = await roundForReviewWrite(ctx, review);
   assertAnswers(round.scorecard, answers, { complete: true });
@@ -1128,7 +1170,9 @@ export async function declareConflict(
 // ── Organizer views ──────────────────────────────────────────────────────
 
 export type ReviewAggregate = {
+  /** Actionable assignments; declared conflicts are disclosed separately. */
   count: number;
+  conflictCount: number;
   submittedCount: number;
   /** Mean of submitted scores; null until at least one review lands. */
   avgScore: number | null;
@@ -1141,6 +1185,7 @@ export type ReviewSummaryRow = {
   reviewerName: string | null;
   reviewerEmail: string | null;
   status: ReviewStatus;
+  roundId: Id<"reviewRounds"> | null;
   roundName: string;
   /** Withheld until the review is submitted (M2: organizers see progress
    * status, not unfinished content). */
@@ -1163,6 +1208,7 @@ export type ReviewSummary = {
 function emptyAggregate(): ReviewAggregate {
   return {
     count: 0,
+    conflictCount: 0,
     submittedCount: 0,
     avgScore: null,
     recommendations: { accept: 0, decline: 0, neutral: 0 },
@@ -1179,10 +1225,14 @@ function reviewScore(review: Doc<"reviews">): number | null {
 
 function aggregate(reviews: Array<Doc<"reviews">>): ReviewAggregate {
   const out = emptyAggregate();
-  out.count = reviews.length;
   let scoreSum = 0;
   let scored = 0;
   for (const review of reviews) {
+    if (review.status === "conflict") {
+      out.conflictCount += 1;
+      continue;
+    }
+    out.count += 1;
     if (review.status !== "submitted" && review.status !== "locked") continue;
     out.submittedCount += 1;
     const score = reviewScore(review);
@@ -1217,7 +1267,8 @@ export async function reviewSummary(
   const reviews = await ctx.db
     .query("reviews")
     .withIndex("by_proposalId", (q) => q.eq("proposalId", proposalId))
-    .take(200);
+    .take(REVIEW_SUMMARY_SCAN + 1);
+  assertCompleteScan(reviews, REVIEW_SUMMARY_SCAN, "reviews on one proposal");
 
   const rounds = await listRoundDocs(ctx, caller.event._id);
   const rows: ReviewSummaryRow[] = [];
@@ -1231,6 +1282,7 @@ export async function reviewSummary(
       reviewerName: reviewer?.name ?? null,
       reviewerEmail: reviewer?.email ?? null,
       status: review.status,
+      roundId: round.roundId,
       roundName: round.name,
       scorecard: round.scorecard,
       answers: finished ? (review.answers ?? legacyAnswers(review)) : undefined,
@@ -1238,7 +1290,8 @@ export async function reviewSummary(
       score: finished ? review.score : undefined,
       recommendation: finished ? review.recommendation : undefined,
       comments: finished ? review.comments : undefined,
-      conflictNote: review.status === "conflict" ? review.conflictNote : undefined,
+      conflictNote:
+        review.status === "conflict" ? review.conflictNote : undefined,
       submittedAt: review.submittedAt,
     });
   }
@@ -1248,6 +1301,7 @@ export async function reviewSummary(
 export type ProgressEntry = {
   assigned: number;
   submitted: number;
+  conflicts: number;
   avgScore: number | null;
 };
 
@@ -1265,7 +1319,8 @@ export async function reviewProgress(
     .withIndex("by_eventId_and_reviewerUserId", (q) =>
       q.eq("eventId", caller.event._id),
     )
-    .take(REVIEW_SCAN);
+    .take(REVIEW_SCAN + 1);
+  assertCompleteScan(reviews, REVIEW_SCAN, "reviews");
 
   const sums = new Map<Id<"proposals">, { total: number; scored: number }>();
   const out: Record<Id<"proposals">, ProgressEntry> = {};
@@ -1273,9 +1328,15 @@ export async function reviewProgress(
     const entry = (out[review.proposalId] ??= {
       assigned: 0,
       submitted: 0,
+      conflicts: 0,
       avgScore: null,
     });
     const sum = sums.get(review.proposalId) ?? { total: 0, scored: 0 };
+    if (review.status === "conflict") {
+      entry.conflicts += 1;
+      sums.set(review.proposalId, sum);
+      continue;
+    }
     entry.assigned += 1;
     if (isFinished(review)) {
       entry.submitted += 1;
@@ -1319,7 +1380,8 @@ export async function reviewerProgress(
     .withIndex("by_eventId_and_reviewerUserId", (q) =>
       q.eq("eventId", caller.event._id),
     )
-    .take(REVIEW_SCAN);
+    .take(REVIEW_SCAN + 1);
+  assertCompleteScan(reviews, REVIEW_SCAN, "reviews");
 
   const byKey = new Map<string, ReviewerProgressRow>();
   const rowFor = async (
@@ -1357,17 +1419,13 @@ export async function reviewerProgress(
   }
   // Pool members with nothing assigned still belong on the board.
   for (const round of rounds) {
-    const pool = await ctx.db
-      .query("roundReviewers")
-      .withIndex("by_roundId_and_userId", (q) => q.eq("roundId", round._id))
-      .take(MAX_POOL);
+    const pool = await completeRoundPool(ctx, round._id);
     for (const member of pool) {
       await rowFor(member.userId, roundInfo(round));
     }
   }
-  return [...byKey.values()].sort(
-    (a, b) =>
-      (a.roundName + (a.name ?? "")).localeCompare(b.roundName + (b.name ?? "")),
+  return [...byKey.values()].sort((a, b) =>
+    (a.roundName + (a.name ?? "")).localeCompare(b.roundName + (b.name ?? "")),
   );
 }
 
@@ -1377,7 +1435,7 @@ export async function remindReviewers(
   ctx: MutationCtx,
   caller: EventCaller,
   reviewerUserIds: Array<Id<"users">>,
-): Promise<{ sent: number; skipped: number }> {
+): Promise<{ sent: number; failed: number; skipped: number }> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
   if (reviewerUserIds.length === 0 || reviewerUserIds.length > MAX_POOL) {
@@ -1391,7 +1449,8 @@ export async function remindReviewers(
     .withIndex("by_eventId_and_reviewerUserId", (q) =>
       q.eq("eventId", caller.event._id),
     )
-    .take(REVIEW_SCAN);
+    .take(REVIEW_SCAN + 1);
+  assertCompleteScan(reviews, REVIEW_SCAN, "reviews");
   const outstanding = new Map<Id<"users">, number>();
   for (const review of reviews) {
     if (review.status !== "assigned" && review.status !== "draft") continue;
@@ -1401,6 +1460,7 @@ export async function remindReviewers(
     );
   }
   let sent = 0;
+  let failed = 0;
   let skipped = 0;
   for (const userId of new Set(reviewerUserIds)) {
     const count = outstanding.get(userId) ?? 0;
@@ -1412,7 +1472,7 @@ export async function remindReviewers(
     }
     const eventName = caller.event.name;
     const link = `${siteUrl()}/app/e/${caller.event.slug}/reviews`;
-    await sendLoggedEmail(ctx, {
+    const messageId = await sendLoggedEmail(ctx, {
       orgId: caller.org._id,
       eventId: caller.event._id,
       toEmail: email,
@@ -1426,7 +1486,9 @@ export async function remindReviewers(
       replyTo: caller.event.replyTo,
       context: { outstanding: count },
     });
-    sent += 1;
+    const message = await ctx.db.get("messages", messageId);
+    if (message?.deliveryStatus === "failed") failed += 1;
+    else sent += 1;
   }
   await logAudit(ctx, {
     orgId: caller.org._id,
@@ -1435,7 +1497,7 @@ export async function remindReviewers(
     action: "review.remind",
     targetType: "event",
     targetId: caller.event._id,
-    meta: { sent, skipped },
+    meta: { sent, failed, skipped },
   });
-  return { sent, skipped };
+  return { sent, failed, skipped };
 }

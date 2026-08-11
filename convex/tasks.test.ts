@@ -56,6 +56,35 @@ async function storeBlob(t: TestT): Promise<Id<"_storage">> {
   return await t.run(async (ctx) => ctx.storage.store(new Blob(["file"])));
 }
 
+async function attachPortalHeadshot(
+  as: TestUserT,
+  eventSlug: string,
+  eventContactId: Id<"eventContacts">,
+): Promise<void> {
+  const binary = atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  );
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const body = new Blob([bytes.buffer as ArrayBuffer], { type: "image/png" });
+  const ticket = await as.mutation(api.portal.beginHeadshotUpload, {
+    eventSlug,
+    eventContactId,
+    contentType: body.type,
+    size: body.size,
+  });
+  const response = await as.fetch(`/api/headshots/${ticket.uploadId}`, {
+    method: "POST",
+    headers: { "Content-Type": body.type },
+    body,
+  });
+  expect(response.status).toBe(200);
+  await as.mutation(api.portal.attachHeadshot, {
+    eventSlug,
+    eventContactId,
+    uploadId: ticket.uploadId,
+  });
+}
+
 async function userIdFor(t: TestT, key: string): Promise<Id<"users">> {
   return await t.run(async (ctx) => {
     const user = await ctx.db
@@ -452,12 +481,12 @@ describe("requirement creation", () => {
     expect(repropagated).toBe(1);
 
     const after = await alice.query(api.tasks.listInstances, { eventSlug });
-    expect(
-      after.find((r) => r.speakerName === "Dana Keynote")?.dueAt,
-    ).toBe(override);
-    expect(
-      after.find((r) => r.speakerName === "Evan Newcomer")?.dueAt,
-    ).toBe(LATER);
+    expect(after.find((r) => r.speakerName === "Dana Keynote")?.dueAt).toBe(
+      override,
+    );
+    expect(after.find((r) => r.speakerName === "Evan Newcomer")?.dueAt).toBe(
+      LATER,
+    );
   });
 
   test("a profile-field requirement must name a known field", async () => {
@@ -505,7 +534,9 @@ describe("manual completion", () => {
     });
 
     const after = await alice.query(api.tasks.listInstances, { eventSlug });
-    const carolAfter = after.find((r) => r.instanceId === carolTask.instanceId)!;
+    const carolAfter = after.find(
+      (r) => r.instanceId === carolTask.instanceId,
+    )!;
     const daveAfter = after.find((r) => r.instanceId === daveTask.instanceId)!;
     // No review gate, so "provided" IS complete.
     expect(carolAfter.status).toBe("complete");
@@ -524,8 +555,9 @@ describe("manual completion", () => {
       eventSlug,
       instanceId: daveTask.instanceId,
     });
-    const final = (await alice.query(api.tasks.listInstances, { eventSlug }))
-      .find((r) => r.instanceId === daveTask.instanceId)!;
+    const final = (
+      await alice.query(api.tasks.listInstances, { eventSlug })
+    ).find((r) => r.instanceId === daveTask.instanceId)!;
     expect(final.status).toBe("complete");
     expect(final.completedBy).toBe(await userIdFor(t, "alice"));
   });
@@ -605,25 +637,19 @@ describe("profile-field evidence", () => {
 
     const dana = await signIn(t, "dana", { emailVerified: true });
     await dana.mutation(api.portal.enter, { eventSlug });
-    const headshotId = await storeBlob(t);
-    await dana.mutation(api.portal.updateMyProfile, {
-      eventSlug,
-      eventContactId,
-      profile: { firstName: "Dana", lastName: "Keynote", headshotId },
-    });
+    await attachPortalHeadshot(dana, eventSlug, eventContactId);
     expect(await statusNow()).toBe("complete");
 
     // Removing the field is a genuine removal, not a review decision — the
     // obligation comes back.
-    await dana.mutation(api.portal.updateMyProfile, {
+    await dana.mutation(api.portal.removeMyHeadshot, {
       eventSlug,
       eventContactId,
-      profile: { firstName: "Dana", lastName: "Keynote" },
     });
     expect(await statusNow()).toBe("pending");
   });
 
-  test("filling in a bio satisfies a bio requirement", async () => {
+  test("an organizer profile edit recomputes bio evidence", async () => {
     const t = setupTest();
     const { alice, eventSlug } = await eventSetup(t);
     const { eventContactId } = await inviteSpeaker(
@@ -641,14 +667,10 @@ describe("profile-field evidence", () => {
       reviewRequired: false,
       dueAt: DUE,
     });
-    const dana = await signIn(t, "dana", { emailVerified: true });
-    await dana.mutation(api.portal.enter, { eventSlug });
-    await dana.mutation(api.portal.updateMyProfile, {
+    await alice.mutation(api.speakers.updateProfile, {
       eventSlug,
       eventContactId,
-      profile: {
-        firstName: "Dana",
-        lastName: "Keynote",
+      patch: {
         bio: "Dana builds reactive backends.",
       },
     });
@@ -839,6 +861,15 @@ describe("file evidence", () => {
       filename: "release-v1.pdf",
     });
     expect(v1.version).toBe(1);
+    await expectRejectedWith(
+      dana.mutation(api.portal.uploadForTask, {
+        eventSlug,
+        instanceId,
+        storageId: await storeBlob(t),
+        filename: "../release.pdf",
+      }),
+      "invalid_filename",
+    );
     expect(
       (await alice.query(api.tasks.listInstances, { eventSlug }))[0].status,
     ).toBe("provided");
@@ -876,12 +907,88 @@ describe("file evidence", () => {
       "release-v2.pdf",
       "release-v1.pdf",
     ]);
+
+    // A historical task at the explicit version ceiling refuses another
+    // upload instead of reusing a capped-prefix version number. Approval also
+    // stamps the newest row, not one of the first 200 records.
+    const newestId = await t.run(async (ctx) => {
+      const source = stored[0];
+      return await ctx.db.insert("uploads", {
+        eventId: source.eventId,
+        taskInstanceId: source.taskInstanceId,
+        storageId: await ctx.storage.store(new Blob(["version 200"])),
+        filename: "release-v200.pdf",
+        version: 200,
+        uploadedBy: source.uploadedBy,
+      });
+    });
+    await expectRejectedWith(
+      dana.mutation(api.portal.uploadForTask, {
+        eventSlug,
+        instanceId,
+        storageId: await storeBlob(t),
+        filename: "release-v201.pdf",
+      }),
+      "upload_version_limit",
+    );
+    await alice.mutation(api.tasks.approve, { eventSlug, instanceId });
+    await t.run(async (ctx) => {
+      expect((await ctx.db.get("uploads", newestId))?.approvedAt).toBeTypeOf(
+        "number",
+      );
+    });
   });
 });
 
 // ── Portal task list ─────────────────────────────────────────────────────
 
 describe("portal.myTasks", () => {
+  test("three manual tasks stay complete across reload and reduce organizer open counts", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+    await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+      "Opening keynote",
+    );
+    for (const title of ["Confirm travel", "Choose meal", "Approve intro"]) {
+      await manualRequirement(alice, eventSlug, { title });
+    }
+    const dana = await signIn(t, "dana", { emailVerified: true });
+    await dana.mutation(api.portal.enter, { eventSlug });
+    const before = await dana.query(api.portal.myTasks, { eventSlug });
+    expect(before).toHaveLength(3);
+    expect(before.every((task) => task.status === "pending")).toBe(true);
+
+    for (const task of before.slice(0, 2)) {
+      await dana.mutation(api.portal.completeTask, {
+        eventSlug,
+        instanceId: task.instanceId,
+      });
+    }
+
+    // A fresh query is the reload contract: persisted server state, not local
+    // optimistic state.
+    const afterReload = await dana.query(api.portal.myTasks, { eventSlug });
+    expect(afterReload.map((task) => task.status).sort()).toEqual([
+      "complete",
+      "complete",
+      "pending",
+    ]);
+    const organizerRows = await alice.query(api.tasks.listInstances, {
+      eventSlug,
+    });
+    expect(
+      organizerRows.filter((task) => task.status === "pending"),
+    ).toHaveLength(1);
+    const board = await alice.query(api.tasks.dashboard, {
+      eventSlug,
+      now: NOW,
+    });
+    expect(board.speakers[0].outstandingTasks).toBe(1);
+  });
+
   test("shows the caller's own tasks and the ones they manage", async () => {
     const t = setupTest();
     const { alice, eventSlug } = await eventSetup(t);
@@ -906,9 +1013,10 @@ describe("portal.myTasks", () => {
     // The manager sees both speakers' obligations, named.
     const managed = await bob.query(api.portal.myTasks, { eventSlug });
     expect(managed).toHaveLength(2);
-    expect(
-      managed.map((task) => task.forSpeaker?.firstName).sort(),
-    ).toEqual(["Carol", "Dave"]);
+    expect(managed.map((task) => task.forSpeaker?.firstName).sort()).toEqual([
+      "Carol",
+      "Dave",
+    ]);
   });
 });
 
@@ -1182,7 +1290,8 @@ describe("speaker-tracking dashboard", () => {
     };
     await addItems(1000);
     expect(
-      (await alice.query(api.tasks.dashboard, { eventSlug, now: NOW })).sessions,
+      (await alice.query(api.tasks.dashboard, { eventSlug, now: NOW }))
+        .sessions,
     ).toHaveLength(1);
 
     await addItems(1);

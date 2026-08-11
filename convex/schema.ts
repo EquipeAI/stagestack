@@ -130,6 +130,8 @@ export default defineSchema({
   })
     .index("by_orgId", ["orgId"])
     .index("by_slug", ["slug"])
+    .index("by_logoId", ["logoId"])
+    .index("by_bannerId", ["bannerId"])
     // The hourly reminder sweep (convex/reminders.ts) dispatches only events
     // that opted into reminders. Indexing the cadence lets it SELECT those
     // rows instead of scanning the head of the table and silently missing
@@ -150,9 +152,23 @@ export default defineSchema({
     // Light CRM (W8): freeform labels, filterable in the directory. A future
     // pipeline/segments build layers on these rather than replacing them.
     tags: v.optional(v.array(v.string())),
+    // Optional CRM enrollment. Absent means the contact is not on the board.
+    pipelineStage: v.optional(
+      v.union(
+        v.literal("sourced"),
+        v.literal("contacted"),
+        v.literal("shortlisted"),
+        v.literal("confirmed"),
+        v.literal("declined"),
+      ),
+    ),
   })
     .index("by_orgId", ["orgId"])
-    .index("by_orgId_and_email", ["orgId", "email"]),
+    .index("by_orgId_and_email", ["orgId", "email"])
+    // Replacement cleanup only deletes a securely-owned headshot after an
+    // exact reference lookup proves no reusable directory profile still uses
+    // it. Legacy/shared blobs are retained when ownership is ambiguous.
+    .index("by_headshotId", ["headshotId"]),
 
   // Internal notes on a directory contact (W8) — organizer-only, never
   // published anywhere. Kept as its own table so activity kinds (stage
@@ -164,6 +180,43 @@ export default defineSchema({
     body: v.string(),
     createdAt: v.number(),
   }).index("by_contactId", ["contactId"]),
+
+  contactPipelineHistory: defineTable({
+    orgId: v.id("organizations"),
+    contactId: v.id("contacts"),
+    fromStage: v.optional(
+      v.union(
+        v.literal("sourced"),
+        v.literal("contacted"),
+        v.literal("shortlisted"),
+        v.literal("confirmed"),
+        v.literal("declined"),
+      ),
+    ),
+    toStage: v.optional(
+      v.union(
+        v.literal("sourced"),
+        v.literal("contacted"),
+        v.literal("shortlisted"),
+        v.literal("confirmed"),
+        v.literal("declined"),
+      ),
+    ),
+    changedByUserId: v.id("users"),
+    changedAt: v.number(),
+  }).index("by_contactId", ["contactId"]),
+
+  savedSegments: defineTable({
+    orgId: v.id("organizations"),
+    name: v.string(),
+    filters: v.object({
+      search: v.optional(v.string()),
+      tag: v.optional(v.string()),
+      company: v.optional(v.string()),
+    }),
+    createdByUserId: v.id("users"),
+    createdAt: v.number(),
+  }).index("by_orgId", ["orgId"]),
 
   // ── Event library (event-scoped vocabulary) ──────────────────────────
   tracks: defineTable({
@@ -405,7 +458,8 @@ export default defineSchema({
   })
     .index("by_proposalId", ["proposalId"])
     // One-query speaker counts for the organizer's proposal list.
-    .index("by_eventId", ["eventId"]),
+    .index("by_eventId", ["eventId"])
+    .index("by_headshotId", ["headshotId"]),
 
   // ── Review & sessions (M2, rebuilt W2) ───────────────────────────────
   // An evaluation plan is one or more rounds per event, each with its own
@@ -497,7 +551,109 @@ export default defineSchema({
     .index("by_contactId", ["contactId"])
     .index("by_proposalSpeakerId", ["proposalSpeakerId"])
     .index("by_userId", ["userId"])
-    .index("by_eventId_and_email", ["eventId", "email"]),
+    .index("by_eventId_and_email", ["eventId", "email"])
+    .index("by_headshotId", ["headshotId"]),
+
+  // One-time, actor-bound headshot upload tickets. Only the authenticated HTTP
+  // upload action receives bytes and calls storage.store; the client never sees
+  // the resulting storage id. Attach consumes the ready ticket rather than a
+  // bearer-like raw id.
+  headshotUploads: defineTable({
+    orgId: v.id("organizations"),
+    eventId: v.id("events"),
+    eventContactId: v.id("eventContacts"),
+    uploadedByUserId: v.id("users"),
+    purpose: v.literal("speakerHeadshot"),
+    expectedContentType: v.string(),
+    expectedSize: v.number(),
+    // Raw source bytes live only long enough for the private Node action to
+    // decode and normalize them. The HTTP action records the fresh storage id
+    // immediately so the sweeper can recover a crashed/lost-response action.
+    sourceStorageId: v.optional(v.id("_storage")),
+    sourceStoredAt: v.optional(v.number()),
+    sourceContentType: v.optional(v.string()),
+    sourceSize: v.optional(v.number()),
+    sourceCleanupPending: v.optional(v.boolean()),
+    sourceDeletedAt: v.optional(v.number()),
+    storageId: v.optional(v.id("_storage")),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("uploading"),
+      v.literal("ready"),
+      v.literal("attached"),
+      v.literal("rejected"),
+      v.literal("discarded"),
+      v.literal("replaced"),
+      v.literal("deleted"),
+      v.literal("retained"),
+      v.literal("cleanupPending"),
+    ),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    claimedAt: v.optional(v.number()),
+    uploadLeaseExpiresAt: v.optional(v.number()),
+    reservedBytes: v.optional(v.number()),
+    reservedBlobCount: v.optional(v.number()),
+    storageAttemptStartedAt: v.optional(v.number()),
+    outputStoreStartedAt: v.optional(v.number()),
+    outputKnownDeletedAt: v.optional(v.number()),
+    quotaState: v.optional(
+      v.union(
+        v.literal("conservative"),
+        v.literal("reconciled"),
+        v.literal("indeterminate"),
+      ),
+    ),
+    // Present only when the dedicated HTTP action itself stored the bytes.
+    // Cleanup never deletes a legacy/client-uploaded id without this proof.
+    serverStoredAt: v.optional(v.number()),
+    registeredAt: v.optional(v.number()),
+    sanitizedContentType: v.optional(v.string()),
+    sanitizedSize: v.optional(v.number()),
+    width: v.optional(v.number()),
+    height: v.optional(v.number()),
+    attachedAt: v.optional(v.number()),
+    replacedAt: v.optional(v.number()),
+    deletedAt: v.optional(v.number()),
+    cleanupAfter: v.optional(v.number()),
+  })
+    .index("by_storageId", ["storageId"])
+    .index("by_sourceStorageId", ["sourceStorageId"])
+    .index("by_sourceCleanupPending_and_sourceStoredAt", [
+      "sourceCleanupPending",
+      "sourceStoredAt",
+    ])
+    .index("by_eventContactId", ["eventContactId"])
+    .index("by_status_and_expiresAt", ["status", "expiresAt"])
+    .index("by_status_and_cleanupAfter", ["status", "cleanupAfter"]),
+
+  // Durable quota accounting includes active and retained server-owned
+  // headshots. `ticketCount` counts reserved physical blob slots (two during
+  // an indeterminate store attempt, one after success reconciliation).
+  // A blob releases its reservation only after safe deletion.
+  headshotUploadUsage: defineTable({
+    orgId: v.id("organizations"),
+    userId: v.id("users"),
+    storedBytes: v.number(),
+    ticketCount: v.number(),
+    updatedAt: v.number(),
+  }).index("by_orgId_and_userId", ["orgId", "userId"]),
+
+  // Cross-org and org-total ledgers close quota bypasses through disposable
+  // organizations while preserving the stricter per-org/user allowance.
+  headshotUploadUserUsage: defineTable({
+    userId: v.id("users"),
+    storedBytes: v.number(),
+    ticketCount: v.number(),
+    updatedAt: v.number(),
+  }).index("by_userId", ["userId"]),
+
+  headshotUploadOrgUsage: defineTable({
+    orgId: v.id("organizations"),
+    storedBytes: v.number(),
+    ticketCount: v.number(),
+    updatedAt: v.number(),
+  }).index("by_orgId", ["orgId"]),
 
   // A planned talk: created by accepting a proposal or by direct invitation.
   sessions: defineTable({
@@ -514,7 +670,9 @@ export default defineSchema({
     // Content approval (W5): draft content never reaches public output.
     // Absent on legacy rows = approved (they were already being served).
     // The publish console's per-session toggle approves as it lists.
-    contentStatus: v.optional(v.union(v.literal("draft"), v.literal("approved"))),
+    contentStatus: v.optional(
+      v.union(v.literal("draft"), v.literal("approved")),
+    ),
     contentStatusSetBy: v.optional(v.id("users")),
     contentStatusSetAt: v.optional(v.number()),
     // ── Scheduling (M6). Draft placement is internal; releasedSlot is what
@@ -632,7 +790,11 @@ export default defineSchema({
     // M5 reminder overrides: cadence in days, or disabled outright.
     reminderCadenceDays: v.optional(v.number()),
     remindersDisabled: v.optional(v.boolean()),
-  }).index("by_eventId", ["eventId"]),
+  })
+    .index("by_eventId", ["eventId"])
+    // The reminder dispatcher must discover requirement-level cadence even
+    // when the parent event has no default and the task is not due soon.
+    .index("by_reminderCadenceDays", ["reminderCadenceDays"]),
 
   taskInstances: defineTable({
     requirementId: v.id("requirements"),
@@ -660,9 +822,19 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_eventId", ["eventId"])
+    .index("by_status_and_dueAt", ["status", "dueAt"])
     .index("by_requirementId", ["requirementId"])
     .index("by_sessionId", ["sessionId"])
     .index("by_eventContactId", ["eventContactId"]),
+
+  // One compact operational row per event. All paginated reminder discovery
+  // sources converge here before scheduling a per-event sweep, so one logical
+  // hourly run cannot enqueue the same expensive event sweep repeatedly.
+  reminderDispatchStates: defineTable({
+    eventId: v.id("events"),
+    lastRunAt: v.number(),
+    dispatchCount: v.number(),
+  }).index("by_eventId", ["eventId"]),
 
   // Versioned uploads as task evidence. Resubmission adds a version; prior
   // files, feedback, actors and timestamps are never erased (M4).
@@ -680,7 +852,8 @@ export default defineSchema({
   })
     .index("by_taskInstanceId", ["taskInstanceId"])
     // The files library (W5) reads all of an event's uploads in one scan.
-    .index("by_eventId", ["eventId"]),
+    .index("by_eventId", ["eventId"])
+    .index("by_storageId", ["storageId"]),
 
   // ── Agenda items (M6): non-session blocks (breaks, registration, meals).
   // They share drafting/overlap checks/publication but bypass CFP, review,
@@ -763,6 +936,7 @@ export default defineSchema({
   })
     .index("by_eventId", ["eventId"])
     .index("by_contactId", ["contactId"])
+    .index("by_contactId_and_kind", ["contactId", "kind"])
     .index("by_resendEmailId", ["resendEmailId"])
     // Per-contact comms log (M4): `toEmail` is stored NORMALIZED (trimmed +
     // lowercased) by every write path, so an indexed equality on the address

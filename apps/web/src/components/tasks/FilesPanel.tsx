@@ -28,6 +28,7 @@ import { pushToast } from '~/components/toast'
 type FileRow = FunctionReturnType<typeof api.tasks.filesLibrary>[number]
 
 type Grouping = 'session' | 'speaker' | 'flat'
+type ZipState = 'idle' | 'generating' | 'ready' | 'error'
 
 const GROUPING_OPTIONS: Array<{ value: Grouping; label: string }> = [
   { value: 'session', label: 'Group by session' },
@@ -44,9 +45,12 @@ export function FilesPanel({
 }) {
   const files = useQuery(api.tasks.filesLibrary, { eventSlug })
   const convex = useConvex()
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  // null means the initial "all latest files" selection. An explicit empty
+  // Set means the organizer really deselected everything; it must never be
+  // reinterpreted as "export all" by the backend's empty-array shorthand.
+  const [selected, setSelected] = useState<ReadonlySet<string> | null>(null)
   const [grouping, setGrouping] = useState<Grouping>('session')
-  const [zipping, setZipping] = useState(false)
+  const [zipState, setZipState] = useState<ZipState>('idle')
   const [threadFor, setThreadFor] = useState<FileRow | null>(null)
 
   if (files === undefined) {
@@ -65,7 +69,9 @@ export function FilesPanel({
     )
   }
 
-  const allSelected = selected.size === files.length
+  const selectedIds =
+    selected ?? new Set(files.map((row) => row.instanceId as string))
+  const allSelected = selectedIds.size === files.length
   const toggleAll = () => {
     setSelected(
       allSelected ? new Set() : new Set(files.map((row) => row.instanceId)),
@@ -73,7 +79,7 @@ export function FilesPanel({
   }
   const toggleOne = (id: string) => {
     setSelected((prev) => {
-      const next = new Set(prev)
+      const next = new Set(prev ?? selectedIds)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
@@ -81,22 +87,24 @@ export function FilesPanel({
   }
 
   const downloadZip = () => {
-    setZipping(true)
+    setZipState('generating')
     void (async () => {
       try {
-        const instanceIds = [...selected] as Array<Id<'taskInstances'>>
+        const instanceIds = [...selectedIds] as Array<Id<'taskInstances'>>
         const bundle = await convex.query(api.tasks.exportBundle, {
           eventSlug,
           instanceIds,
         })
         const { added, skipped } = await buildZip(bundle, grouping, eventSlug)
         if (added === 0) {
+          setZipState('error')
           pushToast(
             'Nothing to download',
             'None of the selected files could be fetched.',
             'triangle-alert',
           )
         } else {
+          setZipState('ready')
           pushToast(
             'ZIP downloaded',
             `${countLabel(added, 'file', 'files')} in ${eventSlug}-deliverables.zip.`,
@@ -111,13 +119,12 @@ export function FilesPanel({
           }
         }
       } catch {
+        setZipState('error')
         pushToast(
           'Export failed',
           'The file bundle could not be read. Try again.',
           'triangle-alert',
         )
-      } finally {
-        setZipping(false)
       }
     })()
   }
@@ -141,7 +148,7 @@ export function FilesPanel({
             }}
           >
             {countLabel(files.length, 'file', 'files')}
-            {selected.size > 0 ? ` · ${selected.size} selected` : ''}
+            {selectedIds.size > 0 ? ` · ${selectedIds.size} selected` : ''}
           </span>
         }
         right={
@@ -163,15 +170,34 @@ export function FilesPanel({
             />
             <Button
               iconLeft="download"
-              disabled={zipping}
+              disabled={zipState === 'generating' || selectedIds.size === 0}
               onClick={downloadZip}
             >
-              {zipping
-                ? 'Zipping…'
-                : selected.size === 0
-                  ? 'Download ZIP (all)'
-                  : `Download ZIP (${selected.size})`}
+              {zipState === 'generating'
+                ? 'Generating ZIP…'
+                : `Download ZIP (${selectedIds.size})`}
             </Button>
+            <span
+              role="status"
+              aria-live="polite"
+              style={{
+                font: 'var(--type-caption)',
+                color:
+                  zipState === 'ready'
+                    ? 'var(--status-success-fg)'
+                    : zipState === 'error'
+                      ? 'var(--status-blocked-fg)'
+                      : 'var(--text-tertiary)',
+              }}
+            >
+              {zipState === 'generating'
+                ? 'Generating selected latest versions…'
+                : zipState === 'ready'
+                  ? 'Ready — download started.'
+                  : zipState === 'error'
+                    ? 'ZIP was not downloaded.'
+                    : 'Selected rows export their latest version.'}
+            </span>
           </div>
         }
       />
@@ -179,7 +205,7 @@ export function FilesPanel({
       <Card padded={false}>
         <DataTable
           rowKey="instanceId"
-          selectedIds={[...selected]}
+          selectedIds={[...selectedIds]}
           rows={files}
           columns={[
             {
@@ -188,7 +214,7 @@ export function FilesPanel({
               header: <Checkbox checked={allSelected} onChange={toggleAll} />,
               cell: (row: FileRow) => (
                 <Checkbox
-                  checked={selected.has(row.instanceId)}
+                  checked={selectedIds.has(row.instanceId)}
                   onChange={() => {
                     toggleOne(row.instanceId)
                   }}
@@ -328,9 +354,11 @@ export function FilesPanel({
 
 // ── ZIP assembly ─────────────────────────────────────────────────────────
 
-type BundleFile = FunctionReturnType<typeof api.tasks.exportBundle>[number]
+export type BundleFile = FunctionReturnType<
+  typeof api.tasks.exportBundle
+>[number]
 
-function folderFor(file: BundleFile, grouping: Grouping): string {
+export function folderFor(file: BundleFile, grouping: Grouping): string {
   switch (grouping) {
     case 'session':
       return slug(file.sessionTitle)
@@ -341,24 +369,35 @@ function folderFor(file: BundleFile, grouping: Grouping): string {
   }
 }
 
+/** Historical upload names may predate backend path validation. ZIP entries
+ * always use a basename so no selected file can escape its grouping folder. */
+export function safeZipFilename(filename: string): string {
+  const leaf = filename.replaceAll('\\', '/').split('/').filter(Boolean).at(-1)
+  const withoutControls = [...(leaf ?? '')]
+    .map((character) => {
+      const code = character.codePointAt(0) ?? 0
+      return code <= 0x1f || code === 0x7f ? '_' : character
+    })
+    .join('')
+  const cleaned = withoutControls.trim().replace(/[. ]+$/g, '')
+  return cleaned === '' || cleaned === '.' || cleaned === '..'
+    ? 'file'
+    : cleaned
+}
+
 /** Fetches in small batches (same rationale as the abstracts bundle) and
  * never lets one dead URL abort the export. */
-async function buildZip(
+export function planZipPaths(
   bundle: ReadonlyArray<BundleFile>,
   grouping: Grouping,
-  eventSlug: string,
-): Promise<{ added: number; skipped: number }> {
-  const { default: JSZip } = await import('jszip')
-  const zip = new JSZip()
+): Array<{ file: BundleFile; path: string }> {
   const used = new Set<string>()
-  let added = 0
-  let skipped = 0
-  const batchSize = 6
-
+  const collisionKey = (path: string) => path.normalize('NFKC').toLowerCase()
   const uniquePath = (folder: string, filename: string): string => {
     const base = folder === '' ? filename : `${folder}/${filename}`
-    if (!used.has(base)) {
-      used.add(base)
+    const baseKey = collisionKey(base)
+    if (!used.has(baseKey)) {
+      used.add(baseKey)
       return base
     }
     const dot = filename.lastIndexOf('.')
@@ -367,17 +406,35 @@ async function buildZip(
     for (let n = 2; ; n += 1) {
       const next =
         folder === '' ? `${stem}-${n}${ext}` : `${folder}/${stem}-${n}${ext}`
-      if (!used.has(next)) {
-        used.add(next)
+      const nextKey = collisionKey(next)
+      if (!used.has(nextKey)) {
+        used.add(nextKey)
         return next
       }
     }
   }
+  return bundle.map((file) => ({
+    file,
+    path: uniquePath(folderFor(file, grouping), safeZipFilename(file.filename)),
+  }))
+}
 
-  for (let i = 0; i < bundle.length; i += batchSize) {
-    const batch = bundle.slice(i, i + batchSize)
+export async function buildZip(
+  bundle: ReadonlyArray<BundleFile>,
+  grouping: Grouping,
+  eventSlug: string,
+): Promise<{ added: number; skipped: number }> {
+  const { default: JSZip } = await import('jszip')
+  const zip = new JSZip()
+  let added = 0
+  let skipped = 0
+  const batchSize = 6
+
+  const planned = planZipPaths(bundle, grouping)
+  for (let i = 0; i < planned.length; i += batchSize) {
+    const batch = planned.slice(i, i + batchSize)
     await Promise.all(
-      batch.map(async (file) => {
+      batch.map(async ({ file, path }) => {
         if (file.url === null) {
           skipped += 1
           return
@@ -386,7 +443,7 @@ async function buildZip(
           const response = await fetch(file.url)
           if (!response.ok) throw new Error(String(response.status))
           const blob = await response.blob()
-          zip.file(uniquePath(folderFor(file, grouping), file.filename), blob)
+          zip.file(path, blob)
           added += 1
         } catch {
           skipped += 1

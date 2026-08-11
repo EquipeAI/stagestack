@@ -41,7 +41,7 @@ For CFP decisions, an organizer may stage a proposal in an accept or decline que
 
 A released decision can be reversed, but never silently. The organizer must explicitly release the correction, StageStack sends a clearly identified correction message, and the original and corrected decisions remain in the audit history with their actors and times. If an accepted proposal is corrected to declined, its session moves to **Cancelled** rather than being deleted: StageStack preserves its data and history, removes it from active scheduling and public views, and sends calendar cancellations if invitations were already distributed. If a decline is later corrected to accepted, StageStack restores that same cancelled session—or creates one if none existed—while preserving prior work and history. Every participant returns to **Awaiting Response** and must confirm again; a confirmation made before cancellation is not treated as current consent.
 
-V1 begins the invited path when an organizer decides to send a real invitation. Maintaining speculative speaker longlists and sourcing prospects is not part of StageStack v1.
+The core event workflow begins when an organizer decides to send a real invitation. An optional, organization-admin-only light CRM can hold manually imported speaker prospects before that point; StageStack does not source or enrich those prospects automatically.
 
 Schedule placement and edits remain internal drafts until an organizer explicitly releases them to speakers. Releasing a slot or change sends the operational notification and calendar invitation/update; merely editing the schedule does neither. Publishing the agenda to attendees and external sites is a separate organizer action, so speakers can receive their logistics before the program becomes public.
 
@@ -108,7 +108,7 @@ An event organizer may mark one task requirement instance **Not Applicable** for
 ## Market structure (two axes)
 
 - **Academic peer-review pole** (Oxford Abstracts, Ex Ordo, Fourwaves, Cadmium): rigorous multi-round review is the product; workflow largely ends at acceptance.
-- **Modern speaker-ops pole** (Sessionboard, Lineup Ninja, Sessionize): the real pain is everything *after* acceptance.
+- **Modern speaker-ops pole** (Sessionboard, Lineup Ninja, Sessionize): the real pain is everything _after_ acceptance.
 - **Standalone best-of-breed** (Sessionize, Sessionboard) vs. **all-in-one suites** (Cvent, Bizzabo): best-of-breed content engines integrate into registration platforms rather than replacing them.
 
 **StageStack's position: speaker-ops pole, standalone best-of-breed, open source.** We do not build registration, ticketing, or attendee apps.
@@ -122,7 +122,7 @@ Documented pains from swyx's 2024 organizing retro (swyx.io/aiewf-2024):
 - **No single source of truth**: up to 5 spreadsheets tracking speakers, rooms, and time assignments.
 - **Speaker logistics failures**: missing contact info caused a keynote speaker to miss their own talk.
 - **Late confirmations**: speakers confirmed days before the event, cascading into scheduling chaos.
-- **Dual pipeline**: ~500 CFP submissions (~6% accepted) *plus* invited outreach from per-track target lists; wave-based acceptances (deferred ≠ rejected). Tools only model the inbound half.
+- **Dual pipeline**: ~500 CFP submissions (~6% accepted) _plus_ invited outreach from per-track target lists; wave-based acceptances (deferred ≠ rejected). Tools only model the inbound half.
 - **Content flywheel**: 10M+ YouTube views/yr of talks; session metadata → published content is a first-class need, not an afterthought.
 
 ## People, tenancy & access
@@ -171,7 +171,7 @@ Clerk sends authentication and email-verification messages. Resend (via the Conv
 
 StageStack owns why each communication was sent, its recipient and event context, rendered content, secure destination, send and delivery state, and the resulting business action. Required messages ship with the workflows that need them; the later communications milestone makes the channel configurable through templates, audiences, scheduling, reminders, and searchable history.
 
-StageStack communications are strictly event-operational. Every recipient must already have an event relationship or responsibility, such as submitter, speaker, representative, reviewer, or organizer. StageStack is not a CRM or marketing platform: v1 has no imported mailing lists, prospect messaging, newsletters, promotional campaigns, drip marketing, or marketing analytics.
+StageStack communications are event-operational by default. Every event-scoped recipient already has an event relationship or responsibility, such as submitter, speaker, representative, reviewer, or organizer. The optional light CRM gives organization owners/admins one deliberately narrow exception: they may import speaker prospects and send a previewed message to 2–25 explicitly selected contacts. Every personalized result is logged and treated as bulk mail for unsubscribe headers. This is not a campaign platform: there are no newsletters, promotional audiences, automated sequences, drip marketing, or marketing analytics.
 
 Organizers may also send a one-off operational message to one event contact or to an event-scoped audience derived from workflow state, such as accepted speakers who have not confirmed. Each send is recorded with its recipients, rendered content, event context, sender, time, and delivery state; this does not permit arbitrary lists or marketing audiences.
 

@@ -85,6 +85,15 @@ export async function createEvent(
   // Every event ships with the starter CFP form (M1). Not audited: it is part
   // of creating the event, not a separate organizer action.
   await ensureForm(ctx, eventId);
+  // Every event starts with one discoverable place for speaker logistics.
+  // Organizers can rename/delete it through the existing custom-fields UI.
+  await ctx.db.insert("customFields", {
+    eventId,
+    name: "Travel preferences",
+    kind: "text",
+    appliesTo: "speaker",
+    order: 0,
+  });
   await logAudit(ctx, {
     orgId: caller.org._id,
     eventId,
@@ -123,7 +132,8 @@ function assertCadence(days: number): number {
   if (!Number.isInteger(days) || days < 1 || days > 90) {
     throw new ConvexError({
       code: "invalid_cadence",
-      message: "Reminder cadence must be a whole number of days between 1 and 90.",
+      message:
+        "Reminder cadence must be a whole number of days between 1 and 90.",
     });
   }
   return days;
@@ -179,7 +189,8 @@ export async function updateEventSettings(
         ? undefined
         : optionalHttpUrl(patch.website, "Website");
   }
-  if (patch.cfpPublished !== undefined) update.cfpPublished = patch.cfpPublished;
+  if (patch.cfpPublished !== undefined)
+    update.cfpPublished = patch.cfpPublished;
 
   // M5: the event-wide reminder default and the reply-to address Cloudflare
   // routes to the team's inbox.

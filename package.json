@@ -23,7 +23,8 @@
     "@convex-dev/rate-limiter": "0.3.2",
     "@convex-dev/resend": "0.2.6",
     "convex": "1.43.0",
-    "convex-helpers": "0.1.122"
+    "convex-helpers": "0.1.122",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "@edge-runtime/vm": "5.0.0",

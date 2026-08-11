@@ -17,7 +17,12 @@ export type AbstractRow = {
 
 export type ReviewProgress = Record<
   string,
-  { assigned: number; submitted: number; avgScore: number | null }
+  {
+    assigned: number
+    submitted: number
+    conflicts: number
+    avgScore: number | null
+  }
 >
 
 /**
@@ -332,9 +337,13 @@ export function reviewCell(
   id: string,
 ): string {
   const p = progress?.[id]
-  if (p === undefined || p.assigned === 0) return '—'
+  if (p === undefined || (p.assigned === 0 && p.conflicts === 0)) return '—'
   const score = p.avgScore === null ? '' : ` · avg ${p.avgScore.toFixed(1)}`
-  return `${p.submitted}/${p.assigned}${score}`
+  const conflicts =
+    p.conflicts === 0
+      ? ''
+      : ` · ${p.conflicts} conflict${p.conflicts === 1 ? '' : 's'}`
+  return `${p.submitted}/${p.assigned}${score}${conflicts}`
 }
 
 // ── Bulk results ─────────────────────────────────────────────────────────

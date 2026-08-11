@@ -22,7 +22,9 @@ import { pushToast } from '~/components/toast'
 // finished, and the two levers an organizer pulls when the numbers lag —
 // a consolidated reminder and auto-distribution across the round's pool.
 
-type ProgressRow = FunctionReturnType<typeof api.reviews.reviewerProgress>[number]
+type ProgressRow = FunctionReturnType<
+  typeof api.reviews.reviewerProgress
+>[number]
 
 export function ProgressPanel({ eventSlug }: { eventSlug: string }) {
   const rows = useQuery(api.reviews.reviewerProgress, { eventSlug })
@@ -31,6 +33,7 @@ export function ProgressPanel({ eventSlug }: { eventSlug: string }) {
   // Selection is by reviewer, not by row — the reminder is one consolidated
   // message per person, however many rounds they appear in.
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [reminderResult, setReminderResult] = useState<string | null>(null)
 
   if (rows === undefined) {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading progress…</p>
@@ -68,11 +71,20 @@ export function ProgressPanel({ eventSlug }: { eventSlug: string }) {
 
   const sendReminder = () => {
     const reviewerUserIds = [...selected] as Array<Id<'users'>>
+    setReminderResult(null)
     void reminder.run(async () => {
       const result = await remind({ eventSlug, reviewerUserIds })
+      const exact = `${[
+        `${result.sent} reminder${result.sent === 1 ? '' : 's'} sent`,
+        ...(result.failed > 0 ? [`${result.failed} failed`] : []),
+        ...(result.skipped > 0 ? [`${result.skipped} skipped`] : []),
+      ].join('; ')}.`
+      setReminderResult(exact)
       pushToast(
-        'Reminders sent',
-        `${result.sent} sent${result.skipped > 0 ? `, ${result.skipped} skipped` : ''}.`,
+        result.failed > 0
+          ? 'Reminder send finished with errors'
+          : 'Reminders sent',
+        exact,
       )
       setSelected(new Set())
     })
@@ -80,12 +92,19 @@ export function ProgressPanel({ eventSlug }: { eventSlug: string }) {
 
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-5)',
+      }}
     >
       <Toolbar
         left={
           <span
-            style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}
+            style={{
+              color: 'var(--text-tertiary)',
+              font: 'var(--type-caption)',
+            }}
           >
             {selected.size === 0
               ? 'Select reviewers to send a consolidated reminder.'
@@ -105,6 +124,11 @@ export function ProgressPanel({ eventSlug }: { eventSlug: string }) {
       {reminder.error !== null ? (
         <Callout tone="blocked">{reminder.error}</Callout>
       ) : null}
+      {reminderResult === null ? null : (
+        <Callout tone="info">
+          <span role="status">{reminderResult}</span>
+        </Callout>
+      )}
 
       {[...groups.entries()].map(([key, group]) => (
         <RoundGroup
@@ -138,6 +162,7 @@ function RoundGroup({
 }) {
   const assigned = rows.reduce((sum, row) => sum + row.assigned, 0)
   const submitted = rows.reduce((sum, row) => sum + row.submitted, 0)
+  const conflicts = rows.reduce((sum, row) => sum + row.conflicts, 0)
 
   const tableRows = rows.map((row) => ({
     ...row,
@@ -147,8 +172,12 @@ function RoundGroup({
   return (
     <Card
       title={roundName}
-      subtitle={`${submitted} of ${assigned} reviews submitted across ${rows.length} reviewer${rows.length === 1 ? '' : 's'}.`}
-      actions={roundId === null ? null : <AutoDistribute eventSlug={eventSlug} roundId={roundId} />}
+      subtitle={`${submitted} of ${assigned} actionable reviews submitted across ${rows.length} reviewer${rows.length === 1 ? '' : 's'}${conflicts === 0 ? '.' : ` · ${conflicts} conflict${conflicts === 1 ? '' : 's'} excluded.`}`}
+      actions={
+        roundId === null ? null : (
+          <AutoDistribute eventSlug={eventSlug} roundId={roundId} />
+        )
+      }
     >
       <DataTable
         rowKey="key"
@@ -192,7 +221,9 @@ function RoundGroup({
             header: 'Assigned',
             align: 'right',
             cell: (row: ProgressRow) => (
-              <span style={{ fontFamily: 'var(--font-mono)' }}>{row.assigned}</span>
+              <span style={{ fontFamily: 'var(--font-mono)' }}>
+                {row.assigned}
+              </span>
             ),
           },
           {
@@ -275,7 +306,12 @@ function AutoDistribute({
           onChange={(e) => setPerProposal(e.target.value)}
         />
       </Field>
-      <Button size="sm" iconLeft="shuffle" disabled={pending} onClick={distribute}>
+      <Button
+        size="sm"
+        iconLeft="shuffle"
+        disabled={pending}
+        onClick={distribute}
+      >
         {pending ? 'Distributing…' : 'Auto-distribute'}
       </Button>
     </div>

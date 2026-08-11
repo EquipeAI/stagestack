@@ -25,10 +25,12 @@ type ContactDoc = Doc<'contacts'>
 export function ContactDetailDialog({
   orgSlug,
   contact,
+  showCrmActivity = false,
   onClose,
 }: {
   orgSlug: string
   contact: ContactDoc
+  showCrmActivity?: boolean
   onClose: () => void
 }) {
   const update = useMutation(api.contacts.update)
@@ -176,9 +178,98 @@ export function ContactDetailDialog({
         <TagsEditor orgSlug={orgSlug} contact={contact} />
         <AddToEvent orgSlug={orgSlug} contact={contact} />
         <NotesSection orgSlug={orgSlug} contactId={contact._id} />
+        {showCrmActivity ? (
+          <CrmActivitySection orgSlug={orgSlug} contactId={contact._id} />
+        ) : null}
         <ConnectionsSection orgSlug={orgSlug} contactId={contact._id} />
       </div>
     </Dialog>
+  )
+}
+
+function CrmActivitySection({
+  orgSlug,
+  contactId,
+}: {
+  orgSlug: string
+  contactId: Id<'contacts'>
+}) {
+  const history = useQuery(api.contacts.pipelineHistory, { orgSlug, contactId })
+  const outreach = useQuery(api.contacts.outreachHistory, {
+    orgSlug,
+    contactId,
+  })
+  const zone = browserTimezone()
+  const label = (stage: string | null) =>
+    stage === null
+      ? 'Not enrolled'
+      : stage.charAt(0).toUpperCase() + stage.slice(1)
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-3)',
+      }}
+    >
+      <SectionTitle>CRM activity</SectionTitle>
+      {history === undefined || outreach === undefined ? (
+        <p style={{ margin: 0, color: 'var(--text-tertiary)' }}>
+          Loading activity…
+        </p>
+      ) : history.length === 0 && outreach.length === 0 ? (
+        <p
+          style={{
+            margin: 0,
+            color: 'var(--text-tertiary)',
+            font: 'var(--type-caption)',
+          }}
+        >
+          No pipeline moves or CRM outreach yet.
+        </p>
+      ) : (
+        <ul
+          style={{
+            listStyle: 'none',
+            margin: 0,
+            padding: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-2)',
+          }}
+        >
+          {history.map((row) => (
+            <li key={row.historyId}>
+              <span>
+                {label(row.fromStage)} → {label(row.toStage)}
+              </span>{' '}
+              <span
+                style={{
+                  color: 'var(--text-tertiary)',
+                  font: 'var(--type-caption)',
+                }}
+              >
+                {formatDateTime(row.changedAt, zone)} ·{' '}
+                {row.changedBy ?? 'Unknown'}
+              </span>
+            </li>
+          ))}
+          {outreach.map((row) => (
+            <li key={row.messageId}>
+              <span>Email: {row.subject}</span> <Tag>{row.deliveryStatus}</Tag>{' '}
+              <span
+                style={{
+                  color: 'var(--text-tertiary)',
+                  font: 'var(--type-caption)',
+                }}
+              >
+                {formatDateTime(row.sentAt, zone)} · {row.toEmail}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   )
 }
 

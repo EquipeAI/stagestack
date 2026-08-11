@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { buildSheet, sheetSafe, toCsv, xlsxBytes } from './exporters'
+import {
+  buildReviewSheet,
+  buildSheet,
+  reviewCompletion,
+  sheetSafe,
+  toCsv,
+  xlsxBytes,
+} from './exporters'
 import type { FormDef } from '@convex/shared/formDef'
 import type { Doc } from '@convex/_generated/dataModel'
 import type { ExportInput } from './exporters'
@@ -130,7 +137,7 @@ describe('formula injection', () => {
     const sheet = buildSheet(input([{ proposal: attack(), speakerCount: 1 }]))
     expect(sheet[1].slice(3)).toEqual([
       'Signals at Scale',
-      "'=HYPERLINK(\"http://evil\",\"click\")",
+      '\'=HYPERLINK("http://evil","click")',
       "'@SUM(A1:A9)",
       "'+1 555 0100",
       "'-2+3",
@@ -148,7 +155,9 @@ describe('formula injection', () => {
   })
 
   it('neutralizes the same cells in the CSV text', () => {
-    const csv = toCsv(buildSheet(input([{ proposal: attack(), speakerCount: 1 }])))
+    const csv = toCsv(
+      buildSheet(input([{ proposal: attack(), speakerCount: 1 }])),
+    )
     expect(csv).not.toContain(',=HYPERLINK')
     expect(csv).toContain('"\'=HYPERLINK(""http://evil"",""click"")"')
   })
@@ -167,7 +176,7 @@ describe('formula injection', () => {
     for (const cell of Object.values(book.Sheets.Proposals)) {
       expect((cell as { f?: string }).f).toBeUndefined()
     }
-    expect(cells[1]).toContain("'=HYPERLINK(\"http://evil\",\"click\")")
+    expect(cells[1]).toContain('\'=HYPERLINK("http://evil","click")')
   })
 })
 
@@ -183,5 +192,106 @@ describe('xlsxBytes', () => {
       raw: false,
     })
     expect(back).toEqual(rows)
+  })
+})
+
+describe('review results sheet', () => {
+  it('excludes conflicts from the actionable completion denominator', () => {
+    expect(
+      reviewCompletion(1, [
+        { status: 'submitted' },
+        { status: 'assigned' },
+        { status: 'conflict' },
+      ]),
+    ).toEqual({
+      assigned: 2,
+      conflicts: 1,
+      label: '1 of 2 submitted · 1 conflict',
+    })
+  })
+
+  it('includes proposal/review status, recommendation, aggregate and per-criterion scores', () => {
+    const sheet = buildReviewSheet([
+      {
+        title: 'Signals at Scale',
+        status: 'Submitted',
+        assigned: 2,
+        submitted: 1,
+        avgScore: 4.25,
+        reviewStatus: '1 of 2 submitted',
+        recommendationSummary: 'Accept 1',
+        acceptCount: 1,
+        neutralCount: 0,
+        declineCount: 0,
+        criteria: {
+          'round-1:originality': {
+            label: 'Originality (Round one)',
+            value: 5,
+          },
+          'round-1:clarity': {
+            label: 'Clarity (Round one)',
+            value: 4,
+          },
+        },
+      },
+    ])
+    expect(sheet[0]).toEqual([
+      'Title',
+      'Proposal status',
+      'Assigned',
+      'Submitted',
+      'Aggregate score',
+      'Review status',
+      'Recommendation summary',
+      'Accept',
+      'Neutral',
+      'Decline',
+      'Originality (Round one)',
+      'Clarity (Round one)',
+    ])
+    expect(sheet[1]).toContain('Accept 1')
+    expect(sheet[1]).toContain(4.25)
+    expect(sheet[1]).toContain(5)
+  })
+
+  it('keeps duplicate criterion labels in distinct columns', () => {
+    const base = {
+      title: 'Signals at Scale',
+      status: 'Submitted',
+      assigned: 1,
+      submitted: 1,
+      avgScore: 4,
+      reviewStatus: '1 of 1 submitted',
+      recommendationSummary: 'Accept 1',
+      acceptCount: 1,
+      neutralCount: 0,
+      declineCount: 0,
+    }
+    const sheet = buildReviewSheet([
+      {
+        ...base,
+        criteria: {
+          'round-a:quality': { label: 'Quality (Final)', value: 5 },
+          'round-b:quality': { label: 'Quality (Final)', value: 3 },
+        },
+      },
+    ])
+    expect(sheet[0].slice(-2)).toEqual([
+      'Quality (Final)',
+      'Quality (Final) [2]',
+    ])
+    expect(sheet[1].slice(-2)).toEqual([5, 3])
+  })
+
+  it('writes review results to a named XLSX sheet', async () => {
+    const rows = [
+      ['Title', 'Review status'],
+      ['Talk', 4.25],
+    ]
+    const bytes = await xlsxBytes(rows, 'Review results')
+    const XLSX = await import('xlsx')
+    const book = XLSX.read(new Uint8Array(bytes), { type: 'array' })
+    expect(book.SheetNames).toEqual(['Review results'])
+    expect(book.Sheets['Review results'].B2.t).toBe('n')
   })
 })

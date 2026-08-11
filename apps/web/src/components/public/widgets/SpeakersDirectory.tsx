@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
   IconLine,
+  PublicSpeakerAvatar,
   ShowMoreText,
   matchesQuery,
   sessionWhen,
@@ -10,7 +11,7 @@ import {
 import type * as React from 'react'
 import type { PublicProgram } from '@convex/model/publish'
 import type { SpeakerEntry } from './shared'
-import { Avatar, Dialog, Icon, SearchInput } from '~/ds'
+import { Dialog, Icon, SearchInput } from '~/ds'
 
 // EMB-04/05 — speaker directory: everyone across lineup + agenda, deduped by
 // speakerId and ordered alphabetically by surname. Clicking an entry opens a
@@ -84,11 +85,7 @@ function SpeakerDetail({ entry, zone }: { entry: SpeakerEntry; zone: string }) {
           alignItems: 'center',
         }}
       >
-        <Avatar
-          name={entry.speaker.name}
-          src={entry.speaker.headshotUrl}
-          size={64}
-        />
+        <PublicSpeakerAvatar speaker={entry.speaker} size={64} />
         <div
           style={{
             display: 'flex',
@@ -198,13 +195,9 @@ export function SpeakersDirectory({
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
-  const filtered = entries.filter((e) =>
-    matchesQuery(query, [e.speaker.name]),
-  )
+  const filtered = entries.filter((e) => matchesQuery(query, [e.speaker.name]))
   const selected =
-    selectedId !== null
-      ? entries.find((e) => e.speaker.speakerId === selectedId)
-      : undefined
+    selectedId !== null ? entries.find((e) => e.key === selectedId) : undefined
 
   return (
     <section
@@ -259,9 +252,9 @@ export function SpeakersDirectory({
             const affiliation = speakerAffiliation(entry.speaker)
             return (
               <button
-                key={entry.speaker.speakerId}
+                key={entry.key}
                 type="button"
-                onClick={() => setSelectedId(entry.speaker.speakerId)}
+                onClick={() => setSelectedId(entry.key)}
                 style={{
                   display: 'flex',
                   gap: 'var(--space-3)',
@@ -277,11 +270,7 @@ export function SpeakersDirectory({
                   width: '100%',
                 }}
               >
-                <Avatar
-                  name={entry.speaker.name}
-                  src={entry.speaker.headshotUrl}
-                  size={40}
-                />
+                <PublicSpeakerAvatar speaker={entry.speaker} size={40} />
                 <span
                   style={{
                     display: 'flex',

@@ -111,8 +111,20 @@ export function byStartTime(
 }
 
 export type SpeakerEntry = {
+  key: string
   speaker: PublicSpeaker
   sessions: Array<PublicSession>
+}
+
+/** Stable identity for both current blobs and legacy blobs that predate
+ * speakerId. The normalized-name fallback is shared by list keys and dialog
+ * selection, so a legacy card remains clickable instead of becoming
+ * `undefined`. */
+export function publicSpeakerKey(speaker: PublicSpeaker): string {
+  const id = speaker.speakerId as string | undefined
+  return id !== undefined && id !== ''
+    ? `id:${id}`
+    : `legacy:${normalize(speaker.name.trim())}`
 }
 
 /** One entry per person across lineup + agenda, keyed by speakerId, with that
@@ -126,10 +138,10 @@ export function speakerEntries(program: PublicProgram): Array<SpeakerEntry> {
       // without this, every legacy speaker collapses under one undefined key.
       // The cast reflects the runtime reality the static type can't: stored
       // blobs may predate the field.
-      const key = (sp.speakerId as string | undefined) ?? sp.name
+      const key = publicSpeakerKey(sp)
       const entry = map.get(key)
       if (entry === undefined) {
-        map.set(key, { speaker: sp, sessions: [session] })
+        map.set(key, { key, speaker: sp, sessions: [session] })
       } else {
         entry.speaker = mergeSpeaker(entry.speaker, sp)
         if (!entry.sessions.some((s) => s.sessionId === session.sessionId)) {
@@ -139,6 +151,53 @@ export function speakerEntries(program: PublicProgram): Array<SpeakerEntry> {
     }
   }
   return [...map.values()].sort((a, b) => bySurname(a.speaker, b.speaker))
+}
+
+/** Public headshots can be old signed URLs. Keep the speaker's initials in
+ * the same fixed box when an image errors instead of showing a broken image. */
+export function PublicSpeakerAvatar({
+  speaker,
+  size = 40,
+}: {
+  speaker: PublicSpeaker
+  size?: number
+}) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
+  const src = speaker.headshotUrl
+  const showImage = src !== undefined && src !== '' && failedSrc !== src
+  return (
+    <span
+      title={speaker.name}
+      style={{
+        width: size,
+        height: size,
+        flex: 'none',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
+        borderRadius: 'var(--radius-full)',
+        background: 'var(--surface-hover)',
+        color: 'var(--text-secondary)',
+        font: 'var(--type-label)',
+      }}
+    >
+      {showImage ? (
+        <img
+          src={src}
+          alt=""
+          width={size}
+          height={size}
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailedSrc(src)}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      ) : (
+        initialsOf(speaker.name)
+      )}
+    </span>
+  )
 }
 
 /** Distinct defined values, in first-appearance order. */

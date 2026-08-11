@@ -1,22 +1,16 @@
 import { useEffect, useState } from 'react'
+import { useAuth } from '@clerk/tanstack-react-start'
 import { useMutation } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import { optionalText, personName } from './model'
 import type { Id } from '@convex/_generated/dataModel'
 import type * as React from 'react'
 import type { PortalProfile } from './model'
-import {
-  Avatar,
-  Button,
-  Callout,
-  Card,
-  Field,
-  Input,
-  Textarea,
-} from '~/ds'
+import { Avatar, Button, Callout, Card, Field, Input, Textarea } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
+import { isSupportedHeadshot, uploadHeadshot } from '~/lib/headshotUpload'
 import {
   ActionError,
   ButtonRow,
@@ -59,8 +53,9 @@ function draftFrom(profile: PortalProfile): Draft {
   }
 }
 
-/** Server identity of the row, so a reactive update re-seeds the form. */
-function serverKey(profile: PortalProfile): string {
+/** Text/link identity of the row. Headshot changes intentionally do not reset
+ * an in-progress text edit. */
+export function profileDraftServerKey(profile: PortalProfile): string {
   return JSON.stringify([
     profile._id,
     profile.firstName,
@@ -69,9 +64,14 @@ function serverKey(profile: PortalProfile): string {
     profile.jobTitle,
     profile.company,
     profile.bio,
-    profile.headshotId,
     profile.links,
   ])
+}
+
+/** Headshot identity gets its own reactive lane so upload/remove responses can
+ * clear a local preview without overwriting the draft form. */
+export function profileHeadshotServerKey(profile: PortalProfile): string {
+  return JSON.stringify([profile._id, profile.headshotId, profile.headshotUrl])
 }
 
 export function ProfileCard({
@@ -86,51 +86,82 @@ export function ProfileCard({
   /** The sessions this snapshot speaks at — listed so the scope is obvious. */
   children?: React.ReactNode
 }) {
+  const { getToken } = useAuth()
   const updateProfile = useMutation(api.portal.updateMyProfile)
-  const generateUploadUrl = useMutation(api.portal.generateHeadshotUploadUrl)
+  const removeHeadshot = useMutation(api.portal.removeMyHeadshot)
+  const beginHeadshotUpload = useMutation(api.portal.beginHeadshotUpload)
+  const attachHeadshot = useMutation(api.portal.attachHeadshot)
+  const discardHeadshot = useMutation(api.portal.discardHeadshotUpload)
   const { pending, error, setError, run } = usePending()
 
-  const key = serverKey(profile)
+  const draftKey = profileDraftServerKey(profile)
+  const headshotKey = profileHeadshotServerKey(profile)
   const [draft, setDraft] = useState<Draft>(() => draftFrom(profile))
-  const [headshotId, setHeadshotId] = useState<Id<'_storage'> | undefined>(
-    profile.headshotId,
-  )
   const [localPhoto, setLocalPhoto] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
 
-  // The snapshot is live: an organizer edit, or our own save, re-seeds the form.
+  // Text changes re-seed the form, but a reactive photo attach/remove preserves
+  // any unsaved text the speaker is still editing.
   useEffect(() => {
     setDraft(draftFrom(profile))
-    setHeadshotId(profile.headshotId)
+  }, [draftKey])
+
+  useEffect(() => {
     setLocalPhoto(null)
-  }, [key])
+  }, [headshotKey])
 
   const patch = (values: Partial<Draft>) => {
     setDraft((current) => ({ ...current, ...values }))
   }
 
-  const dirty =
-    JSON.stringify(draft) !== JSON.stringify(draftFrom(profile)) ||
-    headshotId !== profile.headshotId
+  const dirty = JSON.stringify(draft) !== JSON.stringify(draftFrom(profile))
 
   const upload = async (file: File) => {
+    if (!isSupportedHeadshot(file)) {
+      return setError('Choose a JPEG, PNG, or WebP image for the headshot.')
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      return setError('Source headshots must be 4 MB or smaller.')
+    }
     setUploading(true)
     setError(null)
+    let uploadId: Id<'headshotUploads'> | undefined
     try {
-      const url = await generateUploadUrl({
+      const token = await getToken({ template: 'convex' })
+      if (token === null) throw new Error('Sign in to upload a headshot.')
+      const ticket = await beginHeadshotUpload({
         eventSlug,
         eventContactId: profile._id,
+        contentType: file.type,
+        size: file.size,
       })
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': file.type },
-        body: file,
+      uploadId = ticket.uploadId
+      await uploadHeadshot({
+        convexUrl: import.meta.env.VITE_CONVEX_URL,
+        convexSiteUrl: import.meta.env.VITE_CONVEX_SITE_URL,
+        uploadId,
+        token,
+        file,
       })
-      if (!res.ok) throw new Error('Upload failed.')
-      const { storageId } = (await res.json()) as { storageId: Id<'_storage'> }
-      setHeadshotId(storageId)
+      await attachHeadshot({
+        eventSlug,
+        eventContactId: profile._id,
+        uploadId,
+      })
       setLocalPhoto(URL.createObjectURL(file))
+      pushToast(
+        'Photo saved',
+        'The headshot is attached now. Other unsaved profile edits are still here.',
+        'check',
+      )
     } catch (err) {
+      if (uploadId !== undefined) {
+        await discardHeadshot({
+          eventSlug,
+          eventContactId: profile._id,
+          uploadId,
+        }).catch(() => undefined)
+      }
       setError(errorMessage(err, 'That photo could not be uploaded.'))
     } finally {
       setUploading(false)
@@ -160,7 +191,6 @@ export function ProfileCard({
           company: optionalText(draft.company),
           bio: optionalText(draft.bio),
           links: anyLink ? links : undefined,
-          headshotId,
         },
       })
       pushToast(
@@ -338,7 +368,7 @@ export function ProfileCard({
               <Button as="label" size="sm" iconLeft="upload">
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   style={{ display: 'none' }}
                   onChange={(e) => {
                     const file = e.target.files?.[0]
@@ -356,8 +386,18 @@ export function ProfileCard({
                 iconLeft="trash-2"
                 disabled={disabled}
                 onClick={() => {
-                  setHeadshotId(undefined)
-                  setLocalPhoto(null)
+                  void run(async () => {
+                    await removeHeadshot({
+                      eventSlug,
+                      eventContactId: profile._id,
+                    })
+                    setLocalPhoto(null)
+                    pushToast(
+                      'Photo removed',
+                      'The headshot was removed from this event profile.',
+                      'check',
+                    )
+                  })
                 }}
               >
                 Remove photo
@@ -367,9 +407,9 @@ export function ProfileCard({
         </Field>
 
         {localPhoto !== null ? (
-          <Callout tone="info" title="Photo ready to save">
-            The new photo is uploaded but not attached yet — save the profile to
-            put it in front of the organizers.
+          <Callout tone="info" title="Photo saved">
+            The headshot is attached now. Other profile edits still need Save
+            profile.
           </Callout>
         ) : null}
 

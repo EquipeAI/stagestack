@@ -8,6 +8,7 @@ import {
   dayLabelOf,
   dayTabLabelOf,
   fmtTime,
+  publicSpeakerKey,
   speakerAffiliation,
 } from './shared'
 import type { PublicProgram } from '@convex/model/publish'
@@ -33,7 +34,9 @@ function entryStart(entry: AgendaEntry): number | undefined {
   return entry.startsAt
 }
 function entryEnd(entry: AgendaEntry): number | undefined {
-  return entry.endsAt ?? (entry.startsAt !== undefined ? entry.startsAt : undefined)
+  return (
+    entry.endsAt ?? (entry.startsAt !== undefined ? entry.startsAt : undefined)
+  )
 }
 
 type Day = {
@@ -43,13 +46,46 @@ type Day = {
   entries: Array<AgendaEntry>
 }
 
-function groupDays(agenda: Array<AgendaEntry>, zone: string): Array<Day> {
+export function groupDays(
+  agenda: Array<AgendaEntry>,
+  zone: string,
+  bounds?: { startsAt: number; endsAt: number },
+): Array<Day> {
   const days: Array<Day> = []
+  if (
+    bounds !== undefined &&
+    Number.isFinite(bounds.startsAt) &&
+    Number.isFinite(bounds.endsAt)
+  ) {
+    let cursor = DateTime.fromMillis(bounds.startsAt, {
+      zone,
+      locale: DATE_LOCALE,
+    }).startOf('day')
+    let end = DateTime.fromMillis(bounds.endsAt, {
+      zone,
+      locale: DATE_LOCALE,
+    }).startOf('day')
+    if (cursor.isValid && end.isValid) {
+      if (end < cursor) end = cursor
+      // Ten years is far beyond a real event and prevents corrupt bounds from
+      // making an embed allocate indefinitely.
+      for (let count = 0; cursor <= end && count < 3660; count += 1) {
+        days.push({
+          key: cursor.toFormat('yyyy-LL-dd'),
+          label: cursor.toFormat('cccc, d LLL yyyy'),
+          tabLabel: cursor.toFormat('ccc d LLL'),
+          entries: [],
+        })
+        cursor = cursor.plus({ days: 1 })
+      }
+    }
+  }
   for (const entry of agenda) {
     const start = entryStart(entry)
     if (start === undefined) continue // unscheduled sessions never reach the agenda blob
     const key = dayKeyOf(start, zone)
     let day = days.find((d) => d.key === key)
+    if (bounds !== undefined && days.length > 0 && day === undefined) continue
     if (day === undefined) {
       day = {
         key,
@@ -133,7 +169,7 @@ function SessionDialog({
               const affiliation = speakerAffiliation(sp)
               return (
                 <div
-                  key={sp.speakerId}
+                  key={publicSpeakerKey(sp)}
                   style={{
                     display: 'flex',
                     gap: 'var(--space-2)',
@@ -165,7 +201,10 @@ function SessionDialog({
           </div>
         ) : session.toBeAnnounced ? (
           <span
-            style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}
+            style={{
+              font: 'var(--type-caption)',
+              color: 'var(--text-tertiary)',
+            }}
           >
             Speaker to be announced
           </span>
@@ -212,7 +251,8 @@ function DayGrid({
     .startOf('hour')
     .toMillis()
   const rawEnd = Math.max(...ends, Math.min(...starts) + HOUR_MS)
-  const gridEnd = gridStart + Math.ceil((rawEnd - gridStart) / HOUR_MS) * HOUR_MS
+  const gridEnd =
+    gridStart + Math.ceil((rawEnd - gridStart) / HOUR_MS) * HOUR_MS
   const height = ((gridEnd - gridStart) / HOUR_MS) * HOUR_PX
 
   const hours: Array<number> = []
@@ -523,11 +563,20 @@ export function AgendaGrid({
   accent?: string
 }) {
   const zone = program.event.timezone
-  const days = useMemo(() => groupDays(program.agenda, zone), [program, zone])
+  const days = useMemo(
+    () =>
+      program.agendaPublished
+        ? groupDays(program.agenda, zone, {
+            startsAt: program.event.startsAt,
+            endsAt: program.event.endsAt,
+          })
+        : [],
+    [program, zone],
+  )
   const [activeKey, setActiveKey] = useState<string | null>(null)
   const [selected, setSelected] = useState<SessionEntry | null>(null)
 
-  if (days.length === 0) {
+  if (!program.agendaPublished || days.length === 0) {
     return (
       <p
         style={{
@@ -542,7 +591,7 @@ export function AgendaGrid({
   }
 
   const active = days.find((d) => d.key === activeKey) ?? days[0]
-  const hasRooms = program.agenda.some(
+  const hasRooms = active.entries.some(
     (e) => e.roomName !== undefined && e.roomName !== '',
   )
 
@@ -571,7 +620,10 @@ export function AgendaGrid({
           />
         ) : (
           <span
-            style={{ font: 'var(--type-heading)', color: 'var(--text-primary)' }}
+            style={{
+              font: 'var(--type-heading)',
+              color: 'var(--text-primary)',
+            }}
           >
             {active.label}
           </span>
@@ -586,7 +638,29 @@ export function AgendaGrid({
           {zone}
         </span>
       </div>
-      {hasRooms ? (
+      {days.length > 1 ? (
+        <h3
+          style={{
+            font: 'var(--type-heading)',
+            color: 'var(--text-primary)',
+            margin: 0,
+          }}
+        >
+          {active.label}
+        </h3>
+      ) : null}
+      {active.entries.length === 0 ? (
+        <p
+          role="status"
+          style={{
+            font: 'var(--type-body)',
+            color: 'var(--text-tertiary)',
+            margin: 0,
+          }}
+        >
+          No agenda items are scheduled for {active.label}.
+        </p>
+      ) : hasRooms ? (
         <DayGrid
           day={active}
           zone={zone}

@@ -62,6 +62,10 @@ export const sendOneOff = eventMutation({
         kind: v.literal("contact"),
         eventContactId: v.id("eventContacts"),
       }),
+      v.object({
+        kind: v.literal("contacts"),
+        eventContactIds: v.array(v.id("eventContacts")),
+      }),
       v.object({ kind: v.literal("audience"), audience: vAudience }),
     ),
     subject: v.string(),
@@ -69,7 +73,11 @@ export const sendOneOff = eventMutation({
     html: v.string(),
     now: v.number(),
   },
-  returns: v.object({ sent: v.number(), skipped: v.number() }),
+  returns: v.object({
+    sent: v.number(),
+    failed: v.number(),
+    skipped: v.number(),
+  }),
   handler: async (ctx, args) => {
     return await Comms.sendOneOff(ctx, ctx.caller, {
       to: args.to,

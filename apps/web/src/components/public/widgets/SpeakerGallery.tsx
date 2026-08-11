@@ -27,6 +27,7 @@ function Headshot({
   accent?: string
   size?: number | string
 }) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const common: React.CSSProperties = {
     width: size ?? '100%',
     aspectRatio: '1 / 1',
@@ -34,13 +35,18 @@ function Headshot({
     border: 'var(--space-px) solid var(--border-default)',
     display: 'block',
   }
-  if (entry.speaker.headshotUrl !== undefined) {
+  if (
+    entry.speaker.headshotUrl !== undefined &&
+    entry.speaker.headshotUrl !== '' &&
+    failedSrc !== entry.speaker.headshotUrl
+  ) {
     return (
       <img
         src={entry.speaker.headshotUrl}
         alt={entry.speaker.name}
         loading="lazy"
         decoding="async"
+        onError={() => setFailedSrc(entry.speaker.headshotUrl ?? null)}
         style={{ ...common, objectFit: 'cover' }}
       />
     )
@@ -64,13 +70,7 @@ function Headshot({
   )
 }
 
-function GalleryDetail({
-  entry,
-  zone,
-}: {
-  entry: SpeakerEntry
-  zone: string
-}) {
+function GalleryDetail({ entry, zone }: { entry: SpeakerEntry; zone: string }) {
   const affiliation = speakerAffiliation(entry.speaker)
   return (
     <div
@@ -224,9 +224,7 @@ export function SpeakerGallery({
 
   const filtered = entries.filter((e) => matchesQuery(query, [e.speaker.name]))
   const selected =
-    selectedId !== null
-      ? entries.find((e) => e.speaker.speakerId === selectedId)
-      : undefined
+    selectedId !== null ? entries.find((e) => e.key === selectedId) : undefined
 
   return (
     <section
@@ -283,9 +281,9 @@ export function SpeakerGallery({
             const affiliation = speakerAffiliation(entry.speaker)
             return (
               <button
-                key={entry.speaker.speakerId}
+                key={entry.key}
                 type="button"
-                onClick={() => setSelectedId(entry.speaker.speakerId)}
+                onClick={() => setSelectedId(entry.key)}
                 style={{
                   display: 'flex',
                   flexDirection: 'column',
