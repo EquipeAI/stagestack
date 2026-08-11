@@ -341,14 +341,22 @@ export async function deleteRound(
   requireOrganizer(caller);
   assertEventActive(caller.event);
   await requireRound(ctx, caller, roundId);
-  // A round with review rows is history, not clutter.
+  // A round with review rows is history, not clutter. Legacy rows (no
+  // roundId) read through the FIRST round, so deleting that round would
+  // silently reinterpret them under another scorecard — refuse that too.
+  const rounds = await listRoundDocs(ctx, caller.event._id);
+  const isFirst = rounds.length > 0 && rounds[0]._id === roundId;
   const anyReview = await ctx.db
     .query("reviews")
     .withIndex("by_eventId_and_reviewerUserId", (q) =>
       q.eq("eventId", caller.event._id),
     )
     .take(REVIEW_SCAN);
-  if (anyReview.some((r) => r.roundId === roundId)) {
+  if (
+    anyReview.some(
+      (r) => r.roundId === roundId || (isFirst && r.roundId === undefined),
+    )
+  ) {
     invalidStatus("This round has reviews — it can't be deleted.");
   }
   const pool = await ctx.db
@@ -532,6 +540,11 @@ export async function assignReviewers(
   await ensurePoolMembership(ctx, caller.event._id, round._id, reviewerUserId);
 
   // One scan of this reviewer's existing rows instead of a query per proposal.
+  // Legacy rows (no roundId) belong to the FIRST round only — attributing
+  // them to whichever round is being processed would corrupt later rounds'
+  // dedupe (codex W2 review).
+  const allRounds = await listRoundDocs(ctx, caller.event._id);
+  const firstRoundId = allRounds[0]?._id;
   const existing = await ctx.db
     .query("reviews")
     .withIndex("by_eventId_and_reviewerUserId", (q) =>
@@ -540,7 +553,7 @@ export async function assignReviewers(
     .take(REVIEW_SCAN);
   const already = new Set(
     existing
-      .filter((r) => (r.roundId ?? round._id) === round._id)
+      .filter((r) => (r.roundId ?? firstRoundId) === round._id)
       .map((r) => r.proposalId),
   );
 
@@ -640,23 +653,31 @@ export async function autoDistribute(
     candidates = all.filter((p) => REVIEWABLE.has(p.status));
   }
 
-  // Current load + existing pairs in one event-wide scan.
+  // Current load + existing pairs in one event-wide scan. Legacy rows (no
+  // roundId) attribute to the FIRST round only; conflicted reviews keep the
+  // (proposal, reviewer) pair blocked but release the reviewer's cap and the
+  // proposal's coverage so a replacement can be assigned (codex W2 review).
+  const allRounds = await listRoundDocs(ctx, caller.event._id);
+  const firstRoundId = allRounds[0]?._id;
   const reviews = await ctx.db
     .query("reviews")
     .withIndex("by_eventId_and_reviewerUserId", (q) =>
       q.eq("eventId", caller.event._id),
     )
     .take(REVIEW_SCAN);
-  const inRound = reviews.filter((r) => (r.roundId ?? round._id) === round._id);
+  const inRound = reviews.filter(
+    (r) => (r.roundId ?? firstRoundId) === round._id,
+  );
   const load = new Map<Id<"users">, number>();
   for (const member of pool) load.set(member.userId, 0);
   const pairs = new Set<string>();
   const perProposalCount = new Map<Id<"proposals">, number>();
   for (const review of inRound) {
+    pairs.add(`${review.proposalId}:${review.reviewerUserId}`);
+    if (review.status === "conflict") continue;
     if (load.has(review.reviewerUserId)) {
       load.set(review.reviewerUserId, (load.get(review.reviewerUserId) ?? 0) + 1);
     }
-    pairs.add(`${review.proposalId}:${review.reviewerUserId}`);
     perProposalCount.set(
       review.proposalId,
       (perProposalCount.get(review.proposalId) ?? 0) + 1,
@@ -1037,6 +1058,11 @@ export async function submitReview(
   await assertProposalStillReviewable(ctx, review);
   if (review.status === "locked") {
     invalidStatus("This review is locked — ask an organizer to reopen it.");
+  }
+  if (review.status === "conflict") {
+    // A declared conflict is a recusal, not a pause: only an organizer
+    // reassigning (unassign + assign) puts this proposal back in play.
+    invalidStatus("You declared a conflict on this one — ask an organizer to reassign it.");
   }
   const round = await roundForReviewWrite(ctx, review);
   assertAnswers(round.scorecard, answers, { complete: true });

@@ -304,6 +304,20 @@ export async function addToEvent(
   if (event === null || event.orgId !== caller.org._id) {
     notFound("event", "No such event in this organization.");
   }
+  // Directory access alone isn't enough to mutate an event's roster: the
+  // caller must be an org owner/admin, or an organizer of THIS event —
+  // organizing a sibling event doesn't reach here (codex W8 review).
+  if (caller.orgRole === null) {
+    const membership = await ctx.db
+      .query("eventMembers")
+      .withIndex("by_eventId_and_userId", (q) =>
+        q.eq("eventId", event._id).eq("userId", caller.user._id),
+      )
+      .unique();
+    if (membership === null || membership.role !== "organizer") {
+      forbidden("Only this event's organizers can add contacts to it.");
+    }
+  }
   if (event.archivedAt !== undefined) {
     throw new ConvexError({
       code: "event_archived",
