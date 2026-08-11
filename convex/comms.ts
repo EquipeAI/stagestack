@@ -80,6 +80,23 @@ export const sendOneOff = eventMutation({
   },
 });
 
+/**
+ * Recent-send failure summary (CFP-08). A refused send commits the caller's
+ * write and lands as a `failed` messages row, so repeated failures — almost
+ * always a misconfigured mail deployment — need an organizer-visible signal.
+ */
+export const deliveryHealth = eventQuery({
+  args: {},
+  returns: v.object({
+    scanned: v.number(),
+    failed: v.number(),
+    lastFailedAt: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx) => {
+    return await Comms.deliveryHealth(ctx, ctx.caller);
+  },
+});
+
 /** Everything StageStack has sent this event contact, newest first. */
 export const contactLog = eventQuery({
   args: { eventContactId: v.id("eventContacts") },

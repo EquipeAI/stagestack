@@ -155,13 +155,33 @@ function assertFieldKey(
 
 // ── Instantiation ────────────────────────────────────────────────────────
 
-/** Identity of an obligation: one per (requirement, session, participant). */
-function instanceKey(
+/**
+ * Identity of an obligation. Session scope: one per (requirement, session).
+ * Participant scope: one per (requirement, event contact) — a speaker owes a
+ * bio ONCE however many sessions they present (a per-session key here is the
+ * eval-run bug that gave a two-session speaker duplicate speaker-level tasks).
+ */
+function sessionScopeKey(
   requirementId: Id<"requirements">,
   sessionId: Id<"sessions">,
-  participantId: Id<"sessionParticipants"> | undefined,
 ): string {
-  return `${requirementId}:${sessionId}:${participantId ?? "-"}`;
+  return `${requirementId}:session:${sessionId}`;
+}
+
+function participantScopeKey(
+  requirementId: Id<"requirements">,
+  eventContactId: Id<"eventContacts">,
+): string {
+  return `${requirementId}:contact:${eventContactId}`;
+}
+
+/** The key an already-stored instance occupies. Cross-scope collision is
+ * impossible: a requirement is either session- or participant-scoped. */
+function existingInstanceKey(instance: Doc<"taskInstances">): string {
+  return instance.participantId !== undefined &&
+    instance.eventContactId !== undefined
+    ? participantScopeKey(instance.requirementId, instance.eventContactId)
+    : sessionScopeKey(instance.requirementId, instance.sessionId);
 }
 
 type ContactCache = Map<Id<"eventContacts">, Doc<"eventContacts"> | null>;
@@ -251,11 +271,7 @@ async function instantiateRequirement(
       )
       .take(INSTANCE_SCAN),
   ]);
-  const seen = new Set(
-    existing.map((i) =>
-      instanceKey(i.requirementId, i.sessionId, i.participantId),
-    ),
-  );
+  const seen = new Set(existing.map(existingInstanceKey));
   const cache: ContactCache = new Map();
   let created = 0;
   for (const session of sessions) {
@@ -301,7 +317,7 @@ async function instantiateOne(
 ): Promise<number> {
   let created = 0;
   if (requirement.scope === "session") {
-    const key = instanceKey(requirement._id, sessionId, undefined);
+    const key = sessionScopeKey(requirement._id, sessionId);
     if (seen.has(key)) return 0;
     seen.add(key);
     await insertInstance(ctx, cache, requirement, {
@@ -314,7 +330,9 @@ async function instantiateOne(
     // A withdrawn speaker owes nothing (M4: reminders stop on withdrawal), so
     // they never get an instance in the first place.
     if (participant.state === "withdrawn") continue;
-    const key = instanceKey(requirement._id, sessionId, participant._id);
+    // Once per unique speaker: a contact already owing this requirement on any
+    // session (including this one) is skipped.
+    const key = participantScopeKey(requirement._id, participant.eventContactId);
     if (seen.has(key)) continue;
     seen.add(key);
     await insertInstance(ctx, cache, requirement, {
@@ -331,9 +349,10 @@ async function instantiateOne(
  * The instantiation seam (MILESTONES M4: "create and assign applicable
  * requirements when an acceptance or direct invitation is formally released").
  * Called from model/sessions.ts after a session and its participants exist,
- * and again after any participant change — it is idempotent per
- * (requirement, session, participant), so a co-speaker added later gets their
- * own obligations without duplicating anyone else's.
+ * and again after any participant change — it is idempotent per requirement
+ * identity key (per session for session scope, per unique speaker for
+ * participant scope), so a co-speaker added later gets their own obligations
+ * without duplicating anyone else's.
  */
 export async function instantiateForSession(
   ctx: MutationCtx,
@@ -356,21 +375,20 @@ export async function instantiateForSession(
   ).filter((r) => r.active);
   if (requirements.length === 0) return 0;
 
+  // Event-wide existing scan, not per-session: a participant-scope obligation
+  // is owed once per speaker, so an instance on their OTHER session must
+  // suppress creation here too.
   const [existing, participants] = await Promise.all([
     ctx.db
       .query("taskInstances")
-      .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
       .take(INSTANCE_SCAN),
     ctx.db
       .query("sessionParticipants")
       .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
       .take(MAX_PARTICIPANTS_PER_SESSION),
   ]);
-  const seen = new Set(
-    existing.map((i) =>
-      instanceKey(i.requirementId, i.sessionId, i.participantId),
-    ),
-  );
+  const seen = new Set(existing.map(existingInstanceKey));
   const cache: ContactCache = new Map();
   let created = 0;
   for (const requirement of requirements) {
@@ -411,6 +429,35 @@ export async function createRequirement(
   );
   const fieldKey = assertFieldKey(args.evidence, args.fieldKey);
   const dueAt = assertDueAt(args.dueAt);
+
+  // Retry guard: a double-submit / network retry re-sends the identical
+  // definition, and it must not mint a second requirement (the eval run turned
+  // five intended types into seven this way). An identical active definition
+  // is the same request — re-run the idempotent backfill and return it.
+  const duplicate = (
+    await ctx.db
+      .query("requirements")
+      .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+      .take(REQUIREMENT_SCAN)
+  ).find(
+    (r) =>
+      r.active &&
+      r.title === title &&
+      r.description === description &&
+      r.scope === args.scope &&
+      r.evidence === args.evidence &&
+      r.fieldKey === fieldKey &&
+      r.reviewRequired === args.reviewRequired &&
+      r.dueAt === dueAt,
+  );
+  if (duplicate !== undefined) {
+    const instances = await instantiateRequirement(
+      ctx,
+      caller.event,
+      duplicate,
+    );
+    return { requirementId: duplicate._id, instances };
+  }
 
   const requirementId = await ctx.db.insert("requirements", {
     eventId: caller.event._id,

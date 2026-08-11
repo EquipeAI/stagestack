@@ -396,6 +396,49 @@ export async function sendOneOff(
   return { sent: recipients.length, skipped };
 }
 
+// ── Delivery health (CFP-08) ─────────────────────────────────────────────
+//
+// `sendLoggedEmail` deliberately commits the caller's write even when the mail
+// service refuses the send — the refusal becomes a `failed` messages row. That
+// keeps mutations honest, but it also means a misconfigured deployment (no
+// Resend key, test mode with real recipients) fails EVERY send silently from
+// the organizer's point of view. This summary makes that state loud: the comms
+// page shows a banner whenever recent sends are failing.
+
+/** Newest rows examined for the health summary. A display bound like
+ * MESSAGE_SCAN, not a time window: "N of the last M sends failed" is the
+ * honest phrasing for what one indexed newest-first read can know. */
+const HEALTH_SCAN = 100;
+
+export type DeliveryHealth = {
+  /** Rows examined, newest first, so the UI can say "of the last N". */
+  scanned: number;
+  /** Sends the mail service refused — the email never left StageStack.
+   * Distinct from bounced/complained, which left and were rejected later. */
+  failed: number;
+  /** When the most recent refusal happened; null when none in the window. */
+  lastFailedAt: number | null;
+};
+
+/** Recent-send failure summary for the organizer-facing mail-health banner. */
+export async function deliveryHealth(
+  ctx: QueryCtx,
+  caller: EventCaller,
+): Promise<DeliveryHealth> {
+  requireOrganizer(caller);
+  const recent = await ctx.db
+    .query("messages")
+    .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+    .order("desc")
+    .take(HEALTH_SCAN);
+  const failed = recent.filter((m) => m.deliveryStatus === "failed");
+  return {
+    scanned: recent.length,
+    failed: failed.length,
+    lastFailedAt: failed.length === 0 ? null : failed[0]._creationTime,
+  };
+}
+
 export type ContactMessageRow = {
   messageId: Id<"messages">;
   kind: string;

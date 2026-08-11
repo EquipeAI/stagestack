@@ -20,7 +20,6 @@ import { PlaceDialog } from './PlaceDialog'
 import { AgendaItemDialog } from './AgendaItemDialog'
 import { ReleaseDialog } from './ReleaseDialog'
 import { SessionDetailDialog } from './SessionDetailDialog'
-import { pushToast } from '~/components/toast'
 import {
   AGENDA_KEYBOARD_CODES,
   AGENDA_SCREEN_READER_INSTRUCTIONS,
@@ -60,6 +59,7 @@ import type {
   UniqueIdentifier,
 } from '@dnd-kit/core'
 import type { Id } from '@convex/_generated/dataModel'
+import { pushToast } from '~/components/toast'
 import { Button, Callout, Card, EmptyState, Select, Tabs, Toolbar } from '~/ds'
 import { usePending } from '~/lib/usePending'
 

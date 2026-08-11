@@ -5,7 +5,7 @@ import { api } from '@convex/_generated/api'
 import { allFields } from '@convex/shared/formDef'
 import type * as React from 'react'
 import { Button, Card, Icon, StatusPill } from '~/ds'
-import { PROPOSAL_STATUS_LABEL } from '~/components/cfp/model'
+import { PROPOSAL_STATUS_LABEL, cfpWindowState } from '~/components/cfp/model'
 import { PageBody } from '~/components/PageBody'
 import { formatDateRange, formatDateTime } from '~/lib/datetime'
 import {
@@ -15,7 +15,6 @@ import {
   Mono,
   useNow,
 } from '~/components/cfp/CfpChrome'
-import { cfpWindowState } from '~/components/cfp/model'
 
 // The public landing page for a call for speakers. Unauthenticated, fast, and
 // the only page most submitters will ever link to.

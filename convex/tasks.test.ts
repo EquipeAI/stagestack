@@ -268,6 +268,111 @@ describe("requirement creation", () => {
     ]);
   });
 
+  test("retrying an identical create returns the existing requirement, not a duplicate", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+    await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+      "Opening keynote",
+    );
+
+    const first = await manualRequirement(alice, eventSlug, {
+      title: "Travel details",
+    });
+    expect(first.instances).toBe(1);
+    // The double-submit / network retry: identical args, second call.
+    const retry = await manualRequirement(alice, eventSlug, {
+      title: "Travel details",
+    });
+    expect(retry.requirementId).toBe(first.requirementId);
+    // Backfill already ran; the retry creates nothing new.
+    expect(retry.instances).toBe(0);
+
+    const requirements = await t.run(async (ctx) =>
+      ctx.db.query("requirements").collect(),
+    );
+    expect(requirements).toHaveLength(1);
+    expect(await instanceRows(t)).toHaveLength(1);
+
+    // A genuinely different definition is NOT swallowed by the guard.
+    const other = await manualRequirement(alice, eventSlug, {
+      title: "Dietary preferences",
+    });
+    expect(other.requirementId).not.toBe(first.requirementId);
+    expect(
+      await t.run(async (ctx) => ctx.db.query("requirements").collect()),
+    ).toHaveLength(2);
+  });
+
+  test("a speaker with two sessions owes a participant-scope task once", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+    // Same email → same eventContact on both sessions (the Marcus scenario
+    // from the Aug 2026 eval run).
+    await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Marcus", lastName: "Doubles", email: "marcus@example.com" },
+      "Morning talk",
+    );
+    await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Marcus", lastName: "Doubles", email: "marcus@example.com" },
+      "Afternoon workshop",
+    );
+
+    // Backfill direction: the requirement lands on an existing two-session
+    // speaker exactly once.
+    const perSpeaker = await manualRequirement(alice, eventSlug, {
+      title: "Travel details",
+    });
+    expect(perSpeaker.instances).toBe(1);
+
+    // Session scope stays per session: two sessions, two deck obligations.
+    const perSession = await alice.mutation(api.tasks.createRequirement, {
+      eventSlug,
+      title: "Final slide deck",
+      scope: "session",
+      evidence: "file",
+      reviewRequired: false,
+      dueAt: DUE,
+    });
+    expect(perSession.instances).toBe(2);
+
+    // Release direction: a THIRD session for the same speaker instantiates the
+    // session-scope requirement but not another speaker-level task…
+    await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Marcus", lastName: "Doubles", email: "marcus@example.com" },
+      "Evening panel",
+    );
+    const rows = await alice.query(api.tasks.listInstances, { eventSlug });
+    expect(
+      rows.filter((r) => r.requirementTitle === "Travel details"),
+    ).toHaveLength(1);
+    expect(
+      rows.filter((r) => r.requirementTitle === "Final slide deck"),
+    ).toHaveLength(3);
+
+    // …while a different speaker still gets their own.
+    await inviteSpeaker(
+      alice,
+      eventSlug,
+      { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+      "Closing keynote",
+    );
+    const after = await alice.query(api.tasks.listInstances, { eventSlug });
+    const travel = after.filter((r) => r.requirementTitle === "Travel details");
+    expect(travel.map((r) => r.speakerName).sort()).toEqual([
+      "Dana Keynote",
+      "Marcus Doubles",
+    ]);
+  });
+
   test("a later acceptance release instantiates the active requirements", async () => {
     const t = setupTest();
     const { alice, eventSlug } = await eventSetup(t);

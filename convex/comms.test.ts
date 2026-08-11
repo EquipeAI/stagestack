@@ -1863,3 +1863,67 @@ describe("emails.sendCalendarInvite", () => {
     expect(headers["Idempotency-Key"]).toBe(row.resendEmailId);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Delivery health (CFP-08). A refused send commits the caller's write and
+// leaves a `failed` row — correct, but silent. The rules worth a test:
+//   • Failed rows in the recent window are counted and timestamped, so the
+//     comms page can show the "emails are failing" banner.
+//   • A healthy event reports zero — the banner never cries wolf.
+//   • The summary is operational data: organizer-only, like the log itself.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("delivery health (CFP-08)", () => {
+  test("counts recent refused sends and reports the newest one", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+
+    // Reproduce the unconfigured deployment: RESEND_TEST_MODE unset refuses
+    // the real-recipient send, and the invite mutation commits regardless.
+    await withEnv("RESEND_TEST_MODE", undefined, async () => {
+      await inviteSpeaker(
+        t,
+        alice,
+        eventSlug,
+        { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+        "Opening keynote",
+      );
+    });
+
+    const health = await alice.query(api.comms.deliveryHealth, { eventSlug });
+    expect(health.failed).toBeGreaterThanOrEqual(1);
+    expect(health.scanned).toBeGreaterThanOrEqual(health.failed);
+    const rows = await messageRows(t);
+    const newestFailed = rows
+      .filter((m) => m.deliveryStatus === "failed")
+      .sort((a, b) => b._creationTime - a._creationTime)[0];
+    expect(health.lastFailedAt).toBe(newestFailed._creationTime);
+  });
+
+  test("a healthy event reports zero failures", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    await inviteSpeaker(
+      t,
+      alice,
+      eventSlug,
+      { firstName: "Erin", lastName: "Ok", email: "erin@example.com" },
+      "All is well",
+    );
+    const health = await alice.query(api.comms.deliveryHealth, { eventSlug });
+    expect(health.failed).toBe(0);
+    expect(health.lastFailedAt).toBeNull();
+    expect(health.scanned).toBeGreaterThan(0);
+  });
+
+  test("reviewers cannot read the summary", async () => {
+    const t = setupTest();
+    const { eventSlug } = await organizerEvent(t);
+    const mallory = await signIn(t, "mallory");
+    await grantEventRole(t, eventSlug, "mallory", "reviewer");
+    await expectRejectedWith(
+      mallory.query(api.comms.deliveryHealth, { eventSlug }),
+      "forbidden",
+    );
+  });
+});

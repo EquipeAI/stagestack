@@ -111,10 +111,20 @@ function ContactLog({
     )
   }
 
+  // "N sent" would overclaim: a `failed` row is a send the mail service
+  // refused, so the mail never left. Count those separately.
+  const failedCount = messages.filter(
+    (message) => message.deliveryStatus === 'failed',
+  ).length
+
   return (
     <Card
       title="Messages"
-      subtitle={`${messages.length} sent`}
+      subtitle={
+        failedCount === 0
+          ? `${messages.length} sent`
+          : `${messages.length} messages · ${failedCount} failed to send`
+      }
       padded={false}
     >
       <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
@@ -138,6 +148,12 @@ function ContactLog({
                   {message.subject}
                 </span>
                 <MonoText>{message.toEmail}</MonoText>
+                {message.deliveryStatus === 'failed' ? (
+                  <span style={failedNote}>
+                    Never sent — the mail service refused this send. Check the
+                    deployment's mail settings, then re-send it.
+                  </span>
+                ) : null}
               </div>
               <span style={sentAt}>
                 {formatDateTime(message.sentAt, timezone)}
@@ -156,6 +172,11 @@ const row: React.CSSProperties = {
   gap: 'var(--space-4)',
   padding: 'var(--space-3) var(--space-5)',
   borderTop: 'var(--space-px) solid var(--border-subtle)',
+}
+
+const failedNote: React.CSSProperties = {
+  fontSize: 'var(--text-xs)',
+  color: 'var(--text-danger)',
 }
 
 const sentAt: React.CSSProperties = {
