@@ -1207,6 +1207,45 @@ describe("reminders.sweep", () => {
     expect(await messagesOfKind(t, "reminder.tasks")).toHaveLength(1);
   });
 
+  test("configured cadence sends a fresh overdue task on the next automatic sweep", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    await confirm(
+      alice,
+      eventSlug,
+      await participantFor(t, sessionId, "Carol"),
+    );
+    await manualRequirement(
+      alice,
+      eventSlug,
+      "Automatic reminder clean-cycle verification",
+      PAST_DUE,
+    );
+    await setCadence(alice, eventSlug, 1);
+    await clearMessages(t);
+
+    // No organizer send and no backdated reminder stamp: the task is already
+    // overdue, so its first reminder belongs in the next automatic cycle even
+    // though the event has an explicit cadence.
+    expect(await runSweep(t, NOW)).toEqual({ events: 1 });
+    const [first] = await messagesOfKind(t, "reminder.tasks");
+    expect(first).toMatchObject({
+      deliveryStatus: "queued",
+    });
+    expect(first.sentByUserId).toBeUndefined();
+    const rendered = (first.context as { renderedBody: string }).renderedBody;
+    expect(rendered).toContain("Automatic reminder clean-cycle verification");
+    expect(rendered).toContain("due");
+
+    // Provider acceptance starts the configured one-day cadence. The hourly
+    // evaluator stays silent, then the task becomes eligible one day later.
+    await runSweep(t, NOW + 60 * 60 * 1000);
+    expect(await messagesOfKind(t, "reminder.tasks")).toHaveLength(1);
+    await runSweep(t, NOW + DAY);
+    expect(await messagesOfKind(t, "reminder.tasks")).toHaveLength(2);
+  });
+
   test("paginated due discovery dedupes overlap and reaches work behind a thousand-row backlog", async () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
@@ -1710,7 +1749,7 @@ describe("reminders.sweep", () => {
       await participantFor(t, sessionId, "Carol"),
     );
     await confirm(alice, eventSlug, await participantFor(t, sessionId, "Dave"));
-    await manualRequirement(alice, eventSlug, "Speaker release");
+    await manualRequirement(alice, eventSlug, "Speaker release", FUTURE_DUE);
     await setCadence(alice, eventSlug, 3);
     await clearMessages(t);
 
@@ -1723,8 +1762,8 @@ describe("reminders.sweep", () => {
     });
     const t0 = created;
 
-    // Well inside the 3-day cadence: nothing fires, even though a plain hourly
-    // sweep runs (the old bug fired immediately after assignment).
+    // Well outside the 48-hour due-date safety window and inside the 3-day
+    // cadence: nothing fires, even though a plain hourly sweep runs.
     expect(await sweepEventNow(t, eventSlug, t0 + 3600 * 1000)).toMatchObject({
       taskEmails: 0,
       participationEmails: 0,

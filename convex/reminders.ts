@@ -366,6 +366,7 @@ async function runEventSweep(
     );
     if (cadenceDays === undefined) continue;
     if (cadenceDays <= 0) continue;
+    const dueDateSafety = dueDriven(instance, now);
     const dueDateFallback = usesDueDateFallback(
       instance,
       requirement,
@@ -378,7 +379,7 @@ async function runEventSweep(
     // daily anti-spam clock.
     const baseline =
       instance.lastRemindedAt ??
-      (dueDateFallback ? Number.NEGATIVE_INFINITY : instance._creationTime);
+      (dueDateSafety ? Number.NEGATIVE_INFINITY : instance._creationTime);
     if (now - baseline < cadenceDays * DAY_MS) continue;
 
     const session = graph.sessionById.get(instance.sessionId);
