@@ -625,6 +625,7 @@ describe("sessions.createDirect", () => {
         },
       },
     );
+    await drainScheduled(t);
 
     const sessions = await sessionRows(t);
     expect(sessions).toHaveLength(1);

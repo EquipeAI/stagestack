@@ -185,6 +185,11 @@ describe("agenda.scheduleSession", () => {
       lastName: "Speaker",
       email: "bob@example.com",
     });
+    // Land the deferred invitation email so `before` is a settled baseline.
+    for (let i = 0; i < 3; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await t.finishInProgressScheduledFunctions();
+    }
     const before = (await messageKinds(t)).length;
 
     await place(alice, eventSlug, sessionId, {

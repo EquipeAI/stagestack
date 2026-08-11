@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { internalMutation } from "./_generated/server";
 import { eventMutation, eventQuery } from "./lib/functions";
 import { vv } from "./lib/validators";
 import * as Sessions from "./model/sessions";
@@ -46,6 +47,19 @@ export const setStatus = eventMutation({
       args.proposalIds,
       args.to,
     );
+  },
+});
+
+export const sendDirectInvitation = internalMutation({
+  args: {
+    sessionId: v.id("sessions"),
+    eventContactId: v.id("eventContacts"),
+    sentByUserId: v.id("users"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Sessions.sendDirectInvitation(ctx, args);
+    return null;
   },
 });
 

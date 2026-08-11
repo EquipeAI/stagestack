@@ -1,6 +1,7 @@
 import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
+import { internal } from "../_generated/api";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
 import * as Agenda from "./agenda";
@@ -652,32 +653,13 @@ export async function createDirectSession(
   // A direct invitation is a formal release too (M4).
   await instantiateForSession(ctx, event, sessionId);
 
-  const when = eventWhen(event);
-  const invitation = await renderTemplate(ctx, event, "invitation.direct", {
-    event: {
-      name: event.name,
-      when,
-      location: event.location ?? "",
-      // One escaped line so the default template needs no conditional markup;
-      // organizers editing the template still have {{event.when}} and
-      // {{event.location}} separately.
-      whenWhere:
-        event.location === undefined ? when : `${when} — ${event.location}`,
-    },
-    speaker: { firstName: profile.firstName, lastName: profile.lastName },
-    session: { title },
-    link: portalLink(event.slug),
-  });
-  await sendLoggedEmail(ctx, {
-    orgId: event.orgId,
-    eventId: event._id,
-    toEmail: speakerEmail,
-    kind: "invitation.direct",
-    subject: invitation.subject,
-    html: invitation.html,
+  // The invitation goes out AFTER this transaction commits: an email failure
+  // must never unwind the session/contact/participant writes (same rule as
+  // cfp.submitProposal — the eval's finding #4 class of bug).
+  await ctx.scheduler.runAfter(0, internal.sessions.sendDirectInvitation, {
+    sessionId,
+    eventContactId,
     sentByUserId: caller.user._id,
-    replyTo: event.replyTo,
-    context: { sessionId, eventContactId },
   });
 
   await logAudit(ctx, {
@@ -1065,5 +1047,52 @@ export async function restoreRevision(
     title: revision.before.title,
     description: revision.before.description ?? "",
     format: revision.before.format ?? "",
+  });
+}
+
+/** Post-commit half of `createDirectSession`: render + send the invitation
+ * in its own transaction so a delivery failure can't unwind the invite. */
+export async function sendDirectInvitation(
+  ctx: MutationCtx,
+  args: {
+    sessionId: Id<"sessions">;
+    eventContactId: Id<"eventContacts">;
+    sentByUserId: Id<"users">;
+  },
+): Promise<void> {
+  const session = await ctx.db.get("sessions", args.sessionId);
+  if (session === null || session.status !== "planned") return;
+  const event = await ctx.db.get("events", session.eventId);
+  if (event === null) return;
+  const contact = await ctx.db.get("eventContacts", args.eventContactId);
+  const toEmail = contact?.email?.trim();
+  if (contact === null || toEmail === undefined || toEmail.length === 0) return;
+
+  const when = eventWhen(event);
+  const invitation = await renderTemplate(ctx, event, "invitation.direct", {
+    event: {
+      name: event.name,
+      when,
+      location: event.location ?? "",
+      // One escaped line so the default template needs no conditional markup;
+      // organizers editing the template still have {{event.when}} and
+      // {{event.location}} separately.
+      whenWhere:
+        event.location === undefined ? when : `${when} — ${event.location}`,
+    },
+    speaker: { firstName: contact.firstName, lastName: contact.lastName },
+    session: { title: session.title },
+    link: portalLink(event.slug),
+  });
+  await sendLoggedEmail(ctx, {
+    orgId: event.orgId,
+    eventId: event._id,
+    toEmail,
+    kind: "invitation.direct",
+    subject: invitation.subject,
+    html: invitation.html,
+    sentByUserId: args.sentByUserId,
+    replyTo: event.replyTo,
+    context: { sessionId: session._id, eventContactId: contact._id },
   });
 }

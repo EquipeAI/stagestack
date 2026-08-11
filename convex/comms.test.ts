@@ -146,16 +146,24 @@ async function organizerEvent(
 }
 
 async function inviteSpeaker(
+  t: TestT,
   alice: TestUserT,
   eventSlug: string,
   speaker: { firstName: string; lastName: string; email: string },
   title: string,
 ) {
-  return await alice.mutation(api.sessions.createDirect, {
+  const result = await alice.mutation(api.sessions.createDirect, {
     eventSlug,
     title,
     speaker,
   });
+  // The invitation email is deferred to runAfter(0); land it so tests see a
+  // settled comms log.
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+  return result;
 }
 
 /** An invitation needs an address, but a speaker imported later may lose one —
@@ -315,6 +323,7 @@ describe("comms.listAudiences", () => {
     const { alice, eventSlug } = await organizerEvent(t);
     // A speaker with no email at all: unreachable, and counted as skipped.
     const nomail = await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Nomail", lastName: "Speaker", email: "gone@example.com" },
@@ -322,6 +331,7 @@ describe("comms.listAudiences", () => {
     );
     await clearContactEmail(t, nomail.eventContactId);
     await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
@@ -341,12 +351,14 @@ describe("comms.listAudiences", () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
     await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
       "Opening keynote",
     );
     await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
@@ -451,6 +463,7 @@ describe("comms.sendOneOff", () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
     const { eventContactId } = await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
@@ -488,6 +501,7 @@ describe("comms.sendOneOff", () => {
     );
 
     const { eventContactId } = await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Nomail", lastName: "Speaker", email: "gone@example.com" },
@@ -635,6 +649,7 @@ describe("comms.sendOneOff", () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
     const { eventContactId } = await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
@@ -663,12 +678,14 @@ describe("comms.contactLog", () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
     const { eventContactId } = await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
       "Opening keynote",
     );
     await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Other", lastName: "Person", email: "other@example.com" },
@@ -696,6 +713,7 @@ describe("comms.contactLog", () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
     const { eventContactId } = await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
@@ -1170,6 +1188,7 @@ describe("reminders.sweep", () => {
     const { alice, eventSlug } = await organizerEvent(t);
     // Direct invite: Sam manages himself — there is no primary manager.
     const { sessionId } = await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Sam", lastName: "Solo", email: "sam@example.com" },
@@ -1221,12 +1240,14 @@ describe("reminders.sweep", () => {
     const okSlug = await createEvent(alice, orgSlug, "Healthy Summit");
     const brokenSlug = await createEvent(alice, orgSlug, "Broken Summit");
     await inviteSpeaker(
+      t,
       alice,
       okSlug,
       { firstName: "Hana", lastName: "Fine", email: "hana@example.com" },
       "Healthy talk",
     );
     await inviteSpeaker(
+      t,
       alice,
       brokenSlug,
       { firstName: "Bora", lastName: "Stuck", email: "bora@example.com" },
@@ -1488,15 +1509,28 @@ describe("mail identity (M14)", () => {
     // The suite pins RESEND_TEST_MODE=false (test.helpers.ts); dropping it
     // reproduces an unconfigured deployment. The flag is read per send, so no
     // module reload is needed for it to take effect.
+    //
+    // The invite MUTATION now commits regardless (the send is deferred so a
+    // mail failure can't unwind the session — eval finding #4); the refusal
+    // happens in the scheduled send, so what a fresh clone must show is: no
+    // message row ever lands for the real address.
     await withEnv("RESEND_TEST_MODE", undefined, async () => {
-      await expect(
-        inviteSpeaker(
-          alice,
-          eventSlug,
-          { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
-          "Opening keynote",
-        ),
-      ).rejects.toThrow(/Test mode is enabled/);
+      await inviteSpeaker(
+        t,
+        alice,
+        eventSlug,
+        { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+        "Opening keynote",
+      ).catch(() => {
+        // The drain inside inviteSpeaker surfaces the scheduled job's throw;
+        // either way the assertion below is what matters.
+      });
+      const rows = await t.run(async (ctx) =>
+        ctx.db.query("messages").collect(),
+      );
+      expect(rows.filter((m) => m.kind === "invitation.direct")).toHaveLength(
+        0,
+      );
     });
   });
 
@@ -1507,6 +1541,7 @@ describe("mail identity (M14)", () => {
     try {
       await withEnv("MAIL_FROM", "Selfhost Events <events@example.org>", () =>
         inviteSpeaker(
+          t,
           alice,
           eventSlug,
           { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
@@ -1536,6 +1571,7 @@ describe("bulk-mail unsubscribe (M15)", () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
     const { eventContactId } = await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
@@ -1602,6 +1638,7 @@ describe("bulk-mail unsubscribe (M15)", () => {
       // A direct invitation: the recipient needs this link to take the slot,
       // so offering to unsubscribe from it would break the flow.
       await inviteSpeaker(
+        t,
         alice,
         eventSlug,
         { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
@@ -1741,6 +1778,7 @@ describe("emails.sendCalendarInvite", () => {
     const t = setupTest();
     const { alice, eventSlug } = await organizerEvent(t);
     const { sessionId } = await inviteSpeaker(
+      t,
       alice,
       eventSlug,
       { firstName: "Erin", lastName: "Onstage", email: "erin@example.com" },

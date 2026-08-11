@@ -297,6 +297,10 @@ describe("lifecycle sends render through templates", () => {
         email: "dana@example.com",
       },
     });
+    for (let i = 0; i < 3; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await t.finishInProgressScheduledFunctions();
+    }
 
     await alice.mutation(api.templates.upsert, {
       eventSlug,
@@ -328,6 +332,10 @@ describe("lifecycle sends render through templates", () => {
         email: "xss@example.com",
       },
     });
+    for (let i = 0; i < 3; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await t.finishInProgressScheduledFunctions();
+    }
 
     const invitation = (await messageRows(t)).find(
       (m) => m.kind === "invitation.direct",
