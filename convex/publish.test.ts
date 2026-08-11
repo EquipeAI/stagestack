@@ -607,6 +607,10 @@ describe("publish — production-path projection", () => {
       {
         name: "Carol Speaker",
         tagline: "CTO, Acme",
+        // Derived from the tagline at snapshot time (eval: structured
+        // title/company were blank on converted speakers).
+        jobTitle: "CTO",
+        company: "Acme",
         speakerId: expect.any(String),
       },
     ]);

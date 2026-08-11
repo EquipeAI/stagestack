@@ -1510,10 +1510,10 @@ describe("mail identity (M14)", () => {
     // reproduces an unconfigured deployment. The flag is read per send, so no
     // module reload is needed for it to take effect.
     //
-    // The invite MUTATION now commits regardless (the send is deferred so a
-    // mail failure can't unwind the session — eval finding #4); the refusal
-    // happens in the scheduled send, so what a fresh clone must show is: no
-    // message row ever lands for the real address.
+    // The invite MUTATION commits regardless (sends are deferred and the
+    // send itself runs in a subtransaction), so what a fresh clone must show
+    // is: the refused send lands as a visible FAILED comms-log row — real
+    // mail never goes out, and nothing is silently lost either.
     await withEnv("RESEND_TEST_MODE", undefined, async () => {
       await inviteSpeaker(
         t,
@@ -1521,16 +1521,14 @@ describe("mail identity (M14)", () => {
         eventSlug,
         { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
         "Opening keynote",
-      ).catch(() => {
-        // The drain inside inviteSpeaker surfaces the scheduled job's throw;
-        // either way the assertion below is what matters.
-      });
+      );
       const rows = await t.run(async (ctx) =>
         ctx.db.query("messages").collect(),
       );
-      expect(rows.filter((m) => m.kind === "invitation.direct")).toHaveLength(
-        0,
-      );
+      const invitations = rows.filter((m) => m.kind === "invitation.direct");
+      expect(invitations).toHaveLength(1);
+      expect(invitations[0].deliveryStatus).toBe("failed");
+      expect(invitations[0].resendEmailId).toBeUndefined();
     });
   });
 

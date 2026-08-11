@@ -1,6 +1,9 @@
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
 import { internalAction, internalMutation } from "./_generated/server";
+// Cycle with model/comms is deliberate and safe: both sides bind functions
+// used at call time, never at module init.
+import { unsubscribeHeaders } from "./model/comms";
 import type { ActionCtx } from "./_generated/server";
 import { Resend, vOnEmailEventArgs, type EmailId } from "@convex-dev/resend";
 import {
@@ -390,5 +393,35 @@ export const emailStatus = internalMutation({
   returns: v.any(),
   handler: async (ctx, args) => {
     return await resend.status(ctx, args.emailId as EmailId);
+  },
+});
+
+/**
+ * The actual Resend send, isolated in its own SUBTRANSACTION so a component
+ * refusal (test mode + real address, bad key) rolls back nothing but itself.
+ * Called only by model/comms.sendLoggedEmail, which records the outcome —
+ * "queued" with the returned id, or "failed" when this throws.
+ */
+export const trySend = internalMutation({
+  args: {
+    toEmail: v.string(),
+    kind: v.string(),
+    subject: v.string(),
+    html: v.string(),
+    replyTo: v.optional(v.string()),
+  },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    return await resend.sendEmail(ctx, {
+      from: mailFrom(),
+      to: args.toEmail,
+      subject: args.subject,
+      html: args.html,
+      ...(args.replyTo !== undefined && args.replyTo.length > 0
+        ? { replyTo: [args.replyTo] }
+        : {}),
+      // Bulk/nudge mail only, derived from `kind` (M15).
+      ...unsubscribeHeaders(args.kind, args.replyTo),
+    });
   },
 });

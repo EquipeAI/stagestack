@@ -769,3 +769,38 @@ describe("archived events", () => {
     ).toEqual([{ proposalId, ok: true }]);
   });
 });
+
+describe("sessions.release — track carry-over (eval regression)", () => {
+  test("an answer naming an event track lands on the converted session", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalId } = await submittedProposal(t);
+    // The CFP form's track question is an ordinary dropdown answer; the
+    // event's library defines the real tracks.
+    const trackId = (await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "tracks",
+      item: { name: "Platform & Infra" },
+    })) as Id<"tracks">;
+    await t.run(async (ctx) => {
+      const proposal = await ctx.db.get("proposals", proposalId);
+      await ctx.db.patch("proposals", proposalId, {
+        answers: { ...proposal!.answers, track: "platform & infra" },
+      });
+    });
+
+    await stage(alice, eventSlug, proposalId, "acceptQueue");
+    await alice.mutation(api.sessions.release, {
+      eventSlug,
+      proposalIds: [proposalId],
+    });
+    await drainScheduled(t);
+
+    const session = await t.run(async (ctx) =>
+      ctx.db
+        .query("sessions")
+        .collect()
+        .then((rows) => rows.find((s) => s.proposalId === proposalId)),
+    );
+    expect(session?.trackId).toBe(trackId);
+  });
+});

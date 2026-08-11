@@ -3,7 +3,8 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
-import { mailFrom, mailFromAddress, resend } from "../emails";
+import { mailFromAddress } from "../emails";
+import { internal } from "../_generated/api";
 import { logAudit } from "./audit";
 import {
   MAX_AUDIENCE,
@@ -74,25 +75,34 @@ export type LoggedEmail = {
   context?: unknown;
 };
 
-/** Send through Resend and record the send in the comms log. */
+/**
+ * Send through Resend and record the send in the comms log.
+ *
+ * The send runs in a SUBTRANSACTION (`ctx.runMutation` from a mutation): a
+ * component refusal — Resend test mode with a real address, a bad key —
+ * rolls back only the send's own writes, never the CALLER's. Three eval
+ * findings were exactly this bug class (submit/invite/release unwound by an
+ * email failure); now the business write always commits and the refused send
+ * is a visible `failed` row in the comms log instead of a lost mutation.
+ */
 export async function sendLoggedEmail(
   ctx: MutationCtx,
   args: LoggedEmail,
 ): Promise<Id<"messages">> {
   const replyTo = args.replyTo?.trim();
-  const emailId = await resend.sendEmail(ctx, {
-    from: mailFrom(),
-    // Sent to the address as the caller gave it: only the LOG is normalized.
-    to: args.toEmail,
-    subject: args.subject,
-    html: args.html,
-    ...(replyTo !== undefined && replyTo.length > 0
-      ? { replyTo: [replyTo] }
-      : {}),
-    // Bulk/nudge mail only, derived from `kind` here rather than at the six
-    // call sites — see `unsubscribeHeaders` (M15).
-    ...unsubscribeHeaders(args.kind, replyTo),
-  });
+  let emailId: string | undefined;
+  try {
+    emailId = await ctx.runMutation(internal.emails.trySend, {
+      // Sent to the address as the caller gave it: only the LOG is normalized.
+      toEmail: args.toEmail,
+      kind: args.kind,
+      subject: args.subject,
+      html: args.html,
+      replyTo,
+    });
+  } catch {
+    emailId = undefined;
+  }
   return await ctx.db.insert("messages", {
     orgId: args.orgId,
     eventId: args.eventId,
@@ -105,7 +115,7 @@ export async function sendLoggedEmail(
     kind: args.kind,
     subject: args.subject,
     resendEmailId: emailId,
-    deliveryStatus: "queued",
+    deliveryStatus: emailId === undefined ? "failed" : "queued",
     sentByUserId: args.sentByUserId,
     context: args.context,
   });

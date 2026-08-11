@@ -103,6 +103,8 @@ export type SpeakerProfile = {
   email?: string;
   phone?: string;
   tagline?: string;
+  jobTitle?: string;
+  company?: string;
   bio?: string;
   headshotId?: Id<"_storage">;
   links?: {
@@ -113,6 +115,17 @@ export type SpeakerProfile = {
   };
 };
 
+/** "Principal Engineer, Latticework" → structured title/company. Only the
+ * unambiguous two-part shape splits; anything else stays tagline-only. */
+function splitTagline(
+  tagline: string | undefined,
+): { jobTitle?: string; company?: string } {
+  if (tagline === undefined) return {};
+  const parts = tagline.split(",").map((p) => p.trim());
+  if (parts.length !== 2 || parts.some((p) => p === "")) return {};
+  return { jobTitle: parts[0], company: parts[1] };
+}
+
 function profileOf(speaker: Doc<"proposalSpeakers">): SpeakerProfile {
   return {
     firstName: speaker.firstName,
@@ -120,6 +133,10 @@ function profileOf(speaker: Doc<"proposalSpeakers">): SpeakerProfile {
     email: speaker.email,
     phone: speaker.phone,
     tagline: speaker.tagline,
+    // CFP speakers enter a freeform tagline; the roster and public widgets
+    // want structured fields, so the common "Title, Company" shape carries
+    // over (the speaker or organizer can refine it later).
+    ...splitTagline(speaker.tagline),
     bio: speaker.bio,
     headshotId: speaker.headshotId,
     links: speaker.links,
@@ -255,12 +272,42 @@ async function sessionForProposal(
  * and Awaiting-Response participations. Reuses an existing session for the
  * proposal so a decline→accept correction restores rather than duplicates.
  */
+/**
+ * The CFP form's track question is an ordinary dropdown answer, not a typed
+ * column — carry it over by matching any answer string against the event's
+ * track names (case-insensitive). Ambiguity (two answers naming two
+ * different tracks) resolves to nothing rather than guessing.
+ */
+async function trackFromAnswers(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+  proposal: Doc<"proposals">,
+): Promise<Id<"tracks"> | undefined> {
+  const tracks = await ctx.db
+    .query("tracks")
+    .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
+    .take(200);
+  if (tracks.length === 0) return undefined;
+  const byName = new Map(
+    tracks.map((t) => [t.name.trim().toLowerCase(), t._id]),
+  );
+  const hits = new Set<Id<"tracks">>();
+  for (const value of Object.values(proposal.answers)) {
+    if (typeof value !== "string") continue;
+    const match = byName.get(value.trim().toLowerCase());
+    if (match !== undefined) hits.add(match);
+  }
+  return hits.size === 1 ? [...hits][0] : undefined;
+}
+
 async function materializeSession(
   ctx: MutationCtx,
   event: Doc<"events">,
   proposal: Doc<"proposals">,
 ): Promise<Id<"sessions">> {
   const existing = await sessionForProposal(ctx, proposal._id);
+  const trackId =
+    existing?.trackId ?? (await trackFromAnswers(ctx, event, proposal));
   const sessionId =
     existing?._id ??
     (await ctx.db.insert("sessions", {
@@ -271,7 +318,13 @@ async function materializeSession(
       source: "cfp",
       status: "planned",
       contentStatus: "draft",
+      trackId,
     }));
+  // A correction that restores an existing track-less session still gets the
+  // carry-over (the eval saw "No track" on a converted session).
+  if (existing !== null && existing.trackId === undefined && trackId !== undefined) {
+    await ctx.db.patch("sessions", existing._id, { trackId });
+  }
   const speakers = await ctx.db
     .query("proposalSpeakers")
     .withIndex("by_proposalId", (q) => q.eq("proposalId", proposal._id))
@@ -622,6 +675,7 @@ export async function createDirectSession(
     email: speakerEmail,
     phone: args.speaker.phone,
     tagline: args.speaker.tagline,
+    ...splitTagline(args.speaker.tagline),
     bio: args.speaker.bio,
   };
   if (args.trackId !== undefined) {
