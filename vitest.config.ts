@@ -26,7 +26,9 @@ export default defineConfig({
   ],
   test: {
     environment: "edge-runtime",
-    include: ["convex/**/*.test.ts"],
+    // The worker is plain Node code, but its file parsing is the kind of thing
+    // that only breaks on real bytes, so its tests run in the same suite.
+    include: ["convex/**/*.test.ts", "apps/worker/src/**/*.test.ts"],
     // Blocks outbound HTTP (the raw Resend call in the .ics path) so the suite
     // never depends on the network. See convex/test.setup.ts.
     setupFiles: ["./convex/test.setup.ts"],
