@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
-import { DELIVERY_STATUS, messageKindLabel } from './model'
+import { didNotReach, messageKindLabel } from './model'
 import { ContactSelect, useEventContacts } from './ContactSelect'
+import { DeliveryLifecycle, DeliveryPill } from './DeliveryLifecycle'
 import { MonoText } from './primitives'
 import type * as React from 'react'
 import type { Id } from '@convex/_generated/dataModel'
-import { Card, EmptyState, Field, StatusPill, Tag } from '~/ds'
+import { Card, EmptyState, Field, Tag } from '~/ds'
 import { formatDateTime } from '~/lib/datetime'
 
 // "What was sent to this person, and when." The log is per contact on purpose:
@@ -111,10 +112,11 @@ function ContactLog({
     )
   }
 
-  // "N sent" would overclaim: a `failed` row is a send the mail service
-  // refused, so the mail never left. Count those separately.
-  const failedCount = messages.filter(
-    (message) => message.deliveryStatus === 'failed',
+  // "N sent" would overclaim: a `failed` row never left the building and a
+  // bounce came back. A `complained` row is NOT in this count — it reached the
+  // recipient, who then reported it as spam.
+  const failedCount = messages.filter((message) =>
+    didNotReach(message.deliveryStatus),
   ).length
 
   return (
@@ -122,14 +124,13 @@ function ContactLog({
       title="Messages"
       subtitle={
         failedCount === 0
-          ? `${messages.length} sent`
-          : `${messages.length} messages · ${failedCount} failed to send`
+          ? `${messages.length} recorded`
+          : `${messages.length} recorded · ${failedCount} did not reach the recipient`
       }
       padded={false}
     >
       <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
         {messages.map((message) => {
-          const delivery = DELIVERY_STATUS[message.deliveryStatus]
           return (
             <li key={message.messageId} style={row}>
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
@@ -142,18 +143,17 @@ function ContactLog({
                   }}
                 >
                   <Tag>{nameFor(message.kind)}</Tag>
-                  <StatusPill status={delivery.label} tone={delivery.tone} />
+                  <DeliveryPill status={message.deliveryStatus} />
                 </span>
                 <span style={{ font: 'var(--type-label)', overflowWrap: 'anywhere' }}>
                   {message.subject}
                 </span>
                 <MonoText>{message.toEmail}</MonoText>
-                {message.deliveryStatus === 'failed' ? (
-                  <span style={failedNote}>
-                    Never sent — the mail service refused this send. Check the
-                    deployment's mail settings, then re-send it.
-                  </span>
-                ) : null}
+                <DeliveryLifecycle
+                  status={message.deliveryStatus}
+                  timezone={timezone}
+                  updatedAt={message.deliveryUpdatedAt}
+                />
               </div>
               <span style={sentAt}>
                 {formatDateTime(message.sentAt, timezone)}
@@ -172,11 +172,6 @@ const row: React.CSSProperties = {
   gap: 'var(--space-4)',
   padding: 'var(--space-3) var(--space-5)',
   borderTop: 'var(--space-px) solid var(--border-subtle)',
-}
-
-const failedNote: React.CSSProperties = {
-  fontSize: 'var(--text-xs)',
-  color: 'var(--text-danger)',
 }
 
 const sentAt: React.CSSProperties = {

@@ -116,6 +116,7 @@ export const contactLog = eventQuery({
       toEmail: v.string(),
       deliveryStatus: vDeliveryStatus,
       sentAt: v.number(),
+      deliveryUpdatedAt: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {

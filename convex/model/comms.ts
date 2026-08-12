@@ -506,6 +506,9 @@ export type ContactMessageRow = {
   toEmail: string;
   deliveryStatus: Doc<"messages">["deliveryStatus"];
   sentAt: number;
+  /** The provider's own timestamp for the last delivery event, when one has
+   * arrived. Absent means no provider event has moved this row. */
+  deliveryUpdatedAt?: number;
 };
 
 /**
@@ -593,5 +596,8 @@ export async function contactLog(
       toEmail: message.toEmail,
       deliveryStatus: message.deliveryStatus,
       sentAt: message._creationTime,
+      ...(message.deliveryUpdatedAt === undefined
+        ? {}
+        : { deliveryUpdatedAt: message.deliveryUpdatedAt }),
     }));
 }

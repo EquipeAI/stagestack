@@ -107,7 +107,7 @@ the concept and offer one next action.
 
 The single biggest remaining trust issue in the review.
 
-- [ ] **The predicted next run must be the real next run.** `automationStatus`
+- [x] **The predicted next run must be the real next run.** `automationStatus`
       (`convex/reminders.ts`, ~line 917) returns
       `floor(now / hour) * hour + hour` — a clean clock hour. The sweep is
       `crons.interval("reminder sweep", { hours: 1 }, …)` (`convex/crons.ts`),
@@ -123,20 +123,26 @@ The single biggest remaining trust issue in the review.
       applies). Cron minutes are UTC; the existing epoch-hour math stays correct
       in every timezone. Then the prediction is derived from the schedule
       instead of guessing at it.
-- [ ] **Say it in event time, and say what it is.** The copy at
+- [x] **Say it in event time, and say what it is.** The copy at
       `apps/web/src/routes/app.e.$eventSlug.tasks.tsx:197-198` renders a browser
       local time with no zone label, in a product whose stated rule is that
       organizer surfaces show and label event time. Render the next evaluation
       in the event timezone via `apps/web/src/lib/datetime.ts`, labelled, and
       keep the honest hedge already in the backend comment — it is the next
       *evaluation*, not a promise of a send.
-- [ ] **Reconcile the two cadence stories.** The task page says daily safety
+- [x] **Reconcile the two cadence stories.** (Code truth: empty cadence stops
+      routine + confirmation chasing, but due-within-48h/overdue work keeps a
+      once-daily safety reminder; per-requirement overrides acknowledged in one
+      clause. Also surfaced during implementation: the sweep goes quiet after
+      the post-event grace week, and `automationStatus` now says so.) The task page says daily safety
       reminders continue when the event cadence is off; Settings says an empty
       cadence sends none. Decide which is true (read `convex/reminders.ts`
       eligibility — the code is the tiebreaker), then state that one model in
       one shared copy constant used by both `tasks.tsx` and
       `app.e.$eventSlug.settings.tsx`.
-- [ ] **Delivery lifecycle, end to end.** `messages.deliveryStatus` starts at
+- [ ] **Delivery lifecycle, end to end.** *(Code side done — lifecycle
+      rendering, provider event timestamp stored/rendered. The develop
+      webhook/env diagnosis below still needs deploy access: Alvaro.)* `messages.deliveryStatus` starts at
       `queued` (`convex/model/comms.ts:118`) and is advanced by the Resend
       webhook (`convex/emails.ts:117`, routed at `convex/http.ts:103`). The
       review saw `Queued` on mail Gmail had already received, so **first
@@ -149,7 +155,7 @@ The single biggest remaining trust issue in the review.
       pointing at that deployment's own `.convex.site/resend-webhook` URL** —
       Svix secrets are per-endpoint, and a missing endpoint fails silently with
       no errors anywhere. Then fix the surface either way.
-- [ ] **Never claim Queued for something that left.** Render the lifecycle as
+- [x] **Never claim Queued for something that left.** Render the lifecycle as
       Queued → Provider accepted → Delivered / Failed / Bounced with the
       provider event's own timestamp, in `components/comms/` and the per-contact
       log. (Corrected during plan review: `convex/model/contacts.ts:937-941` is
@@ -161,11 +167,16 @@ The single biggest remaining trust issue in the review.
       fix, and this item is the lifecycle *rendering* upgrade only.) When the
       provider accepted but no delivery event has arrived, say
       "Sent — delivery unconfirmed", not "Queued".
-- [ ] **Manual send confirmation states the audience and the consequence.**
+- [x] **Manual send confirmation states the audience and the consequence.**
       `apps/web/src/components/comms/SendPanel.tsx`: before sending, name who
-      qualifies and who is excluded and why, and state that sending resets those
-      recipients' cadence.
-- [ ] **Reminder facts panel** wherever reminders are configured or triggered:
+      qualifies and who is excluded and why. (Corrected during implementation:
+      the planned "sending resets cadence" sentence was FALSE — `sendOneOff`
+      never touches `lastRemindedAt`; the dialog now states the verified truth
+      that a one-off does not reset anyone's cadence. If a reset is *wanted*,
+      that is a backend decision for a later cycle. Same statement added to the
+      tasks page's manual-reminder confirmation, whose preview query and the
+      mutation now share one `collectOutstanding()` so they cannot diverge.)
+- [x] **Reminder facts panel** wherever reminders are configured or triggered:
       automatic on/off · evaluation interval · cadence floor · last automatic ·
       last manual · next eligible. One component, one query, both pages.
 - *Mobile*: the lifecycle is a labelled vertical list, never a horizontal

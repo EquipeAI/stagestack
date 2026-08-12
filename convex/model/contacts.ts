@@ -879,6 +879,9 @@ export async function outreachHistory(
     toEmail: message.toEmail,
     deliveryStatus: message.deliveryStatus,
     sentAt: message._creationTime,
+    ...(message.deliveryUpdatedAt === undefined
+      ? {}
+      : { deliveryUpdatedAt: message.deliveryUpdatedAt }),
   }));
 }
 

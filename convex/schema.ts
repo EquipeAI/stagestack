@@ -944,6 +944,12 @@ export default defineSchema({
       v.literal("complained"),
       v.literal("failed"),
     ),
+    // The PROVIDER's own timestamp for the delivery event that last moved
+    // `deliveryStatus`, so the log can say when something was delivered rather
+    // than only when StageStack handed it over. Optional: rows written before
+    // this field existed (and rows still sitting at `queued`, which no provider
+    // event has touched) simply do not carry one — no backfill needed.
+    deliveryUpdatedAt: v.optional(v.number()),
     sentByUserId: v.optional(v.id("users")),
     context: v.optional(v.any()),
   })

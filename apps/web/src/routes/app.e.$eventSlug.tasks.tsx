@@ -27,8 +27,17 @@ import {
   isOverdue,
   speakerLabel,
 } from '~/components/tasks/model'
-import { useNow } from '~/components/tasks/useNow'
+import { useLastLoaded, useNow } from '~/components/tasks/useNow'
+import { ReminderFactsPanel } from '~/components/reminders/ReminderFactsPanel'
+import { SendRemindersDialog } from '~/components/reminders/SendRemindersDialog'
+import {
+  REMINDER_EVALUATION_COPY,
+  REMINDER_MANUAL_COPY,
+  reminderCadenceCopy,
+  reminderDisabledCopy,
+} from '~/components/reminders/copy'
 import { usePending } from '~/lib/usePending'
+import { formatDateTime } from '~/lib/datetime'
 import { pushToast } from '~/components/toast'
 
 export const Route = createFileRoute('/app/e/$eventSlug/tasks')({
@@ -143,7 +152,9 @@ function RequirementsPanel({
         right={newButton}
       />
 
-      <ReminderControls eventSlug={eventSlug} />
+      <ReminderFactsPanel eventSlug={eventSlug} timezone={timezone} />
+
+      <ReminderControls eventSlug={eventSlug} timezone={timezone} />
 
       {requirements === undefined ? (
         <p style={{ color: 'var(--text-tertiary)' }}>Loading requirements…</p>
@@ -180,11 +191,36 @@ function RequirementsPanel({
   )
 }
 
-function ReminderControls({ eventSlug }: { eventSlug: string }) {
+function ReminderControls({
+  eventSlug,
+  timezone,
+}: {
+  eventSlug: string
+  timezone: string
+}) {
   const now = useNow()
-  const status = useQuery(api.reminders.automationStatus, { eventSlug, now })
+  // `useLastLoaded`: the ticking `now` re-subscribes every minute, and without
+  // it this card blinks back to "Loading…" once a minute.
+  const status = useLastLoaded(
+    useQuery(api.reminders.automationStatus, { eventSlug, now }),
+  )
   const sendNow = useMutation(api.reminders.sendOutstandingNow)
   const { pending, error, run } = usePending()
+  const [confirming, setConfirming] = useState(false)
+  // Subscribed only while the confirmation is open: the preview reads the event
+  // graph, which is not a cost worth paying on every render of this page.
+  const preview = useQuery(
+    api.reminders.outstandingReminderPreview,
+    confirming ? { eventSlug } : 'skip',
+  )
+
+  // Event time, labelled with its zone — the product's own rule for every
+  // organizer surface. The hedge stays: this is the next EVALUATION, and the
+  // sweep decides then whether anyone is actually due.
+  const nextEvaluation =
+    status === undefined || status.nextEvaluationAt === null
+      ? null
+      : formatDateTime(status.nextEvaluationAt, timezone)
 
   return (
     <Card
@@ -193,31 +229,19 @@ function ReminderControls({ eventSlug }: { eventSlug: string }) {
         status === undefined
           ? 'Loading reminder automation…'
           : status.enabled
-            ? status.cadenceDays === null
-              ? `Due-soon and overdue tasks are evaluated hourly and retried no more than daily. No general reminder cadence is set. Next evaluation around ${new Date(status.nextEvaluationAt ?? now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
-              : `Automatic reminders are evaluated hourly and respect the ${status.cadenceDays}-day cadence. If that cadence is turned off, due-soon and overdue tasks still use a daily safety reminder. Next evaluation around ${new Date(status.nextEvaluationAt ?? now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
-            : 'Automatic reminders are off because this event is archived.'
+            ? `${REMINDER_EVALUATION_COPY} ${reminderCadenceCopy(status.cadenceDays)}${
+                nextEvaluation === null
+                  ? ''
+                  : ` Next evaluation ${nextEvaluation}.`
+              }`
+            : reminderDisabledCopy(status.disabledReason ?? 'archived')
       }
       actions={
         <Button
           iconLeft="mail"
           disabled={pending}
           onClick={() => {
-            if (
-              !window.confirm(
-                'Send one consolidated reminder now to everyone with an outstanding, reminder-enabled task?',
-              )
-            ) {
-              return
-            }
-            void run(async () => {
-              const result = await sendNow({ eventSlug })
-              pushToast(
-                `${result.sent} accepted · ${result.failed} failed · ${result.skipped} skipped`,
-                `${result.includedTasks} outstanding ${result.includedTasks === 1 ? 'task was' : 'tasks were'} included in the attempts. Only provider-accepted reminders reset their tasks' cadence clock.`,
-                'mail',
-              )
-            })
+            setConfirming(true)
           }}
         >
           {pending ? 'Sending…' : 'Send reminders now'}
@@ -226,12 +250,32 @@ function ReminderControls({ eventSlug }: { eventSlug: string }) {
     >
       {error === null ? (
         <span style={{ color: 'var(--text-tertiary)' }}>
-          Manual sends are marked separately in the comms log and reset the
-          cadence clock for included tasks to avoid a duplicate automatic send.
+          {REMINDER_MANUAL_COPY}
         </span>
       ) : (
         <Callout tone="blocked">{error}</Callout>
       )}
+
+      {confirming ? (
+        <SendRemindersDialog
+          preview={preview}
+          pending={pending}
+          onCancel={() => {
+            setConfirming(false)
+          }}
+          onConfirm={() => {
+            void run(async () => {
+              const result = await sendNow({ eventSlug })
+              setConfirming(false)
+              pushToast(
+                `${result.sent} accepted · ${result.failed} failed · ${result.skipped} skipped`,
+                `${result.includedTasks} outstanding ${result.includedTasks === 1 ? 'task was' : 'tasks were'} included in the attempts. Only provider-accepted reminders reset their tasks' cadence clock.`,
+                'mail',
+              )
+            })
+          }}
+        />
+      ) : null}
     </Card>
   )
 }

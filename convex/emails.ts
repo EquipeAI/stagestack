@@ -100,6 +100,20 @@ const DELIVERY_STATUS_BY_EVENT: Record<
   "email.failed": "failed",
 };
 
+/**
+ * The PROVIDER's own timestamp for a delivery event.
+ *
+ * Every `EmailEvent` variant in `@convex-dev/resend` carries a top-level
+ * `created_at` string (verified against the installed
+ * `dist/client/index.d.ts`, not from memory). It is the provider's clock, which
+ * is the honest answer to "when was this delivered" — but an unparseable value
+ * must not write `NaN` into the log, so the receive time is the fallback.
+ */
+function eventTimestamp(createdAt: string | undefined): number {
+  const parsed = createdAt === undefined ? NaN : Date.parse(createdAt);
+  return Number.isNaN(parsed) ? Date.now() : parsed;
+}
+
 // Delivery events land here via the Resend webhook and update the comms log
 // row that model/comms.ts wrote when the email was queued (M1).
 export const handleEmailEvent = internalMutation({
@@ -114,7 +128,10 @@ export const handleEmailEvent = internalMutation({
       .withIndex("by_resendEmailId", (q) => q.eq("resendEmailId", args.id))
       .first();
     if (message === null) return null;
-    await ctx.db.patch("messages", message._id, { deliveryStatus: status });
+    await ctx.db.patch("messages", message._id, {
+      deliveryStatus: status,
+      deliveryUpdatedAt: eventTimestamp(args.event.created_at),
+    });
     return null;
   },
 });

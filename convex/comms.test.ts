@@ -5,6 +5,13 @@ import { DEFAULT_TEMPLATES } from "./model/templates";
 import { mailFrom, mailFromAddress, resend, resendTestMode } from "./emails";
 import { isBulkKind } from "./model/comms";
 import {
+  POST_EVENT_GRACE_DAYS,
+  SWEEP_CRON,
+  SWEEP_MINUTE,
+  automationQuietAfter,
+  nextSweepAt,
+} from "./shared/reminderSchedule";
+import {
   createEvent,
   createOrg,
   expectRejectedWith,
@@ -2588,6 +2595,397 @@ describe("delivery health (CFP-08)", () => {
     await grantEventRole(t, eventSlug, "mallory", "reviewer");
     await expectRejectedWith(
       mallory.query(api.comms.deliveryHealth, { eventSlug }),
+      "forbidden",
+    );
+  });
+});
+
+// ── Reminder schedule & facts (W1) ───────────────────────────────────────
+// The product used to predict the top of the clock hour while `crons.interval`
+// fired at whatever minute the cron was first deployed at. The schedule now has
+// ONE definition, and both the cron and the prediction read it.
+
+async function eventEndsAt(t: TestT, eventSlug: string): Promise<number> {
+  return await t.run(async (ctx) => {
+    const event = await ctx.db
+      .query("events")
+      .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+      .unique();
+    if (event === null) throw new Error("no event");
+    return event.endsAt;
+  });
+}
+
+describe("reminder schedule & facts (W1)", () => {
+  const HOUR = 60 * 60 * 1000;
+  const MINUTE = 60 * 1000;
+  const HOUR_START = Date.parse("2026-08-10T09:00:00Z");
+
+  test("the cron expression and the prediction come from one constant", () => {
+    expect(SWEEP_CRON).toBe(`${SWEEP_MINUTE} * * * *`);
+  });
+
+  test("nextSweepAt predicts the sweep minute, never a clean clock hour", () => {
+    // Before the sweep minute: this hour's occurrence.
+    expect(nextSweepAt(HOUR_START + 5 * MINUTE)).toBe(
+      HOUR_START + SWEEP_MINUTE * MINUTE,
+    );
+    // Exactly at it: the run happening now is not a FUTURE evaluation.
+    expect(nextSweepAt(HOUR_START + SWEEP_MINUTE * MINUTE)).toBe(
+      HOUR_START + HOUR + SWEEP_MINUTE * MINUTE,
+    );
+    // Past it: the next hour's occurrence.
+    expect(nextSweepAt(HOUR_START + (SWEEP_MINUTE + 21) * MINUTE)).toBe(
+      HOUR_START + HOUR + SWEEP_MINUTE * MINUTE,
+    );
+    // The old bug, asserted away: it is never the top of an hour.
+    expect(nextSweepAt(HOUR_START) % HOUR).not.toBe(0);
+  });
+
+  test("automationStatus derives its prediction from the schedule", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const now = HOUR_START + 5 * MINUTE;
+    const status = await alice.query(api.reminders.automationStatus, {
+      eventSlug,
+      now,
+    });
+    expect(status).toEqual({
+      enabled: true,
+      cadenceDays: null,
+      nextEvaluationAt: nextSweepAt(now),
+      evaluationIntervalHours: 1,
+      sweepMinuteUtc: SWEEP_MINUTE,
+      safetyCadenceDays: 1,
+      disabledReason: null,
+      quietAfter: automationQuietAfter(await eventEndsAt(t, eventSlug)),
+    });
+
+    // Past the sweep minute the prediction rolls to the next hour, not to the
+    // next clean hour boundary.
+    const later = await alice.query(api.reminders.automationStatus, {
+      eventSlug,
+      now: HOUR_START + (SWEEP_MINUTE + 1) * MINUTE,
+    });
+    expect(later.nextEvaluationAt).toBe(
+      HOUR_START + HOUR + SWEEP_MINUTE * MINUTE,
+    );
+  });
+
+  test("an archived event predicts nothing at all", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    await alice.mutation(api.events.setArchived, { eventSlug, archived: true });
+    expect(
+      await alice.query(api.reminders.automationStatus, {
+        eventSlug,
+        now: HOUR_START,
+      }),
+    ).toMatchObject({ enabled: false, nextEvaluationAt: null });
+    expect(
+      await alice.query(api.reminders.reminderFacts, { eventSlug }),
+    ).toMatchObject({ enabled: false, nextEligibleAt: null });
+  });
+
+  test("with no cadence, the next eligible instant is the due-soon window", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    await manualRequirement(alice, eventSlug, "Upload your slides");
+
+    const facts = await alice.query(api.reminders.reminderFacts, { eventSlug });
+    expect(facts.cadenceDays).toBeNull();
+    expect(facts.safetyCadenceDays).toBe(1);
+    expect(facts.evaluationIntervalHours).toBe(1);
+    expect(facts.trackedTasks).toBeGreaterThanOrEqual(1);
+    // No cadence anywhere: only the 48-hour safety window makes it eligible.
+    expect(facts.nextEligibleAt).toBe(PAST_DUE - 2 * DAY);
+  });
+
+  test("a configured cadence moves the next eligible instant onto the clock", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    await setCadence(alice, eventSlug, 3);
+    await manualRequirement(alice, eventSlug, "Upload your slides");
+
+    const instances = await instanceRows(t);
+    const earliest = Math.min(...instances.map((i) => i._creationTime));
+    const facts = await alice.query(api.reminders.reminderFacts, { eventSlug });
+    expect(facts.cadenceDays).toBe(3);
+    expect(facts.nextEligibleAt).toBe(earliest + 3 * DAY);
+  });
+
+  test("the facts panel reports the last automatic sweep and the last manual send", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    await setCadence(alice, eventSlug, 1);
+    await manualRequirement(alice, eventSlug, "Upload your slides");
+
+    const before = await alice.query(api.reminders.reminderFacts, {
+      eventSlug,
+    });
+    expect(before.lastAutomaticAt).toBeNull();
+    expect(before.lastManualAt).toBeNull();
+    expect(before.manualLookupTruncated).toBe(false);
+
+    await runSweep(t, NOW);
+    await alice.mutation(api.reminders.sendOutstandingNow, { eventSlug });
+
+    const after = await alice.query(api.reminders.reminderFacts, { eventSlug });
+    expect(after.lastAutomaticAt).toBe(NOW);
+    expect(after.lastManualAt).not.toBeNull();
+  });
+
+  test("reviewers cannot read automation status or the reminder facts", async () => {
+    const t = setupTest();
+    const { eventSlug } = await organizerEvent(t);
+    const mallory = await signIn(t, "mallory");
+    await grantEventRole(t, eventSlug, "mallory", "reviewer");
+    await expectRejectedWith(
+      mallory.query(api.reminders.automationStatus, {
+        eventSlug,
+        now: HOUR_START,
+      }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      mallory.query(api.reminders.reminderFacts, { eventSlug }),
+      "forbidden",
+    );
+  });
+});
+
+// ── Delivery timestamps, quiet events and manual-send truth (W1 review) ──
+
+describe("delivery lifecycle evidence (W1)", () => {
+  test("the webhook records the PROVIDER's own timestamp, not ours", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    await inviteSpeaker(
+      t,
+      alice,
+      eventSlug,
+      { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+      "Opening keynote",
+    );
+    const [message] = await messageRows(t);
+    expect(message.deliveryUpdatedAt).toBeUndefined();
+
+    const providerAt = "2026-08-11T14:32:05.000Z";
+    await t.mutation(internal.emails.handleEmailEvent, {
+      id: message.resendEmailId as import("@convex-dev/resend").EmailId,
+      event: {
+        type: "email.delivered",
+        created_at: providerAt,
+        data: {
+          created_at: providerAt,
+          email_id: message.resendEmailId ?? "",
+          from: "StageStack <hello@stagestack.dev>",
+          to: [message.toEmail],
+          subject: message.subject,
+        },
+      },
+    });
+
+    const patched = await t.run(async (ctx) =>
+      ctx.db.get("messages", message._id),
+    );
+    expect(patched?.deliveryStatus).toBe("delivered");
+    expect(patched?.deliveryUpdatedAt).toBe(Date.parse(providerAt));
+
+    // …and it reaches the per-contact log the UI renders.
+    const contacts = await alice.query(api.speakers.roster, { eventSlug });
+    const logged = await alice.query(api.comms.contactLog, {
+      eventSlug,
+      eventContactId: contacts[0].eventContactId,
+    });
+    expect(
+      logged.find((row) => row.messageId === message._id)?.deliveryUpdatedAt,
+    ).toBe(Date.parse(providerAt));
+  });
+
+  test("an unparseable provider timestamp falls back instead of writing NaN", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    await inviteSpeaker(
+      t,
+      alice,
+      eventSlug,
+      { firstName: "Eve", lastName: "Speaker", email: "eve@example.com" },
+      "Second keynote",
+    );
+    const [message] = await messageRows(t);
+    await t.mutation(internal.emails.handleEmailEvent, {
+      id: message.resendEmailId as import("@convex-dev/resend").EmailId,
+      event: {
+        type: "email.bounced",
+        created_at: "not a date",
+        data: {
+          created_at: "not a date",
+          email_id: message.resendEmailId ?? "",
+          from: "StageStack <hello@stagestack.dev>",
+          to: [message.toEmail],
+          subject: message.subject,
+          bounce: {
+            type: "Permanent",
+            subType: "General",
+            message: "mailbox unavailable",
+          },
+        },
+      },
+    });
+    const patched = await t.run(async (ctx) =>
+      ctx.db.get("messages", message._id),
+    );
+    expect(patched?.deliveryStatus).toBe("bounced");
+    expect(Number.isNaN(patched?.deliveryUpdatedAt ?? NaN)).toBe(false);
+    expect(patched?.deliveryUpdatedAt).toBeGreaterThan(0);
+  });
+});
+
+describe("automation quiet state and manual-send truth (W1)", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  test("past the post-event grace window the product stops predicting runs", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const endsAt = await eventEndsAt(t, eventSlug);
+
+    // Inside the window: still running, still predicting.
+    const inside = await alice.query(api.reminders.automationStatus, {
+      eventSlug,
+      now: endsAt + (POST_EVENT_GRACE_DAYS - 1) * DAY_MS,
+    });
+    expect(inside).toMatchObject({ enabled: true, disabledReason: null });
+    expect(inside.nextEvaluationAt).not.toBeNull();
+    expect(inside.quietAfter).toBe(automationQuietAfter(endsAt));
+
+    // Past it: `sweepEligible` refuses the event, so the UI must say so.
+    const outside = await alice.query(api.reminders.automationStatus, {
+      eventSlug,
+      now: endsAt + (POST_EVENT_GRACE_DAYS + 1) * DAY_MS,
+    });
+    expect(outside).toMatchObject({
+      enabled: false,
+      disabledReason: "postEvent",
+      nextEvaluationAt: null,
+    });
+
+    // Archiving is the other off-switch, and it is named separately.
+    await alice.mutation(api.events.setArchived, { eventSlug, archived: true });
+    expect(
+      await alice.query(api.reminders.automationStatus, {
+        eventSlug,
+        now: endsAt,
+      }),
+    ).toMatchObject({ enabled: false, disabledReason: "archived" });
+    expect(
+      await alice.query(api.reminders.reminderFacts, { eventSlug }),
+    ).toMatchObject({ quietAfter: null });
+  });
+
+  test("a manual run that sends nothing is an attempt, not a send", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    // No requirements, so nobody qualifies: the audit row records sent 0.
+    expect(
+      await alice.mutation(api.reminders.sendOutstandingNow, { eventSlug }),
+    ).toMatchObject({ sent: 0 });
+
+    const empty = await alice.query(api.reminders.reminderFacts, { eventSlug });
+    expect(empty.lastManualAt).toBeNull();
+    expect(empty.lastManualAttemptAt).not.toBeNull();
+
+    // A run that actually accepts a message is the send.
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    await manualRequirement(alice, eventSlug, "Upload your slides");
+    expect(
+      (await alice.mutation(api.reminders.sendOutstandingNow, { eventSlug }))
+        .sent,
+    ).toBeGreaterThan(0);
+
+    const sent = await alice.query(api.reminders.reminderFacts, { eventSlug });
+    expect(sent.lastManualAt).not.toBeNull();
+    expect(sent.lastManualAttemptAt).toBe(sent.lastManualAt);
+  });
+});
+
+describe("reminders.outstandingReminderPreview (W1)", () => {
+  test("it counts the same audience the manual send will reach", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    await confirm(alice, eventSlug, await participantFor(t, sessionId, "Carol"));
+    await manualRequirement(alice, eventSlug, "Upload your slides");
+
+    const preview = await alice.query(
+      api.reminders.outstandingReminderPreview,
+      { eventSlug },
+    );
+    expect(preview.overCap).toBe(false);
+    expect(preview.blocked).toBeNull();
+    expect(preview.recipients).toBeGreaterThan(0);
+    expect(preview.tasks).toBeGreaterThan(0);
+
+    const result = await alice.mutation(api.reminders.sendOutstandingNow, {
+      eventSlug,
+    });
+    // The preview promised exactly this many attempts and included tasks.
+    expect(result.sent + result.failed).toBe(preview.recipients);
+    expect(result.includedTasks).toBe(preview.tasks);
+    expect(result.skipped).toBe(preview.unreachableSpeakers);
+  });
+
+  test("an unreachable speaker is reported as excluded, not as a recipient", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { sessionId } = await acceptedWithManager(t, eventSlug);
+    const carol = await participantFor(t, sessionId, "Carol");
+    await confirm(alice, eventSlug, carol);
+    await manualRequirement(alice, eventSlug, "Upload your slides");
+    // Strip every address this participant could be reached at.
+    await t.run(async (ctx) => {
+      const participant = await ctx.db.get("sessionParticipants", carol);
+      if (participant === null) throw new Error("no participant");
+      await ctx.db.patch("eventContacts", participant.eventContactId, {
+        email: undefined,
+      });
+      await ctx.db.patch("sessionParticipants", carol, {
+        managerUserId: undefined,
+      });
+    });
+
+    const preview = await alice.query(
+      api.reminders.outstandingReminderPreview,
+      { eventSlug },
+    );
+    expect(preview.unreachableSpeakers).toBeGreaterThanOrEqual(1);
+  });
+
+  test("an archived event reports the send as blocked", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    await alice.mutation(api.events.setArchived, { eventSlug, archived: true });
+    expect(
+      await alice.query(api.reminders.outstandingReminderPreview, {
+        eventSlug,
+      }),
+    ).toMatchObject({ blocked: "archived", recipients: 0 });
+  });
+
+  test("reviewers cannot preview the audience", async () => {
+    const t = setupTest();
+    const { eventSlug } = await organizerEvent(t);
+    const mallory = await signIn(t, "mallory");
+    await grantEventRole(t, eventSlug, "mallory", "reviewer");
+    await expectRejectedWith(
+      mallory.query(api.reminders.outstandingReminderPreview, { eventSlug }),
       "forbidden",
     );
   });

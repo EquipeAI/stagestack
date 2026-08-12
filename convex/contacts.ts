@@ -282,6 +282,7 @@ export const outreachHistory = orgQuery({
         v.literal("failed"),
       ),
       sentAt: v.number(),
+      deliveryUpdatedAt: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) =>

@@ -4,7 +4,12 @@ import { api } from '@convex/_generated/api'
 import {
   AUDIENCE_META,
   AUDIENCE_ORDER,
+  NO_ADDRESS_BLOCKED,
+  ONE_OFF_CADENCE_COPY,
   ONE_OFF_VARS,
+  audienceExclusions,
+  missingAddressExclusion,
+  overCapRefusal,
   renderDraftSubject,
   sampleVars,
   variablesIn,
@@ -19,6 +24,7 @@ import {
   Callout,
   Card,
   Checkbox,
+  DescriptionList,
   Dialog,
   Field,
   Input,
@@ -65,13 +71,36 @@ export function SendPanel({
   const [confirming, setConfirming] = useState(false)
 
   const audienceRow = audiences?.find((row) => row.kind === audience)
+
+  // Whether StageStack holds an address for one speaker. `roster` is the only
+  // client-side source that carries the email, and a contact it has not loaded
+  // is UNKNOWN — never asserted as missing, which would be a confident wrong
+  // exclusion.
+  const rosterById = new Map(
+    (roster ?? []).map((contact) => [contact.eventContactId, contact]),
+  )
+  const addressState = (
+    id: Id<'eventContacts'>,
+  ): 'has' | 'missing' | 'unknown' => {
+    const row = rosterById.get(id)
+    if (roster === undefined || row === undefined) return 'unknown'
+    return (row.email ?? '').trim() === '' ? 'missing' : 'has'
+  }
+  // The backend skips these rather than failing (sendOneOff's `contacts`
+  // branch), so they are excluded from the count the confirmation states.
+  const selectionWithoutAddress = selectedIds.filter(
+    (id) => addressState(id) === 'missing',
+  ).length
+  const contactWithoutAddress =
+    contactId !== '' && addressState(contactId) === 'missing'
+
   const recipientCount =
     mode === 'contact'
-      ? contactId === ''
+      ? contactId === '' || contactWithoutAddress
         ? 0
         : 1
       : mode === 'selection'
-        ? selectedIds.length
+        ? selectedIds.length - selectionWithoutAddress
         : (audienceRow?.count ?? 0)
   const selectableContacts = (roster ?? []).map((contact) => ({
     eventContactId: contact.eventContactId,
@@ -93,16 +122,32 @@ export function SendPanel({
     [subject, message],
   )
 
+  const overCap =
+    mode === 'audience' && audienceRow !== undefined
+      ? overCapRefusal(audienceRow, MAX_AUDIENCE)
+      : null
+
   const blocked = (() => {
     if (mode === 'contact' && contactId === '') return 'Choose a recipient.'
+    if (mode === 'contact' && contactWithoutAddress) return NO_ADDRESS_BLOCKED
     if (mode === 'selection' && selectedIds.length === 0) {
       return 'Choose at least one speaker.'
     }
     if (mode === 'audience' && audiences === undefined) {
       return 'Counting the audience…'
     }
+    // `listAudiences.count` is already capped, so the old `count > MAX` guard
+    // could never fire and the send failed AFTER the confirmation. The cap is
+    // detectable only through `truncated`.
+    if (overCap !== null) return overCap
     if (recipientCount === 0) {
       return 'Nobody in this audience has a reachable email address.'
+    }
+    // Selection mode is capped on the number of IDs SENT, before addresses are
+    // resolved (`sendOneOff` throws `invalid_audience` on `uniqueIds.length`),
+    // so the guard counts the selection, not the reachable subset.
+    if (mode === 'selection' && selectedIds.length > MAX_AUDIENCE) {
+      return `Choose between 1 and ${MAX_AUDIENCE} speakers.`
     }
     if (recipientCount > MAX_AUDIENCE) {
       return `A single send reaches at most ${MAX_AUDIENCE} recipients.`
@@ -115,6 +160,23 @@ export function SendPanel({
   const contactName =
     contacts?.find((c) => c.eventContactId === contactId)?.name ??
     'this speaker'
+
+  // The audience statement the confirmation shows. The backend already exposes
+  // the arithmetic (count / skipped / totalKnown / truncated); this only puts
+  // it into sentences.
+  const qualifies =
+    mode === 'contact'
+      ? `${contactName} only — sent to the address StageStack holds for them.`
+      : mode === 'selection'
+        ? `${recipientCount} of the ${selectedIds.length} ${selectedIds.length === 1 ? 'speaker' : 'speakers'} you selected.`
+        : `${AUDIENCE_META[audience].label}: ${AUDIENCE_META[audience].description} ${recipientCount} ${recipientCount === 1 ? 'recipient' : 'recipients'}.`
+  const exclusions = (
+    mode === 'audience' && audienceRow !== undefined
+      ? [...audienceExclusions(audienceRow), overCap]
+      : mode === 'selection'
+        ? [missingAddressExclusion(selectionWithoutAddress)]
+        : [contactWithoutAddress ? NO_ADDRESS_BLOCKED : null]
+  ).filter((reason): reason is string => reason !== null)
 
   const submit = () => {
     if (mode === 'contact' && contactId === '') return
@@ -507,7 +569,14 @@ export function SendPanel({
               >
                 Cancel
               </Button>
-              <Button variant="primary" disabled={pending} onClick={submit}>
+              {/* Re-checked here, not only on the opener: the audience is
+                  reactive, so it can grow past the cap (or empty out) while
+                  the confirmation is open — the backend would refuse. */}
+              <Button
+                variant="primary"
+                disabled={pending || blocked !== null}
+                onClick={submit}
+              >
                 {pending ? 'Sending…' : 'Send message'}
               </Button>
             </>
@@ -521,6 +590,9 @@ export function SendPanel({
             }}
           >
             {error === null ? null : <Callout tone="blocked">{error}</Callout>}
+            {blocked === null || pending ? null : (
+              <Callout tone="blocked">{blocked}</Callout>
+            )}
             <div style={previewLine}>
               <span
                 style={{
@@ -534,6 +606,24 @@ export function SendPanel({
                 {renderDraftSubject(subject, vars)}
               </span>
             </div>
+
+            {/* Who qualifies, who does not, and what sending changes. Stated
+                before the send, not discovered in the result (W1). */}
+            <DescriptionList
+              stacked
+              items={[
+                { term: 'Who qualifies', value: qualifies },
+                {
+                  term: 'Who is excluded',
+                  value:
+                    exclusions.length === 0
+                      ? 'Nobody — every qualifying recipient is included.'
+                      : exclusions.join(' '),
+                },
+                { term: 'Effect on reminders', value: ONE_OFF_CADENCE_COPY },
+              ]}
+            />
+
             <p
               style={{
                 font: 'var(--type-caption)',

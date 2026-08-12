@@ -60,6 +60,7 @@ import type * as sessions from "../sessions.js";
 import type * as shared_formDef from "../shared/formDef.js";
 import type * as shared_importPlan from "../shared/importPlan.js";
 import type * as shared_jobTypes from "../shared/jobTypes.js";
+import type * as shared_reminderSchedule from "../shared/reminderSchedule.js";
 import type * as shared_scorecard from "../shared/scorecard.js";
 import type * as speakers from "../speakers.js";
 import type * as tasks from "../tasks.js";
@@ -127,6 +128,7 @@ declare const fullApi: ApiFromModules<{
   "shared/formDef": typeof shared_formDef;
   "shared/importPlan": typeof shared_importPlan;
   "shared/jobTypes": typeof shared_jobTypes;
+  "shared/reminderSchedule": typeof shared_reminderSchedule;
   "shared/scorecard": typeof shared_scorecard;
   speakers: typeof speakers;
   tasks: typeof tasks;

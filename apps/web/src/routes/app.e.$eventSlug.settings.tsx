@@ -19,6 +19,13 @@ import {
   Tag,
   Textarea,
 } from '~/ds'
+import { ReminderFactsPanel } from '~/components/reminders/ReminderFactsPanel'
+import {
+  REMINDER_CADENCE_HINT,
+  reminderCadenceBadge,
+  reminderCadenceCopy,
+  reminderCadenceSavedCopy,
+} from '~/components/reminders/copy'
 import { fromInputValue, timezoneOptions, toInputValue } from '~/lib/datetime'
 import { siteOrigin } from '~/lib/origin'
 import { usePending } from '~/lib/usePending'
@@ -65,6 +72,10 @@ function Settings() {
       <DatesSection key={`dates-${event._id}`} eventSlug={eventSlug} event={event} />
       <CfpSection key={`cfp-${event._id}`} eventSlug={eventSlug} event={event} />
       <CommsSection key={`comms-${event._id}`} eventSlug={eventSlug} event={event} />
+      {/* The same facts panel the tasks page shows, from the same query — the
+          page where the cadence is CHANGED is the page that most needs to state
+          what the automation is currently doing. */}
+      <ReminderFactsPanel eventSlug={eventSlug} timezone={event.timezone} />
       <LibrarySections eventSlug={eventSlug} />
     </div>
   )
@@ -579,25 +590,27 @@ function CommsSection({
           replyTo: address === '' ? null : address,
         },
       })
-      pushToast(
-        'Communications saved',
-        days === null
-          ? 'Reminders are off for this event.'
-          : `Reminders go out every ${days} ${days === 1 ? 'day' : 'days'}.`,
-      )
+      pushToast('Communications saved', reminderCadenceSavedCopy(days))
       form.saved()
     })
   }
+
+  // The badge reflects what is currently typed, so the cadence copy under it
+  // has to be produced from the same value — one producer, one model, whether
+  // the field is saved or still being edited.
+  const cadenceDraft = cadence.trim()
+  const cadenceDraftDays =
+    cadenceDraft === '' || !Number.isFinite(Number(cadenceDraft))
+      ? null
+      : Number(cadenceDraft)
 
   return (
     <Card
       title="Communications"
       subtitle="How StageStack chases outstanding work, and where replies land."
       actions={
-        <Badge tone={cadence.trim() === '' ? 'neutral' : 'success'} dot>
-          {cadence.trim() === ''
-            ? 'Reminders off'
-            : `Every ${cadence.trim()} days`}
+        <Badge tone={cadenceDraftDays === null ? 'neutral' : 'success'} dot>
+          {reminderCadenceBadge(cadenceDraftDays)}
         </Badge>
       }
       footer={<SectionFooter pending={pending} error={error} onSave={save} />}
@@ -609,7 +622,7 @@ function CommsSection({
             label="Reminder cadence"
             htmlFor="s-cadence"
             optional
-            hint="Days between reminders. Leave empty to send none."
+            hint={REMINDER_CADENCE_HINT}
           >
             <Input
               id="s-cadence"
@@ -635,10 +648,8 @@ function CommsSection({
           </Field>
         </div>
         <p style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
-          Consolidated task reminders are sent on this cadence — one message
-          listing everything outstanding, never one email per item. Unconfirmed
-          speakers get participation reminders instead of task chasing, because
-          the only thing they owe is an answer.
+          {reminderCadenceCopy(cadenceDraftDays)} Reminders are consolidated —
+          one message listing everything outstanding, never one email per item.
         </p>
       </div>
     </Card>
