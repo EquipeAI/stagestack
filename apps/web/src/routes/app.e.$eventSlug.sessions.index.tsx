@@ -32,8 +32,14 @@ import {
 // accepted, or what a directly invited speaker is invited to — scheduling
 // arrives with the agenda in a later milestone, so this is the roster, not a
 // calendar.
+//
+// W9: a row opens the session's workspace (/sessions/$sessionId), which is
+// where the whole record lives — source proposal, speakers, content approval,
+// tasks, schedule, publication, history. This list keeps the batch columns and
+// the in-cell controls an organizer uses across many rows at once; it is not a
+// second detail surface.
 
-export const Route = createFileRoute('/app/e/$eventSlug/sessions')({
+export const Route = createFileRoute('/app/e/$eventSlug/sessions/')({
   component: Sessions,
   // Content approval is the gate that holds publication back quietly, so the
   // control center's "4 sessions have Draft content" needs to land on four
@@ -172,7 +178,16 @@ function Sessions() {
       ) : (
         <Card padded={false}>
           <DataTable
+            aria-label="Sessions"
             rowKey="id"
+            // Focusable rows that activate on Enter/Space (W6) — clicks that
+            // land on a cell's own control are left to that control.
+            onRowClick={(row: Row) => {
+              void navigate({
+                to: '/app/e/$eventSlug/sessions/$sessionId',
+                params: { eventSlug, sessionId: row.session._id },
+              })
+            }}
             columns={[
               {
                 key: 'title',
@@ -207,9 +222,13 @@ function Sessions() {
                 width: '9rem',
                 cell: (row: Row) =>
                   row.session.source === 'cfp' ? (
+                    // The proposal a session came from is part of the session's
+                    // record, so the link lands on the workspace tab that shows
+                    // it rather than on the whole proposals table.
                     <Link
-                      to="/app/e/$eventSlug/proposals"
-                      params={{ eventSlug }}
+                      to="/app/e/$eventSlug/sessions/$sessionId"
+                      params={{ eventSlug, sessionId: row.session._id }}
+                      search={{ tab: 'proposal' }}
                       style={{ textDecoration: 'none' }}
                     >
                       <Badge tone="info">From proposal</Badge>

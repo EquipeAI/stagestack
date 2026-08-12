@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, test } from 'vitest'
 import { CLEARED_NOTE } from '@convex/shared/sessionContent'
-import { RestoreDiff, SnapshotRow } from './ContentHistoryDialog'
+import { RestoreDiff, SnapshotRow } from './ContentHistoryPanel'
 
 afterEach(cleanup)
 

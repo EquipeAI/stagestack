@@ -682,3 +682,74 @@
     align-items: flex-start;
   }
 }
+
+/* ── Record workspaces (W9) ───────────────────────────────────────────────
+   A workspace has NO chrome of its own above the content: its title, crumb
+   and description are contributed to the event layout's single PageHeader
+   through the header slot (components/shell/EventHeader.tsx), so the page
+   still has exactly one title area and one sticky region at phone width.
+
+   What is left here is the tab strip and the record's primary action. */
+.ss-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.ss-workspace__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+/* The tab strip is the DS's own overflow-scroller; it must be the part that
+   gives up width, never the action beside it. */
+.ss-workspace__bar > .ss-tabs {
+  flex: 1;
+  min-width: 0;
+}
+.ss-workspace__actions {
+  flex: none;
+  display: flex;
+  gap: var(--space-2);
+}
+.ss-workspace__body {
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  /* Thumb reach. Above 640px the primary action sits beside the tabs, which
+     is where a mouse already is. Below it, the top of the screen is the one
+     place a thumb cannot get to one-handed, so the action detaches and
+     anchors to the bottom of the viewport.
+
+     Sticky rather than fixed, and inside the flow: a fixed bar would sit on
+     top of the last row of the panel, and a workspace's last row is routinely
+     the row the button acts on. */
+  .ss-workspace__bar {
+    display: contents;
+  }
+  /* The strip is a flex item of .ss-workspace now, and that is a COLUMN — a
+     `flex: 1` inherited from the desktop rule would stretch it vertically
+     instead of horizontally. */
+  .ss-workspace__bar > .ss-tabs {
+    flex: none;
+  }
+  .ss-workspace__actions {
+    order: 99;
+    position: sticky;
+    bottom: 0;
+    z-index: var(--z-sticky);
+    padding: var(--space-3) var(--page-gutter);
+    margin: 0 calc(var(--page-gutter) * -1) calc(var(--safe-bottom) * -1);
+    padding-bottom: calc(var(--space-3) + var(--safe-bottom));
+    background: var(--surface-card);
+    border-top: var(--space-px) solid var(--border-default);
+  }
+  /* One full-width target rather than a right-aligned pill: at 375px the
+     action is the point of the bar. */
+  .ss-workspace__actions > * {
+    flex: 1;
+    justify-content: center;
+  }
+}

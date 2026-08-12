@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import {
@@ -34,6 +35,15 @@ import { formatDateTime, fromInputValue, toInputValue } from '~/lib/datetime'
 // One proposal, everything about it. Both queries mount with the dialog — the
 // table itself never subscribes to per-proposal detail or review content, so
 // opening a row is the only thing that costs anything.
+//
+// W9 KEPT this a dialog on purpose. A proposal is a different record class from
+// a speaker or a session: it is a submission, and everything an organizer does
+// with it — read the answers, read the reviews, stage and release a decision —
+// belongs to the CFP flow it is being reviewed in, not to a per-record page
+// with seven tabs. What it did owe the organizer is the hop onwards: once a
+// proposal is accepted it becomes a session, and that session has a workspace.
+// The dialog links to it, so there is still exactly one full detail surface for
+// the SESSION.
 
 const A_WEEK = 7 * 24 * 60 * 60 * 1000
 
@@ -51,6 +61,12 @@ export function ProposalDetailDialog({
   onClose: () => void
 }) {
   const detail = useQuery(api.cfp.getProposalDetail, { eventSlug, proposalId })
+  // The materialized session, if this proposal became one. Read off the list
+  // the table already subscribes to rather than a query of its own.
+  const sessions = useQuery(api.sessions.list, { eventSlug })
+  const session = (sessions ?? []).find(
+    (row) => row.session.proposalId === proposalId,
+  )
 
   if (detail === undefined) {
     return (
@@ -115,6 +131,20 @@ export function ProposalDetailDialog({
             { term: 'Form version', value: `v${proposal.formVersion}` },
           ]}
         />
+
+        {session === undefined ? null : (
+          <Callout tone="info" title="This proposal is now a session">
+            Its content, speakers, tasks, schedule, publication state and
+            history live in the session's workspace.{' '}
+            <Link
+              to="/app/e/$eventSlug/sessions/$sessionId"
+              params={{ eventSlug, sessionId: session.session._id }}
+            >
+              Open the session workspace
+            </Link>
+            .
+          </Callout>
+        )}
 
         <DecisionPanel
           eventSlug={eventSlug}

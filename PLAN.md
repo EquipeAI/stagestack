@@ -581,23 +581,23 @@ link to and satisfy the review's URL-persistence asks for free. Desktop keeps
 list context through breadcrumbs and a "next/previous in list" control rather
 than by keeping the table on screen.
 
-- [ ] **Speaker workspace**: identity + contact details · participations ·
+- [x] **Speaker workspace**: identity + contact details · participations ·
       sessions · readiness · tasks · files · comments · communication history.
       Composed from existing pieces (`components/speakers/SpeakerProfileDialog.tsx`,
       `components/tasks/`, `components/comms/`), which then shed their dialog
       shells.
-- [ ] **Session workspace**: source proposal · speakers · content approval ·
+- [x] **Session workspace**: source proposal · speakers · content approval ·
       tasks and files · schedule · publication state (W4 sentences, verbatim) ·
       history (W3 snapshots).
-- [ ] **Rows open workspaces.** Speakers, sessions, and proposals tables
+- [x] **Rows open workspaces.** Speakers, sessions, and proposals tables
       navigate on row click; existing dialogs (`ProposalDetailDialog.tsx`,
       `SpeakerProfileDialog.tsx`, `SessionDetailDialog.tsx`) are either promoted
       to the workspace or reduced to a quick-peek that links to it. Do not leave
       two competing detail surfaces for the same record.
-- [ ] **Top-level modules stay** as batch/cross-event views — this workstream
+- [x] **Top-level modules stay** as batch/cross-event views — this workstream
       removes no capability, it adds the per-record path the review found
       missing.
-- [ ] **Tab state in the URL** so a blocker can link to
+- [x] **Tab state in the URL** so a blocker can link to
       `…/sessions/$id?tab=content`.
 - *Mobile*: full-page workspace, sticky title + back, tabs in the existing
   overflow-scrolling `ss-tabs` strip (`navigation.css:80`), primary action

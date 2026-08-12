@@ -3,7 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type * as React from 'react'
-import type { RosterRow } from '~/components/speakers/SpeakerProfileDialog'
+import type { RosterRow } from '~/components/speakers/SpeakerProfileForm'
 import {
   Avatar,
   Badge,
@@ -17,7 +17,6 @@ import {
   Toolbar,
 } from '~/ds'
 import { PARTICIPANT_STATE_LABEL } from '~/lib/labels'
-import { SpeakerProfileDialog } from '~/components/speakers/SpeakerProfileDialog'
 import { ImportCsvDialog } from '~/components/speakers/ImportCsvDialog'
 import {
   matchesState,
@@ -25,10 +24,15 @@ import {
 } from '~/components/speakers/search'
 
 // The speaker roster (SPK-01): every publishable snapshot on the event, with
-// session links and participation state, searchable, editable in place, and
-// fed by a deterministic CSV import. Organizer-only, like Sessions.
+// session links and participation state, searchable, and fed by a deterministic
+// CSV import. Organizer-only, like Sessions.
+//
+// W9: a row is a LINK now, not a dialog trigger. Everything about one speaker
+// — profile, participations, readiness, tasks, files, comments, comms — lives
+// at /speakers/$eventContactId, so this stays what it is good at: the batch
+// view. There is no second detail surface here to disagree with it.
 
-export const Route = createFileRoute('/app/e/$eventSlug/speakers')({
+export const Route = createFileRoute('/app/e/$eventSlug/speakers/')({
   component: Speakers,
   // Search text and the participation filter live in the URL, so the control
   // center's "3 speakers have not answered" lands on exactly those three.
@@ -59,11 +63,6 @@ function Speakers() {
       ? { eventSlug, search: search.trim() === '' ? undefined : search }
       : 'skip',
   )
-  const library = useQuery(
-    api.library.list,
-    isOrganizer ? { eventSlug } : 'skip',
-  )
-  const [editing, setEditing] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const archived = event?.event.archivedAt !== undefined
 
@@ -84,17 +83,12 @@ function Speakers() {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading speakers…</p>
   }
 
-  const speakerFields = (library?.customFields ?? [])
-    .filter((field) => field.appliesTo === 'speaker')
-    .sort((a, b) => a.order - b.order)
-
   const rows: Array<Row> = roster
     .filter((row) => matchesState(row.sessions, stateFilter))
     .map((row) => ({
       ...row,
       id: row.eventContactId,
     }))
-  const editingRow = rows.find((row) => row.eventContactId === editing) ?? null
   const searching = search.trim() !== ''
 
   const importButton = (
@@ -182,8 +176,14 @@ function Speakers() {
           <DataTable
             aria-label="Speaker roster"
             rowKey="id"
+            // DataTable rows are already focusable and activate on
+            // Enter/Space (W6), so wiring activation to a navigation makes the
+            // roster keyboard-openable without a per-row button.
             onRowClick={(row: Row) => {
-              setEditing(row.eventContactId)
+              void navigate({
+                to: '/app/e/$eventSlug/speakers/$eventContactId',
+                params: { eventSlug, eventContactId: row.eventContactId },
+              })
             }}
             columns={[
               {
@@ -284,18 +284,6 @@ function Speakers() {
             rows={rows}
           />
         </Card>
-      )}
-
-      {editingRow === null ? null : (
-        <SpeakerProfileDialog
-          eventSlug={eventSlug}
-          row={editingRow}
-          customFields={speakerFields}
-          archived={archived}
-          onClose={() => {
-            setEditing(null)
-          }}
-        />
       )}
 
       {importing ? (

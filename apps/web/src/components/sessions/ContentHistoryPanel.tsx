@@ -13,7 +13,7 @@ import type {
 } from '@convex/shared/sessionContent'
 import type { FunctionReturnType } from 'convex/server'
 import type { Id } from '@convex/_generated/dataModel'
-import { ActionResult, Badge, Button, Callout, Dialog } from '~/ds'
+import { ActionResult, Badge, Button, Callout } from '~/ds'
 import { usePending } from '~/lib/usePending'
 
 // W3 — "Snapshots, not inverse edits".
@@ -26,6 +26,13 @@ import { usePending } from '~/lib/usePending'
 // Every sentence about a snapshot (its label, the restore grouping line, the
 // result message) is composed in `convex/model/sessions.ts` or in the shared
 // pure module `@convex/shared/sessionContent` and rendered verbatim here.
+//
+// W9 PROMOTED this out of its dialog. It was opened from a History button in
+// the sessions table; the session's workspace has a History tab, and a dialog
+// over a table showing the same snapshots would have been the second detail
+// surface the workstream exists to remove. The preview/restore flow is
+// unchanged — it just happens in a panel now, so on a phone it is a page
+// rather than a scroll-locked sheet over a table.
 
 type Snapshot = FunctionReturnType<
   typeof api.sessions.listSnapshots
@@ -236,25 +243,23 @@ export function SnapshotRow({
   )
 }
 
-// ── The dialog ───────────────────────────────────────────────────────────
+// ── The panel ────────────────────────────────────────────────────────────
 
 type RestoreResult = {
   message: string
   undoRevisionId: Id<'sessionRevisions'> | null
 }
 
-export function ContentHistoryDialog({
+export function ContentHistoryPanel({
   eventSlug,
   sessionId,
   sessionTitle,
   archived,
-  onClose,
 }: {
   eventSlug: string
   sessionId: Id<'sessions'>
   sessionTitle: string
   archived: boolean
-  onClose: () => void
 }) {
   const snapshots = useQuery(api.sessions.listSnapshots, {
     eventSlug,
@@ -281,120 +286,112 @@ export function ContentHistoryDialog({
   }
 
   return (
-    <Dialog
-      open
-      width={640}
-      title={previewing === null ? 'Content history' : 'Restore this snapshot'}
-      description={
-        previewing === null
-          ? `Every state "${sessionTitle}"'s content has been in, newest first. Only title, description and format are versioned — schedule, track and tags are not.`
-          : 'Nothing is written yet. This is exactly what restoring would change.'
-      }
-      onClose={pending ? undefined : onClose}
-      footer={
-        previewing === null ? (
-          <Button variant="primary" disabled={pending} onClick={onClose}>
-            Close
-          </Button>
-        ) : (
-          <>
+    <div style={{ ...column, gap: 'var(--space-4)' }}>
+      <div style={{ ...column, gap: 'var(--space-1)' }}>
+        <h2 style={{ margin: 0, font: 'var(--type-h3)' }}>
+          {previewing === null ? 'Content history' : 'Restore this snapshot'}
+        </h2>
+        <p style={{ margin: 0, color: 'var(--text-secondary)' }}>
+          {previewing === null
+            ? `Every state "${sessionTitle}"'s content has been in, newest first. Only title, description and format are versioned — schedule, track and tags are not.`
+            : 'Nothing is written yet. This is exactly what restoring would change.'}
+        </p>
+      </div>
+
+      {error === null ? null : <Callout tone="blocked">{error}</Callout>}
+
+      {result === null ? null : (
+        // The shared persistent-result pattern (W5) — same component the
+        // exports, bulk actions, publishes and imports report through.
+        <ActionResult
+          status="success"
+          title="Snapshot restored"
+          details={[result.message]}
+          onDismiss={() => setResult(null)}
+          actions={
+            result.undoRevisionId === null ? null : (
+              <Button
+                size="sm"
+                variant="ghost"
+                iconLeft="refresh-cw"
+                disabled={pending || archived}
+                onClick={() => {
+                  if (result.undoRevisionId !== null)
+                    restore(result.undoRevisionId)
+                }}
+              >
+                Undo the restore
+              </Button>
+            )
+          }
+        />
+      )}
+
+      {previewing !== null && current !== null ? (
+        <>
+          <p style={{ margin: 0, color: 'var(--text-secondary)' }}>
+            {previewing.label}
+          </p>
+          <RestoreDiff current={current} snapshot={previewing.content} />
+          {/* The confirm pair stays adjacent to the preview it describes —
+              there is no dialog footer to put it in any more. */}
+          <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
             <Button
               disabled={pending}
               onClick={() => {
                 setPreviewing(null)
               }}
             >
-              Back
+              Back to history
             </Button>
             <Button
               variant="primary"
               disabled={pending || previewing.revisionId === null}
               onClick={() => {
-                if (previewing.revisionId !== null)
-                  restore(previewing.revisionId)
+                if (previewing.revisionId !== null) restore(previewing.revisionId)
               }}
             >
               {pending ? 'Restoring…' : 'Restore this snapshot'}
             </Button>
-          </>
-        )
-      }
-    >
-      <div style={{ ...column, gap: 'var(--space-4)' }}>
-        {error === null ? null : <Callout tone="blocked">{error}</Callout>}
+          </div>
+        </>
+      ) : snapshots === undefined ? (
+        <p style={{ color: 'var(--text-tertiary)' }}>Loading history…</p>
+      ) : (
+        <ul
+          style={{
+            listStyle: 'none',
+            margin: 'var(--space-0)',
+            padding: 'var(--space-0)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-4)',
+          }}
+        >
+          {snapshots.entries.map((snapshot) => (
+            <SnapshotRow
+              key={snapshot.key}
+              snapshot={snapshot}
+              archived={archived}
+              disabled={pending}
+              onRestore={setPreviewing}
+            />
+          ))}
+        </ul>
+      )}
 
-        {result === null ? null : (
-          // The shared persistent-result pattern (W5) — same component the
-          // exports, bulk actions, publishes and imports report through.
-          <ActionResult
-            status="success"
-            title="Snapshot restored"
-            details={[result.message]}
-            onDismiss={() => setResult(null)}
-            actions={
-              result.undoRevisionId === null ? null : (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  iconLeft="refresh-cw"
-                  disabled={pending || archived}
-                  onClick={() => {
-                    if (result.undoRevisionId !== null)
-                      restore(result.undoRevisionId)
-                  }}
-                >
-                  Undo the restore
-                </Button>
-              )
-            }
-          />
-        )}
+      {snapshots !== undefined && snapshots.truncated ? (
+        <p style={{ color: 'var(--text-tertiary)' }}>
+          Long history — only the most recent {snapshots.entries.length - 1}{' '}
+          edits are shown here. Older snapshots are retained but not listed.
+        </p>
+      ) : null}
 
-        {previewing !== null && current !== null ? (
-          <>
-            <p style={{ margin: 0, color: 'var(--text-secondary)' }}>
-              {previewing.label}
-            </p>
-            <RestoreDiff current={current} snapshot={previewing.content} />
-          </>
-        ) : snapshots === undefined ? (
-          <p style={{ color: 'var(--text-tertiary)' }}>Loading history…</p>
-        ) : (
-          <ul
-            style={{
-              listStyle: 'none',
-              margin: 'var(--space-0)',
-              padding: 'var(--space-0)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 'var(--space-4)',
-            }}
-          >
-            {snapshots.entries.map((snapshot) => (
-              <SnapshotRow
-                key={snapshot.key}
-                snapshot={snapshot}
-                archived={archived}
-                disabled={pending}
-                onRestore={setPreviewing}
-              />
-            ))}
-          </ul>
-        )}
-
-        {snapshots !== undefined && snapshots.truncated ? (
-          <p style={{ color: 'var(--text-tertiary)' }}>
-            Long history — only the most recent {snapshots.entries.length - 1}{' '}
-            edits are shown here. Older snapshots are retained but not listed.
-          </p>
-        ) : null}
-
-        {snapshots !== undefined && snapshots.entries.length === 1 ? (
-          <p style={{ color: 'var(--text-tertiary)' }}>
-            No edits yet — Current is still the content as it was first created.
-          </p>
-        ) : null}
-      </div>
-    </Dialog>
+      {snapshots !== undefined && snapshots.entries.length === 1 ? (
+        <p style={{ color: 'var(--text-tertiary)' }}>
+          No edits yet — Current is still the content as it was first created.
+        </p>
+      ) : null}
+    </div>
   )
 }

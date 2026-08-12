@@ -14,18 +14,21 @@ import {
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
 import { FormatField } from '~/components/sessions/FormatField'
-import { ContentHistoryDialog } from '~/components/sessions/ContentHistoryDialog'
 
 // Session content management (W5: CNT-09/11/12): the organizer's editorial
 // controls over what the public program will print. Editing records a
-// revision, history restores one, and the Draft/Approved pill decides whether
-// the public program may show the session's content at all.
+// revision, and the Draft/Approved pill decides whether the public program may
+// show the session's content at all.
+//
+// W9 moved History out of here. It opened a dialog over the table showing one
+// session's whole revision list — a detail surface competing with the session
+// workspace, which now owns it as a tab. Approve and Edit stay: those are the
+// controls an organizer uses down a column of rows, which is what this table
+// is for.
 
 type SessionDoc = FunctionReturnType<
   typeof api.sessions.list
 >[number]['session']
-
-type DialogKind = 'edit' | 'history'
 
 export function SessionContentCell({
   eventSlug,
@@ -38,7 +41,7 @@ export function SessionContentCell({
 }) {
   const setContentStatus = useMutation(api.sessions.setContentStatus)
   const { pending, run } = usePending()
-  const [open, setOpen] = useState<DialogKind | null>(null)
+  const [editing, setEditing] = useState(false)
 
   // Sessions created before content approval existed carry no status; they
   // were never held back, so absence reads as Approved.
@@ -85,40 +88,18 @@ export function SessionContentCell({
         iconLeft="pencil"
         disabled={archived}
         onClick={() => {
-          setOpen('edit')
+          setEditing(true)
         }}
       >
         Edit
       </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        iconLeft="clock"
-        onClick={() => {
-          setOpen('history')
-        }}
-      >
-        History
-      </Button>
 
-      {open === 'edit' ? (
+      {editing ? (
         <EditContentDialog
           eventSlug={eventSlug}
           session={session}
           onClose={() => {
-            setOpen(null)
-          }}
-        />
-      ) : null}
-
-      {open === 'history' ? (
-        <ContentHistoryDialog
-          eventSlug={eventSlug}
-          sessionId={session._id}
-          sessionTitle={session.title}
-          archived={archived}
-          onClose={() => {
-            setOpen(null)
+            setEditing(false)
           }}
         />
       ) : null}

@@ -52,6 +52,7 @@ import type * as model_team from "../model/team.js";
 import type * as model_templates from "../model/templates.js";
 import type * as model_userDisplay from "../model/userDisplay.js";
 import type * as model_validation from "../model/validation.js";
+import type * as model_workspaces from "../model/workspaces.js";
 import type * as orgs from "../orgs.js";
 import type * as portal from "../portal.js";
 import type * as publish from "../publish.js";
@@ -73,6 +74,7 @@ import type * as team from "../team.js";
 import type * as templates from "../templates.js";
 import type * as users from "../users.js";
 import type * as worker from "../worker.js";
+import type * as workspaces from "../workspaces.js";
 
 import type {
   ApiFromModules,
@@ -125,6 +127,7 @@ declare const fullApi: ApiFromModules<{
   "model/templates": typeof model_templates;
   "model/userDisplay": typeof model_userDisplay;
   "model/validation": typeof model_validation;
+  "model/workspaces": typeof model_workspaces;
   orgs: typeof orgs;
   portal: typeof portal;
   publish: typeof publish;
@@ -146,6 +149,7 @@ declare const fullApi: ApiFromModules<{
   templates: typeof templates;
   users: typeof users;
   worker: typeof worker;
+  workspaces: typeof workspaces;
 }>;
 
 /**

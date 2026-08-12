@@ -37,7 +37,18 @@ export function DataTable({ columns = [], rows = [], selectedIds = [], rowKey = 
               key={id}
               data-selected={selectedIds.indexOf(id) > -1}
               tabIndex={onRowClick ? 0 : undefined}
-              onClick={onRowClick ? function () { onRowClick(r); } : undefined}
+              onClick={onRowClick ? function (e) {
+                // A row that opens a record still holds its own controls
+                // (approve, manage, a link out). Those are the cell's job, not
+                // the row's, and a click that reached one of them has already
+                // been answered — navigating as well would take the organizer
+                // somewhere they did not ask to go. Keyboard activation is
+                // unaffected: it already requires focus on the row itself.
+                if (e.target !== e.currentTarget && e.target.closest(
+                  "a,button,input,select,textarea,label,[role='button'],[role='link']"
+                )) return;
+                onRowClick(r);
+              } : undefined}
               onKeyDown={onRowClick ? function (e) {
                 if (e.target !== e.currentTarget) return;
                 if (e.key !== "Enter" && e.key !== " ") return;

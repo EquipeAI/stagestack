@@ -11,11 +11,9 @@ import {
   Button,
   Callout,
   Checkbox,
-  Dialog,
   Field,
   Input,
-  Select,
-  Textarea,
+  Select, Textarea 
 } from '~/ds'
 import { FileButton } from '~/components/FileButton'
 import { usePending } from '~/lib/usePending'
@@ -27,6 +25,13 @@ import { isSupportedHeadshot, uploadHeadshot } from '~/lib/headshotUpload'
 // the profile fields the portal lets a speaker edit themselves, plus the
 // event's speaker-scoped custom fields (logistics values the speaker never
 // sees). One Save writes both surfaces.
+//
+// W9 PROMOTED this out of its dialog shell. It was `SpeakerProfileDialog`,
+// opened from a roster row; the roster row now navigates to the speaker's
+// workspace, and this is its Identity tab. The split into a state hook and a
+// presentational body exists so the workspace can put the fields in the panel
+// and the Save button in the thumb-reach action bar — a self-contained form
+// with its own footer button could not do that.
 
 export type RosterRow = FunctionReturnType<typeof api.speakers.roster>[number]
 
@@ -44,7 +49,27 @@ type Draft = {
   github: string
 }
 
-function draftFrom(row: RosterRow): Draft {
+/** The profile fields this form edits, for any record that carries them. */
+export type ProfileSource = {
+  eventContactId: Id<'eventContacts'>
+  firstName: string
+  lastName: string
+  email?: string
+  jobTitle?: string
+  company?: string
+  tagline?: string
+  bio?: string
+  links?: {
+    website?: string
+    twitter?: string
+    linkedin?: string
+    github?: string
+  }
+  headshotUrl: string | null
+  customValues: Record<string, string | Array<string>>
+}
+
+function draftFrom(row: ProfileSource): Draft {
   return {
     firstName: row.firstName,
     lastName: row.lastName,
@@ -62,19 +87,20 @@ function draftFrom(row: RosterRow): Draft {
 
 type CustomValues = Record<string, string | Array<string>>
 
-export function SpeakerProfileDialog({
+export type SpeakerProfileFormState = ReturnType<typeof useSpeakerProfileForm>
+
+export function useSpeakerProfileForm({
   eventSlug,
   row,
   customFields,
   archived,
-  onClose,
+  onSaved,
 }: {
   eventSlug: string
-  row: RosterRow
-  /** The event's speaker-scoped custom field definitions, already filtered. */
+  row: ProfileSource
   customFields: Array<Doc<'customFields'>>
   archived: boolean
-  onClose: () => void
+  onSaved?: () => void
 }) {
   const { getToken } = useAuth()
   const updateProfile = useMutation(api.speakers.updateProfile)
@@ -172,7 +198,7 @@ export function SpeakerProfileDialog({
           company: draft.company,
           tagline: draft.tagline,
           bio: draft.bio,
-          // Prefilled from the roster, so what's on screen IS the truth:
+          // Prefilled from the record, so what's on screen IS the truth:
           // clearing a field clears the stored link.
           links: {
             website: linkValues.website === '' ? undefined : linkValues.website,
@@ -202,270 +228,286 @@ export function SpeakerProfileDialog({
           "'s profile was updated.",
         'check',
       )
-      onClose()
+      onSaved?.()
     })
   }
 
+  return {
+    eventSlug,
+    row,
+    customFields,
+    archived,
+    draft,
+    patch,
+    values,
+    setValues,
+    localPhoto,
+    uploading,
+    pending,
+    error,
+    upload,
+    save,
+    /** Everything the form disables on: archive, save in flight, upload in flight. */
+    disabled: archived || pending || uploading,
+  }
+}
+
+/** The Save control, so the workspace's action bar and the form agree. */
+export function SpeakerSaveButton({ form }: { form: SpeakerProfileFormState }) {
+  return (
+    <Button variant="primary" onClick={form.save} disabled={form.disabled}>
+      {form.pending ? 'Saving…' : 'Save speaker'}
+    </Button>
+  )
+}
+
+export function SpeakerProfileFields({
+  form,
+}: {
+  form: SpeakerProfileFormState
+}) {
+  const { draft, patch, values, setValues, customFields, disabled } = form
+  const row = form.row
   const name = `${row.firstName} ${row.lastName}`.trim()
-  const photo = localPhoto ?? row.headshotUrl ?? undefined
-  const disabled = archived || pending || uploading
+  const photo = form.localPhoto ?? row.headshotUrl ?? undefined
   const idBase = `speaker-${row.eventContactId}`
 
   return (
-    <Dialog
-      open
-      width={640}
-      title={name === '' ? 'Speaker profile' : name}
-      description="Edits land on this event's snapshot immediately — and on the published program once it rebuilds."
-      onClose={pending ? undefined : onClose}
-      footer={
-        <>
-          <Button onClick={onClose} disabled={pending}>
-            Cancel
-          </Button>
-          <Button variant="primary" onClick={save} disabled={disabled}>
-            {pending ? 'Saving…' : 'Save speaker'}
-          </Button>
-        </>
-      }
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-4)',
+      }}
     >
+      {form.error !== null ? (
+        <Callout tone="blocked">{form.error}</Callout>
+      ) : null}
+      {form.archived ? (
+        <Callout tone="attention" title="This event is archived">
+          Archived events are read-only — unarchive from Event details to edit.
+        </Callout>
+      ) : null}
+
+      <Field
+        label="Headshot"
+        hint="Square images crop best. Where a headshot is missing, initials are used."
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-4)',
+            flexWrap: 'wrap',
+          }}
+        >
+          <Avatar name={name} src={photo} size={64} />
+          {form.uploading || disabled ? (
+            <Button size="sm" iconLeft="upload" disabled>
+              {form.uploading ? 'Uploading…' : 'Upload a photo'}
+            </Button>
+          ) : (
+            <FileButton
+              size="sm"
+              accept="image/jpeg,image/png,image/webp"
+              onFile={(file) => {
+                void form.upload(file)
+              }}
+            >
+              {photo === undefined ? 'Upload a photo' : 'Replace photo'}
+            </FileButton>
+          )}
+        </div>
+        {form.localPhoto !== null ? (
+          <p
+            style={{
+              margin: 'var(--space-2) 0 0',
+              font: 'var(--type-caption)',
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            Photo saved. Other edits still need Save speaker.
+          </p>
+        ) : null}
+      </Field>
+
+      <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 12rem' }}>
+          <Field label="First name" htmlFor={`${idBase}-first`} required>
+            <Input
+              id={`${idBase}-first`}
+              value={draft.firstName}
+              disabled={disabled}
+              onChange={(e) => {
+                patch({ firstName: e.target.value })
+              }}
+            />
+          </Field>
+        </div>
+        <div style={{ flex: '1 1 12rem' }}>
+          <Field label="Last name" htmlFor={`${idBase}-last`}>
+            <Input
+              id={`${idBase}-last`}
+              value={draft.lastName}
+              disabled={disabled}
+              onChange={(e) => {
+                patch({ lastName: e.target.value })
+              }}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <Field
+        label="Email"
+        htmlFor={`${idBase}-email`}
+        hint="Clearing this removes the address from the snapshot."
+      >
+        <Input
+          id={`${idBase}-email`}
+          type="email"
+          value={draft.email}
+          disabled={disabled}
+          onChange={(e) => {
+            patch({ email: e.target.value })
+          }}
+        />
+      </Field>
+
+      <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 12rem' }}>
+          <Field label="Job title" htmlFor={`${idBase}-job`}>
+            <Input
+              id={`${idBase}-job`}
+              value={draft.jobTitle}
+              disabled={disabled}
+              onChange={(e) => {
+                patch({ jobTitle: e.target.value })
+              }}
+            />
+          </Field>
+        </div>
+        <div style={{ flex: '1 1 12rem' }}>
+          <Field label="Company" htmlFor={`${idBase}-company`}>
+            <Input
+              id={`${idBase}-company`}
+              value={draft.company}
+              disabled={disabled}
+              onChange={(e) => {
+                patch({ company: e.target.value })
+              }}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <Field
+        label="Tagline"
+        htmlFor={`${idBase}-tagline`}
+        hint="One line: role and company, as it should appear in the program."
+      >
+        <Input
+          id={`${idBase}-tagline`}
+          value={draft.tagline}
+          disabled={disabled}
+          placeholder="Head of Platform, Example"
+          onChange={(e) => {
+            patch({ tagline: e.target.value })
+          }}
+        />
+      </Field>
+
+      <Field label="Bio" htmlFor={`${idBase}-bio`}>
+        <Textarea
+          id={`${idBase}-bio`}
+          rows={5}
+          value={draft.bio}
+          disabled={disabled}
+          onChange={(e) => {
+            patch({ bio: e.target.value })
+          }}
+        />
+      </Field>
+
+      <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+        {(
+          [
+            ['website', 'Website'],
+            ['linkedin', 'LinkedIn'],
+            ['twitter', 'X'],
+            ['github', 'GitHub'],
+          ] as const
+        ).map(([key, label]) => (
+          <div key={key} style={{ flex: '1 1 12rem' }}>
+            <Field label={label} htmlFor={`${idBase}-${key}`}>
+              <Input
+                id={`${idBase}-${key}`}
+                value={draft[key]}
+                disabled={disabled}
+                placeholder="https://"
+                onChange={(e) => {
+                  patch({ [key]: e.target.value })
+                }}
+              />
+            </Field>
+          </div>
+        ))}
+      </div>
+      <span
+        style={{
+          font: 'var(--type-caption)',
+          color: 'var(--text-tertiary)',
+        }}
+      >
+        Links are saved as shown — clear a field to remove that link.
+      </span>
+
       <div
         style={{
+          borderTop: 'var(--space-px) solid var(--border-subtle)',
+          paddingTop: 'var(--space-4)',
           display: 'flex',
           flexDirection: 'column',
           gap: 'var(--space-4)',
         }}
       >
-        {error !== null ? <Callout tone="blocked">{error}</Callout> : null}
-        {archived ? (
-          <Callout tone="attention" title="This event is archived">
-            Archived events are read-only — unarchive from Event details to edit.
-          </Callout>
-        ) : null}
-
-        <Field
-          label="Headshot"
-          hint="Square images crop best. Where a headshot is missing, initials are used."
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 'var(--space-4)',
-              flexWrap: 'wrap',
-            }}
-          >
-            <Avatar name={name} src={photo} size={64} />
-            {uploading || disabled ? (
-              <Button size="sm" iconLeft="upload" disabled>
-                {uploading ? 'Uploading…' : 'Upload a photo'}
-              </Button>
-            ) : (
-              <FileButton
-                size="sm"
-                accept="image/jpeg,image/png,image/webp"
-                onFile={(file) => {
-                  void upload(file)
-                }}
-              >
-                {photo === undefined ? 'Upload a photo' : 'Replace photo'}
-              </FileButton>
-            )}
-          </div>
-          {localPhoto !== null ? (
-            <p
-              style={{
-                margin: 'var(--space-2) 0 0',
-                font: 'var(--type-caption)',
-                color: 'var(--text-tertiary)',
-              }}
-            >
-              Photo saved. Other edits still need Save speaker.
-            </p>
-          ) : null}
-        </Field>
-
-        <div
-          style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}
-        >
-          <div style={{ flex: '1 1 12rem' }}>
-            <Field label="First name" htmlFor={`${idBase}-first`} required>
-              <Input
-                id={`${idBase}-first`}
-                value={draft.firstName}
-                disabled={disabled}
-                onChange={(e) => {
-                  patch({ firstName: e.target.value })
-                }}
-              />
-            </Field>
-          </div>
-          <div style={{ flex: '1 1 12rem' }}>
-            <Field label="Last name" htmlFor={`${idBase}-last`}>
-              <Input
-                id={`${idBase}-last`}
-                value={draft.lastName}
-                disabled={disabled}
-                onChange={(e) => {
-                  patch({ lastName: e.target.value })
-                }}
-              />
-            </Field>
-          </div>
-        </div>
-
-        <Field
-          label="Email"
-          htmlFor={`${idBase}-email`}
-          hint="Clearing this removes the address from the snapshot."
-        >
-          <Input
-            id={`${idBase}-email`}
-            type="email"
-            value={draft.email}
-            disabled={disabled}
-            onChange={(e) => {
-              patch({ email: e.target.value })
-            }}
-          />
-        </Field>
-
-        <div
-          style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}
-        >
-          <div style={{ flex: '1 1 12rem' }}>
-            <Field label="Job title" htmlFor={`${idBase}-job`}>
-              <Input
-                id={`${idBase}-job`}
-                value={draft.jobTitle}
-                disabled={disabled}
-                onChange={(e) => {
-                  patch({ jobTitle: e.target.value })
-                }}
-              />
-            </Field>
-          </div>
-          <div style={{ flex: '1 1 12rem' }}>
-            <Field label="Company" htmlFor={`${idBase}-company`}>
-              <Input
-                id={`${idBase}-company`}
-                value={draft.company}
-                disabled={disabled}
-                onChange={(e) => {
-                  patch({ company: e.target.value })
-                }}
-              />
-            </Field>
-          </div>
-        </div>
-
-        <Field
-          label="Tagline"
-          htmlFor={`${idBase}-tagline`}
-          hint="One line: role and company, as it should appear in the program."
-        >
-          <Input
-            id={`${idBase}-tagline`}
-            value={draft.tagline}
-            disabled={disabled}
-            placeholder="Head of Platform, Example"
-            onChange={(e) => {
-              patch({ tagline: e.target.value })
-            }}
-          />
-        </Field>
-
-        <Field label="Bio" htmlFor={`${idBase}-bio`}>
-          <Textarea
-            id={`${idBase}-bio`}
-            rows={5}
-            value={draft.bio}
-            disabled={disabled}
-            onChange={(e) => {
-              patch({ bio: e.target.value })
-            }}
-          />
-        </Field>
-
-        <div
-          style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}
-        >
-          {(
-            [
-              ['website', 'Website'],
-              ['linkedin', 'LinkedIn'],
-              ['twitter', 'X'],
-              ['github', 'GitHub'],
-            ] as const
-          ).map(([key, label]) => (
-            <div key={key} style={{ flex: '1 1 12rem' }}>
-              <Field label={label} htmlFor={`${idBase}-${key}`}>
-                <Input
-                  id={`${idBase}-${key}`}
-                  value={draft[key]}
-                  disabled={disabled}
-                  placeholder="https://"
-                  onChange={(e) => {
-                    patch({ [key]: e.target.value })
-                  }}
-                />
-              </Field>
-            </div>
-          ))}
-        </div>
         <span
-          style={{
-            font: 'var(--type-caption)',
-            color: 'var(--text-tertiary)',
-          }}
+          style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}
         >
-          Links are saved as shown — clear a field to remove that link.
+          Custom fields
         </span>
-
-        <div
-          style={{
-            borderTop: 'var(--space-px) solid var(--border-subtle)',
-            paddingTop: 'var(--space-4)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 'var(--space-4)',
-          }}
-        >
+        {customFields.length === 0 ? (
           <span
-            style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}
+            style={{
+              font: 'var(--type-caption)',
+              color: 'var(--text-tertiary)',
+            }}
           >
-            Custom fields
-          </span>
-          {customFields.length === 0 ? (
-            <span
-              style={{
-                font: 'var(--type-caption)',
-                color: 'var(--text-tertiary)',
-              }}
+            This event has no speaker custom fields yet — define them (dietary
+            needs, travel booked, …) in{' '}
+            <Link
+              to="/app/e/$eventSlug/settings"
+              params={{ eventSlug: form.eventSlug }}
             >
-              This event has no speaker custom fields yet — define them (dietary
-              needs, travel booked, …) in{' '}
-              <Link to="/app/e/$eventSlug/settings" params={{ eventSlug }}>
-                Settings
-              </Link>
-              .
-            </span>
-          ) : (
-            customFields.map((def) => (
-              <CustomFieldInput
-                key={def._id}
-                def={def}
-                value={values[def._id]}
-                disabled={disabled}
-                onChange={(value) => {
-                  setValues((current) => ({ ...current, [def._id]: value }))
-                }}
-              />
-            ))
-          )}
-        </div>
+              Settings
+            </Link>
+            .
+          </span>
+        ) : (
+          customFields.map((def) => (
+            <CustomFieldInput
+              key={def._id}
+              def={def}
+              value={values[def._id]}
+              disabled={disabled}
+              onChange={(value) => {
+                setValues((current) => ({ ...current, [def._id]: value }))
+              }}
+            />
+          ))
+        )}
       </div>
-    </Dialog>
+    </div>
   )
 }
 

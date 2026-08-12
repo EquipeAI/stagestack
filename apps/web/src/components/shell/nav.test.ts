@@ -107,6 +107,24 @@ describe('activeNavId', () => {
       activeNavId(`/app/e/${SLUG}/sessions`, SLUG, DECISIONS_SEARCH),
     ).toBe('sessions')
   })
+
+  it('highlights the owning module from inside a W9 workspace', () => {
+    // The real URLs the workspaces publish, tab param and all. The rail must
+    // stay on Sessions/Speakers the whole time an organizer is inside one
+    // record — a highlight that jumped back to Overview would say they had
+    // left the module they are working in.
+    expect(
+      activeNavId(`/app/e/${SLUG}/sessions/k1739xyz`, SLUG, {}),
+    ).toBe('sessions')
+    expect(
+      activeNavId(`/app/e/${SLUG}/speakers/k1739abc`, SLUG, {}),
+    ).toBe('speakers')
+    // A tab param is search, not path: it cannot change which module is
+    // active, including the staged-queue status the Decisions view reads.
+    expect(
+      activeNavId(`/app/e/${SLUG}/sessions/k1739xyz`, SLUG, DECISIONS_SEARCH),
+    ).toBe('sessions')
+  })
 })
 
 describe('the Decisions deep link', () => {
@@ -141,25 +159,47 @@ describe('the Decisions deep link', () => {
 })
 
 describe('route resolution', () => {
-  const file = (path: string) => {
+  /**
+   * The files a tab path may be served by.
+   *
+   * A tab that grew children (W9's workspaces) is a directory now, so its own
+   * page moved from `…speakers.tsx` to `…speakers.index.tsx` — the path is
+   * unchanged, which is the whole point of checking BOTH spellings rather than
+   * pinning one.
+   */
+  const files = (path: string) => {
     const rest = path.replace('/app/e/$eventSlug', '')
     const name = rest === '' ? 'index' : rest.slice(1).replaceAll('/', '.')
-    return `app.e.$eventSlug.${name}.tsx`
+    return [
+      `app.e.$eventSlug.${name}.tsx`,
+      `app.e.$eventSlug.${name}.index.tsx`,
+    ]
   }
+  const resolves = (path: string) =>
+    files(path).some((file) => existsSync(`${ROUTES}${file}`))
 
   it.each(Object.entries(LEGACY_TAB_PATHS))(
     'every pre-W7 path still resolves: %s',
     (_id, path) => {
-      expect(existsSync(`${ROUTES}${file(path)}`)).toBe(true)
+      expect(resolves(path)).toBe(true)
     },
   )
 
   it.each(Object.entries(TAB_PATHS))(
     'every current path resolves: %s',
     (_id, path) => {
-      expect(existsSync(`${ROUTES}${file(path)}`)).toBe(true)
+      expect(resolves(path)).toBe(true)
     },
   )
+
+  it('the W9 workspaces exist as routes, not as overlays', () => {
+    expect(
+      existsSync(`${ROUTES}app.e.$eventSlug.speakers.$eventContactId.tsx`),
+    ).toBe(true)
+    expect(
+      existsSync(`${ROUTES}app.e.$eventSlug.sessions.$sessionId.tsx`),
+    ).toBe(true)
+  })
 
   it('/dashboard resolves as a redirect to the root, not as a page', () => {
     const source = readFileSync(
