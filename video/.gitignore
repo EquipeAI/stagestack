@@ -17,3 +17,4 @@ public/voice
 # The one shot that cannot be regenerated from the app: it comes from a real
 # mailbox. Cropped to the message and the fixture address painted out.
 !public/shots/40-gmail-invite.png
+public/music
