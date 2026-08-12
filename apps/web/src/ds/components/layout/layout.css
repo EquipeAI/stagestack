@@ -93,3 +93,24 @@
 .ss-dl dt{color:var(--text-tertiary);font-size:var(--text-sm)}
 .ss-dl dd{margin:0;color:var(--text-primary)}
 .ss-dl--stacked{grid-template-columns:1fr;gap:2px}
+
+/* ── Panel ────────────────────────────────────────────────────────────────
+   A collapsible section, styled as a card so a screen of panels reads as one
+   surface rather than a stack of unrelated boxes. The whole summary row is the
+   control (a full-width tap target on a phone, which is the point). */
+.ss-panel{background:var(--surface-card);border:1px solid var(--border-default);border-radius:var(--radius-card);box-shadow:var(--shadow-xs)}
+.ss-panel__summary{display:flex;align-items:center;gap:var(--space-3);padding:14px var(--pad-card);cursor:pointer;list-style:none;min-height:44px}
+/* Safari draws its own triangle unless both of these are suppressed. */
+.ss-panel__summary::-webkit-details-marker{display:none}
+.ss-panel__summary::marker{content:""}
+.ss-panel__summary:focus-visible{outline:2px solid var(--focus-ring-edge);outline-offset:-2px;border-radius:var(--radius-card)}
+.ss-panel__chevron{flex:none;color:var(--text-tertiary);transition:transform var(--duration-fast) var(--ease-standard)}
+.ss-panel[open]>.ss-panel__summary .ss-panel__chevron{transform:rotate(90deg)}
+.ss-panel__titles{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ss-panel__title{font:var(--type-heading);color:var(--text-primary)}
+.ss-panel__subtitle{font:var(--type-caption);color:var(--text-tertiary)}
+.ss-panel__meta{margin-left:auto;display:flex;align-items:center;gap:var(--space-2);flex:none}
+.ss-panel__body{padding:var(--pad-card);border-top:1px solid var(--border-subtle)}
+@media (prefers-reduced-motion:reduce){
+  .ss-panel__chevron{transition:none}
+}

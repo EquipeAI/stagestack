@@ -236,6 +236,7 @@ describe('the count convention', () => {
     const attention: Attention = {
       counts: {
         proposals: 2,
+        decisions: 0,
         reviews: 1,
         sessions: 0,
         speakers: 0,
@@ -255,6 +256,7 @@ describe('the count convention', () => {
       attentionSummary({
         counts: {
           proposals: 0,
+          decisions: 0,
           reviews: 0,
           sessions: 0,
           speakers: 0,

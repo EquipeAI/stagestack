@@ -19,6 +19,10 @@ import {
 import { PARTICIPANT_STATE_LABEL } from '~/lib/labels'
 import { SpeakerProfileDialog } from '~/components/speakers/SpeakerProfileDialog'
 import { ImportCsvDialog } from '~/components/speakers/ImportCsvDialog'
+import {
+  matchesState,
+  parseSpeakersSearch,
+} from '~/components/speakers/search'
 
 // The speaker roster (SPK-01): every publishable snapshot on the event, with
 // session links and participation state, searchable, editable in place, and
@@ -26,6 +30,9 @@ import { ImportCsvDialog } from '~/components/speakers/ImportCsvDialog'
 
 export const Route = createFileRoute('/app/e/$eventSlug/speakers')({
   component: Speakers,
+  // Search text and the participation filter live in the URL, so the control
+  // center's "3 speakers have not answered" lands on exactly those three.
+  validateSearch: parseSpeakersSearch,
 })
 
 type Row = RosterRow & { id: string }
@@ -34,7 +41,16 @@ function Speakers() {
   const { eventSlug } = Route.useParams()
   const event = useQuery(api.events.get, { eventSlug })
   const isOrganizer = event?.role === 'organizer'
-  const [search, setSearch] = useState('')
+  const params = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const search = params.q ?? ''
+  const stateFilter = params.state
+  const setSearch = (next: string) => {
+    void navigate({
+      search: (prev) => ({ ...prev, q: next === '' ? undefined : next }),
+      replace: true,
+    })
+  }
   // The list is small (≤2000 scan server-side) — the search arg goes straight
   // through and the reactive query keeps up per keystroke.
   const roster = useQuery(
@@ -72,10 +88,12 @@ function Speakers() {
     .filter((field) => field.appliesTo === 'speaker')
     .sort((a, b) => a.order - b.order)
 
-  const rows: Array<Row> = roster.map((row) => ({
-    ...row,
-    id: row.eventContactId,
-  }))
+  const rows: Array<Row> = roster
+    .filter((row) => matchesState(row.sessions, stateFilter))
+    .map((row) => ({
+      ...row,
+      id: row.eventContactId,
+    }))
   const editingRow = rows.find((row) => row.eventContactId === editing) ?? null
   const searching = search.trim() !== ''
 
@@ -127,6 +145,20 @@ function Speakers() {
             >
               {rows.length} speaker{rows.length === 1 ? '' : 's'}
             </span>
+            {/* Arriving here from a control-center count must not look like a
+                roster that lost people. */}
+            {stateFilter === undefined ? null : (
+              <Button
+                size="sm"
+                variant="ghost"
+                iconLeft="x"
+                onClick={() => {
+                  void navigate({ search: (prev) => ({ ...prev, state: undefined }) })
+                }}
+              >
+                {PARTICIPANT_STATE_LABEL[stateFilter]} only — show all
+              </Button>
+            )}
           </span>
         }
         right={importButton}

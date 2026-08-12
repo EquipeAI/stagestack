@@ -25,6 +25,7 @@ export { DataTable } from './components/layout/DataTable.jsx'
 export { DescriptionList } from './components/layout/DescriptionList.jsx'
 export { EmptyState } from './components/layout/EmptyState.jsx'
 export { PageHeader } from './components/layout/PageHeader.jsx'
+export { Panel } from './components/layout/Panel.jsx'
 export { Toolbar } from './components/layout/Toolbar.jsx'
 
 export { ActionResult } from './components/feedback/ActionResult.jsx'

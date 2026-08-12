@@ -468,14 +468,14 @@ under 640px, not full-height), there is no topbar menu affordance today, and
 this workstream owns the active-tab fix below — but it still unblocks how
 everything else is found.
 
-- [ ] **Regroup the fourteen entries by lifecycle** in
+- [x] **Regroup the fourteen entries by lifecycle** in
       `apps/web/src/routes/app.e.$eventSlug.tsx:52-133` (`SidebarNav` already
       supports groups; `NAV_GROUPS` is a single group today):
       **Setup** (Overview, Settings, Team, Import) · **Collect** (Call for
       speakers) · **Select** (Proposals, Reviews, Decisions) · **Prepare**
       (Sessions, Speakers, Tasks, Communications) · **Schedule** (Agenda) ·
       **Publish** (Public page, embeds, feeds).
-- [ ] **Merge Dashboard into the event root** (decision 5). The root becomes the
+- [x] **Merge Dashboard into the event root** (decision 5). The root becomes the
       **control center** (operational, time-sensitive); today's Overview content
       — stable event facts, CFP link, archive — folds into Setup → Overview.
       `/dashboard` redirects to the root, and the `dashboard` entry leaves
@@ -484,12 +484,12 @@ everything else is found.
       Overview, visible to reviewers and speakers — not a redirect, and
       Dashboard is `requires: 'organizer'` (`app.e.$eventSlug.tsx:60`): the
       merged root needs **role-conditional rendering**, not just a route swap.)
-- [ ] **Decisions as a filtered Proposals view** (decision 6). A Select-group
+- [x] **Decisions as a filtered Proposals view** (decision 6). A Select-group
       entry that navigates to `/proposals` with the staged-decision filter
       applied through W12's URL-persisted search params — so it is a saved view,
       not a new route, and the release action stays where the proposals already
       are. The lifecycle step becomes visible without a fifteenth module.
-- [ ] **Attention counts in the rail**: `SidebarNav`'s `count` slot already
+- [x] **Attention counts in the rail**: `SidebarNav`'s `count` slot already
       renders (`navigation.css` `.ss-navitem__count`). Do NOT subscribe
       `Readiness.dashboard` from the shell — it is five `takeAll` reads that
       REFUSE with `event_too_large` (`convex/model/validation.ts:67-80`) plus a
@@ -500,19 +500,19 @@ everything else is found.
       to no badges on error — it never blocks navigation. Same numbers, same
       producer, different query shape, so rail and control center still cannot
       disagree.
-- [ ] **Real mobile drawer.** Under 860px the rail becomes a horizontal strip
+- [x] **Real mobile drawer.** Under 860px the rail becomes a horizontal strip
       with group labels hidden (`navigation.css:36-79`,
       `.ss-sidebar__group{display:none}`) — so on a phone the lifecycle grouping,
       the thing this workstream adds, is invisible, and fourteen items become a
       memory test. Replace the strip with a topbar menu button opening a
       full-height drawer that shows the groups and counts. Keep the strip only
       if it can show the active group; otherwise drop it.
-- [ ] **Prefix-based active matching.** `app.e.$eventSlug.tsx:149-153` resolves
+- [x] **Prefix-based active matching.** `app.e.$eventSlug.tsx:149-153` resolves
       the active nav entry by **exact** pathname equality with an
       `?? 'overview'` fallback — W9's routed workspaces (`/sessions/$id`) would
       highlight the control center and scroll the phone strip to the wrong
       item. Switch to longest-prefix matching before W9 lands.
-- [ ] **Breadcrumbs everywhere.** `PageHeader` takes them and the event layout
+- [x] **Breadcrumbs everywhere.** `PageHeader` takes them and the event layout
       passes three levels already (`app.e.$eventSlug.tsx:202`); extend through
       the new workspace routes so a phone always has an up-path. Note those
       breadcrumbs terminate at the event: per-workspace crumbs mean making the
@@ -524,33 +524,46 @@ everything else is found.
 
 The headline bet, part one.
 
-- [ ] **One screen, four questions**: what needs my attention · what is blocked ·
-      what changed recently · what happens next. Built from one new capability
-      (`convex/model/readiness.ts` + a thin `convex/events.ts` wrapper) so it is
-      a handful of subscriptions, not twelve. Not literally one: readiness reads
-      REFUSE (`event_too_large`) rather than truncate, so one over-ceiling table
-      blanks whatever subscribes to it — keep the center as a few per-panel
-      queries so a refusal blanks one panel, not the screen (today's dashboard
-      is already three subscriptions, split to isolate the ticking `now`;
-      preserve that split). The readiness caps also sum past Convex's
-      16,384-doc transaction limit at worst case, so one mega-query is the
-      wrong shape regardless.
-- [ ] **The rows the review specified**, each with a count that deep-links to
-      the already-filtered work: CFP state + submission count + close countdown ·
-      reviews incomplete + reviewers overdue · decisions staged, not released ·
-      speakers unconfirmed + outstanding tasks · content drafts blocking
-      publication · schedule conflicts + unscheduled sessions · publication state
-      per channel with "last published by … at …".
-- [ ] **What changed recently** reads the audit rows already written by every
-      capability (`convex/model/audit.ts`) — no new write path.
-- [ ] **First event vs returning event**: visible lifecycle checklist for an
-      event with no history; the same information collapsed to a readiness
-      summary once it has. GOV.UK's task-list guidance is the reference, with its
-      own warning applied — the smallest useful number of statuses, not another
-      giant checklist.
-- [ ] Preserve today's dashboard strengths while merging: the live subscription
-      behaviour, `ReadinessMeter`, per-speaker drill-down, and the ticking `now`
-      argument (`app.e.$eventSlug.dashboard.tsx:41-60`).
+- [x] **One screen, four questions**: what needs my attention · what is blocked ·
+      what changed recently · what happens next. Four panels, four queries, each
+      with its read policy chosen deliberately in
+      `convex/model/controlCenter.ts`: the attention panel and the change feed
+      TRUNCATE (they must render), the blocked panel is `tasks.dashboard` which
+      REFUSES (a dropped participation would report a session Ready nobody
+      checked). EVERY panel owns a `PanelBoundary`, including the attention
+      panel — which is why the first-event verdict is reported upward rather
+      than branched on, since the query that answers it lives inside the
+      boundary. Boundaries are keyed by event and offer "Try again", so a
+      caught error never outlives the event or the condition that caused it.
+      The ticking `now` split is preserved: it rides the three queries that
+      need it, and the speaker drill-down keeps stable args.
+- [x] **The rows the review specified**, each with a count that deep-links to
+      the already-filtered work. The backend emits `{tab, search}` in the
+      DESTINATION route's own vocabulary, and `links.test.ts` runs each search
+      object through that route's real `validateSearch` — a param the
+      destination would drop fails the build rather than silently landing on an
+      unfiltered page. Four routes gained a typed `validateSearch` to receive
+      them (reviews, speakers, tasks, sessions); agenda's was extracted so it
+      could be asserted the same way. The tasks row also added an `outstanding`
+      filter — the same `isOpen` predicate the count uses — because linking an
+      open-task count at `status=pending` showed a shorter list than the number
+      the organizer had just clicked. Also added: the `decisions` count W7 noted
+      missing from `api.readiness.attention`, sharing one `stagedDecisions`
+      producer with the panel row.
+- [x] **What changed recently** reads the audit rows already written by every
+      capability (`convex/model/audit.ts`) — no new write path. Action codes map
+      to sentences in the model; an unrecognised code renders an honest generic
+      line (`performed a recorded action: …`) rather than crashing the panel.
+- [x] **First event vs returning event**: ONE decision point, measurably
+      defined — no proposal has ever arrived (any status, including withdrawn),
+      no session exists, and the CFP has never opened. A first event gets the
+      six-step lifecycle checklist (setup · CFP · collect · select · schedule ·
+      publish), each with a state and exactly one next action; anything with
+      history gets the four panels.
+- [x] Preserve today's dashboard strengths while merging: live subscriptions,
+      `ReadinessMeter`, per-speaker drill-down and the ticking `now` all kept.
+      The KPI tile grid is gone on purpose (the review's objection); the same
+      numbers now read as a sentence on the speakers card.
 - *Mobile*: single column of collapsible sections, attention first; counts are
   full-width tap targets; no KPI grid that shrinks to unreadable tiles.
 

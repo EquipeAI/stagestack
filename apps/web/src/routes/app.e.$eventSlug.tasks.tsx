@@ -3,6 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { InstanceRow, TaskStatus } from '~/components/tasks/model'
+import type { TaskFilter, TaskTab } from '~/components/tasks/search'
 import {
   Button,
   Callout,
@@ -24,9 +25,11 @@ import { NewRequirementDialog } from '~/components/tasks/NewRequirementDialog'
 import { RequirementCard } from '~/components/tasks/RequirementCard'
 import {
   TASK_STATUS_LABEL,
+  isOpen,
   isOverdue,
   speakerLabel,
 } from '~/components/tasks/model'
+import { parseTasksSearch } from '~/components/tasks/search'
 import { useLastLoaded, useNow } from '~/components/tasks/useNow'
 import { ReminderFactsPanel } from '~/components/reminders/ReminderFactsPanel'
 import { SendRemindersDialog } from '~/components/reminders/SendRemindersDialog'
@@ -42,6 +45,9 @@ import { pushToast } from '~/components/toast'
 
 export const Route = createFileRoute('/app/e/$eventSlug/tasks')({
   component: TasksRoute,
+  // Tab and status filter live in the URL so "12 tasks are outstanding" on
+  // the control center opens the tasks tab already filtered to those twelve.
+  validateSearch: parseTasksSearch,
 })
 
 // Speaker ops admin (M4): the requirements an organizer defines, and the
@@ -57,12 +63,20 @@ const STATUS_ORDER: Array<TaskStatus> = [
   'notApplicable',
 ]
 
-type Filter = TaskStatus | 'all' | 'overdue'
+type Filter = TaskFilter
 
 function TasksRoute() {
   const { eventSlug } = Route.useParams()
   const data = useQuery(api.events.get, { eventSlug })
-  const [tab, setTab] = useState('requirements')
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const tab: TaskTab = search.tab ?? 'requirements'
+  const setTab = (next: string) => {
+    void navigate({
+      search: (prev) => ({ ...prev, tab: next as TaskTab }),
+      replace: true,
+    })
+  }
 
   if (data === undefined) {
     return (
@@ -105,7 +119,11 @@ function TasksRoute() {
       ) : tab === 'files' ? (
         <FilesPanel eventSlug={eventSlug} timezone={data.event.timezone} />
       ) : (
-        <InstancesPanel eventSlug={eventSlug} timezone={data.event.timezone} />
+        <InstancesPanel
+          eventSlug={eventSlug}
+          timezone={data.event.timezone}
+          initialFilter={search.status ?? 'all'}
+        />
       )}
     </div>
   )
@@ -285,14 +303,20 @@ function ReminderControls({
 function InstancesPanel({
   eventSlug,
   timezone,
+  initialFilter,
 }: {
   eventSlug: string
   timezone: string
+  /** From the URL, so a deep link lands pre-filtered. The chips take over
+   * from there — a filter the organizer changes by hand is a view, not an
+   * address, and rewriting the URL on every chip would bury the page they
+   * arrived from under a history entry each. */
+  initialFilter: Filter
 }) {
   const instances = useQuery(api.tasks.listInstances, { eventSlug })
   const requirements = useQuery(api.tasks.listRequirements, { eventSlug })
   const now = useNow()
-  const [filter, setFilter] = useState<Filter>('all')
+  const [filter, setFilter] = useState<Filter>(initialFilter)
   const [requirementId, setRequirementId] = useState('all')
 
   const rows = useMemo(() => {
@@ -303,6 +327,10 @@ function InstancesPanel({
       )
       .filter((row) => {
         if (filter === 'all') return true
+        // `outstanding` is the same `isOpen` predicate the backend counts
+        // with, so the control center's "N tasks are outstanding" and this
+        // list can never be different lengths.
+        if (filter === 'outstanding') return isOpen(row.status)
         if (filter === 'overdue') return isOverdue(row, now)
         return row.status === filter
       })
@@ -327,6 +355,7 @@ function InstancesPanel({
 
   const counts: Record<Filter, number> = {
     all: instances.length,
+    outstanding: instances.filter((row) => isOpen(row.status)).length,
     overdue: instances.filter((row) => isOverdue(row, now)).length,
     pending: 0,
     provided: 0,
@@ -339,6 +368,7 @@ function InstancesPanel({
 
   const chips: Array<{ id: Filter; label: string }> = [
     { id: 'all', label: 'All' },
+    { id: 'outstanding', label: 'Outstanding work' },
     { id: 'overdue', label: 'Overdue' },
     ...STATUS_ORDER.map((status) => ({
       id: status,

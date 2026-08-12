@@ -31,6 +31,7 @@ import type * as model_audit from "../model/audit.js";
 import type * as model_cfp from "../model/cfp.js";
 import type * as model_comms from "../model/comms.js";
 import type * as model_contacts from "../model/contacts.js";
+import type * as model_controlCenter from "../model/controlCenter.js";
 import type * as model_embeds from "../model/embeds.js";
 import type * as model_events from "../model/events.js";
 import type * as model_headshotImages from "../model/headshotImages.js";
@@ -103,6 +104,7 @@ declare const fullApi: ApiFromModules<{
   "model/cfp": typeof model_cfp;
   "model/comms": typeof model_comms;
   "model/contacts": typeof model_contacts;
+  "model/controlCenter": typeof model_controlCenter;
   "model/embeds": typeof model_embeds;
   "model/events": typeof model_events;
   "model/headshotImages": typeof model_headshotImages;

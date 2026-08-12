@@ -165,6 +165,9 @@ export const NAV_GROUPS: Array<NavGroup> = [
         label: 'Decisions',
         icon: 'check',
         requires: 'organizer',
+        // W8 added this count: Decisions was the one lifecycle step with no
+        // badge, so a staged queue nobody released was invisible from the rail.
+        attention: 'decisions',
       },
     ],
   },
@@ -298,6 +301,7 @@ export function itemOf(id: NavId): NavItem | undefined {
 
 export type AttentionKey =
   | 'proposals'
+  | 'decisions'
   | 'reviews'
   | 'sessions'
   | 'speakers'

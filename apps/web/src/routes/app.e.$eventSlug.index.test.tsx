@@ -18,6 +18,7 @@ vi.mock('@tanstack/react-router', () => ({
     ...options,
     useParams: () => ({ eventSlug: 'devconf' }),
   }),
+  useNavigate: () => vi.fn(),
   Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
 }))
 
@@ -39,6 +40,25 @@ vi.mock('convex/react', () => ({
       }
     }
     if (args === 'skip') return undefined
+    if (name === 'readiness:attentionPanel') {
+      return {
+        rows: [
+          {
+            id: 'cfp',
+            label: 'Call for speakers',
+            count: 0,
+            capped: false,
+            sentence: 'The call for speakers has never been published.',
+            tone: 'neutral',
+            link: { tab: 'proposals', search: { status: 'pending' } },
+          },
+        ],
+        // History, so the root shows the four panels rather than the checklist.
+        firstEvent: false,
+        checklist: [],
+        capped: false,
+      }
+    }
     if (name === 'tasks:dashboard') {
       return {
         totals: {
@@ -52,9 +72,19 @@ vi.mock('convex/react', () => ({
         },
         speakers: [],
         sessions: [],
+        blockers: {
+          contentDrafts: 0,
+          unscheduled: 0,
+          scheduleConflicts: 0,
+          blockedSessions: 0,
+        },
       }
     }
     if (name === 'tasks:listInstances') return []
+    if (name === 'readiness:recentChanges') return { rows: [], capped: false }
+    if (name === 'readiness:upNext') {
+      return { milestones: [], channels: [], version: null }
+    }
     return undefined
   },
   useMutation: () => vi.fn(),
@@ -76,9 +106,11 @@ afterEach(cleanup)
 describe('the event root', () => {
   it('gives an organizer the operational control center', () => {
     renderRoot()
-    // What `/dashboard` used to render, now at the root.
-    expect(screen.getByText('Session readiness')).toBeTruthy()
-    expect(screen.getByText('Confirmed')).toBeTruthy()
+    // The four questions W8 restructured the dashboard into.
+    expect(screen.getByText('What needs your attention')).toBeTruthy()
+    expect(screen.getByText('What is blocked')).toBeTruthy()
+    expect(screen.getByText('What changed recently')).toBeTruthy()
+    expect(screen.getByText('What happens next')).toBeTruthy()
     // …and not the stable facts, which have their own page now.
     expect(screen.queryByText('Archive')).toBeNull()
   })
@@ -88,7 +120,7 @@ describe('the event root', () => {
     renderRoot()
     expect(screen.getByText('Event details')).toBeTruthy()
     expect(screen.getAllByText('Call for speakers').length).toBeGreaterThan(0)
-    expect(screen.queryByText('Session readiness')).toBeNull()
+    expect(screen.queryByText('What needs your attention')).toBeNull()
     expect(screen.queryByText(/organizer-only/)).toBeNull()
   })
 })

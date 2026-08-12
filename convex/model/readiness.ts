@@ -3,6 +3,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { requireOrganizer } from "../lib/functions";
 import { conflictsFor, toScheduledThings, type Conflict } from "./agenda";
+import { stagedDecisions } from "./controlCenter";
 import { isPublished, publicationFlags } from "./publish";
 import { isOpen, isOverdue } from "./tasks";
 import { takeAll, takeCapped } from "./validation";
@@ -178,10 +179,32 @@ export type DashboardTotals = {
   overdue: number;
 };
 
+/**
+ * The control center's "what is blocked" counts (W8).
+ *
+ * They live on the dashboard rather than in a new query on purpose: this pass
+ * is ALREADY reading every session, participation and agenda item, and it
+ * already refuses rather than truncating — which is the right policy for a
+ * blocker count too (a dropped session is a blocker nobody is told about).
+ * Adding a second refusing whole-event scan would double the cost to say the
+ * same thing.
+ */
+export type DashboardBlockers = {
+  /** Planned sessions whose content is Draft — publication is held back. */
+  contentDrafts: number;
+  /** Planned sessions with no released slot. */
+  unscheduled: number;
+  /** Sessions carrying at least one impossible-schedule (blocker) conflict. */
+  scheduleConflicts: number;
+  /** Sessions whose derived readiness is Blocked. */
+  blockedSessions: number;
+};
+
 export type Dashboard = {
   speakers: SpeakerRow[];
   sessions: SessionReadinessRow[];
   totals: DashboardTotals;
+  blockers: DashboardBlockers;
 };
 
 /** A speaker on several sessions has several states. The most engaged one
@@ -333,20 +356,32 @@ export async function dashboard(
     toScheduledThings({ sessions, agendaItems, participantsBySession }),
   );
 
-  const sessionRows: SessionReadinessRow[] = sessions
-    .filter((session) => session.status === "planned")
-    .map((session) => ({
-      sessionId: session._id,
-      title: session.title,
-      readiness: sessionReadiness({
-        participants: participantsBySession.get(session._id) ?? [],
-        instances: instancesBySession.get(session._id) ?? [],
-        now,
-        conflicts: conflicts.get(session._id) ?? [],
-      }),
-    }));
+  const planned = sessions.filter((session) => session.status === "planned");
+  const sessionRows: SessionReadinessRow[] = planned.map((session) => ({
+    sessionId: session._id,
+    title: session.title,
+    readiness: sessionReadiness({
+      participants: participantsBySession.get(session._id) ?? [],
+      instances: instancesBySession.get(session._id) ?? [],
+      now,
+      conflicts: conflicts.get(session._id) ?? [],
+    }),
+  }));
 
-  return { speakers, sessions: sessionRows, totals };
+  // Same pass, same rows: the blocker counts cannot disagree with the readiness
+  // list above them because they are derived from it.
+  const blockers: DashboardBlockers = {
+    contentDrafts: planned.filter((s) => s.contentStatus === "draft").length,
+    unscheduled: planned.filter((s) => s.releasedSlot === undefined).length,
+    scheduleConflicts: planned.filter((s) =>
+      (conflicts.get(s._id) ?? []).some((c) => c.level === "blocker"),
+    ).length,
+    blockedSessions: sessionRows.filter(
+      (row) => row.readiness.status === "blocked",
+    ).length,
+  };
+
+  return { speakers, sessions: sessionRows, totals, blockers };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -681,6 +716,13 @@ const COUNT_FLAG_SCAN = 1000;
 export type AttentionCounts = {
   /** Proposals waiting for a decision. */
   proposals: number;
+  /**
+   * Decisions staged but not released (W8). Additive: the Decisions nav entry
+   * is a saved view of Proposals, and until now it was the one lifecycle step
+   * with no badge, so a staged queue nobody released was invisible from the
+   * rail. Shares `stagedDecisions` with the control center's own row.
+   */
+  decisions: number;
   /** Reviews assigned to YOU that are not submitted yet. */
   reviews: number;
   /** Sessions whose next publication blocker is fixed on the Sessions tab. */
@@ -716,7 +758,7 @@ export async function attentionCounts(
 ): Promise<Attention> {
   requireOrganizer(caller);
   const eventId = caller.event._id;
-  const [sessions, participants, instances, proposals, reviews, flags] =
+  const [sessions, participants, instances, proposals, staged, reviews, flags] =
     await Promise.all([
       takeCapped(
         ctx.db
@@ -745,6 +787,9 @@ export async function attentionCounts(
           ),
         COUNT_PROPOSAL_SCAN,
       ),
+      // Two more indexed range reads, not a scan: the staged queues are their
+      // own status values, so this costs what it counts.
+      stagedDecisions(ctx, eventId),
       // The caller's OWN queue — organizers review too, and an event-wide
       // review count would be somebody else's work in your badge.
       takeCapped(
@@ -783,6 +828,7 @@ export async function attentionCounts(
   const agendaPublished = isPublished(flagMap, "agenda", "event", false);
   const counts: AttentionCounts = {
     proposals: proposals.rows.length,
+    decisions: staged.count,
     reviews: reviews.rows.filter(
       (r) => r.status === "assigned" || r.status === "draft",
     ).length,
@@ -812,6 +858,7 @@ export async function attentionCounts(
       participants.capped ||
       instances.capped ||
       proposals.capped ||
+      staged.capped ||
       reviews.capped ||
       flags.capped,
   };

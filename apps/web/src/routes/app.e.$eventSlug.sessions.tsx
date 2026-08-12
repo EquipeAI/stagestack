@@ -23,6 +23,10 @@ import { pushToast } from '~/components/toast'
 import { SessionPortalDialog } from '~/components/portal/SessionPortalDialog'
 import { SessionContentCell } from '~/components/sessions/SessionContentCell'
 import { FormatField } from '~/components/sessions/FormatField'
+import {
+  matchesContent,
+  parseSessionsSearch,
+} from '~/components/sessions/search'
 
 // The event's sessions (M2). A session is what a proposal becomes once it is
 // accepted, or what a directly invited speaker is invited to — scheduling
@@ -31,6 +35,10 @@ import { FormatField } from '~/components/sessions/FormatField'
 
 export const Route = createFileRoute('/app/e/$eventSlug/sessions')({
   component: Sessions,
+  // Content approval is the gate that holds publication back quietly, so the
+  // control center's "4 sessions have Draft content" needs to land on four
+  // rows, not on the roster.
+  validateSearch: parseSessionsSearch,
 })
 
 type SessionRow = FunctionReturnType<typeof api.sessions.list>[number]
@@ -51,6 +59,8 @@ function Sessions() {
     api.readiness.publication,
     isOrganizer ? { eventSlug } : 'skip',
   )
+  const { content } = Route.useSearch()
+  const navigate = Route.useNavigate()
   const [inviting, setInviting] = useState(false)
   const [portalFor, setPortalFor] = useState<string | null>(null)
   const archived = event?.event.archivedAt !== undefined
@@ -75,10 +85,12 @@ function Sessions() {
   const summaries = new Map(
     (publication ?? []).map((row) => [row.sessionId as string, row.publication]),
   )
-  const rows: Array<Row> = sessions.map((row) => ({
-    ...row,
-    id: row.session._id,
-  }))
+  const rows: Array<Row> = sessions
+    .filter((row) => matchesContent(row.session.contentStatus, content))
+    .map((row) => ({
+      ...row,
+      id: row.session._id,
+    }))
   const portalRow = rows.find((row) => row.session._id === portalFor) ?? null
   const inviteButton = (
     <Button
@@ -129,6 +141,20 @@ function Sessions() {
             >
               Draft content never appears on the public program.
             </span>
+            {/* A filtered view arrived at by link must say so and offer the way
+                out; a silently short list reads as missing data. */}
+            {content === undefined ? null : (
+              <Button
+                size="sm"
+                variant="ghost"
+                iconLeft="x"
+                onClick={() => {
+                  void navigate({ search: {} })
+                }}
+              >
+                Filtered to {content} content — show all
+              </Button>
+            )}
           </span>
         }
         right={inviteButton}
