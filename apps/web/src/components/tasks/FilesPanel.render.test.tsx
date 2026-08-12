@@ -37,6 +37,7 @@ describe('FilesPanel headshot provenance', () => {
         version: 1,
         versionCount: 1,
         uploadedByName: 'Priya Raman',
+        uploadedByNote: null,
         uploadedAt,
         url: 'https://files.example.test/headshot',
         commentCount: 0,
@@ -82,6 +83,7 @@ describe('FilesPanel headshot provenance', () => {
         version: null,
         versionCount: null,
         uploadedByName: null,
+        uploadedByNote: 'The uploader was not recorded for this file.',
         uploadedAt: null,
         url: 'https://files.example.test/legacy-headshot',
         commentCount: 0,
@@ -95,7 +97,12 @@ describe('FilesPanel headshot provenance', () => {
       'https://files.example.test/legacy-headshot',
     )
     expect(link.getAttribute('download')).toBe('headshot.webp')
-    expect(screen.getAllByText('Unknown')).toHaveLength(2)
+    // W5: the uploader column says plainly that nobody was recorded, in the
+    // backend's own words — it no longer shares the date column's "Unknown".
+    expect(
+      screen.getByText('The uploader was not recorded for this file.'),
+    ).toBeTruthy()
+    expect(screen.getAllByText('Unknown')).toHaveLength(1)
     expect(screen.getByText('History unavailable')).toBeTruthy()
     expect(screen.queryByText(/^Source:/)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Comment' })).toBeNull()

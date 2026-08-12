@@ -12,6 +12,8 @@ import {
 import type * as React from 'react'
 import type { PublicProgram } from '@convex/model/publish'
 import type { SpeakerEntry } from './shared'
+import type { PublicSearchController } from '~/lib/publicSearch'
+import { useSearchState } from '~/lib/publicSearch'
 import { Dialog, SearchInput } from '~/ds'
 
 // EMB-12/13 — photo-forward speaker gallery: big square headshots with an
@@ -213,14 +215,20 @@ function GalleryDetail({ entry, zone }: { entry: SpeakerEntry; zone: string }) {
 export function SpeakerGallery({
   program,
   accent,
+  url,
 }: {
   program: PublicProgram
   accent?: string
+  url?: PublicSearchController
 }) {
   const zone = program.event.timezone
   const entries = useMemo(() => speakerEntries(program), [program])
-  const [query, setQuery] = useState('')
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Search and the expanded speaker are URL state on the public page (W5),
+  // local state inside an embed iframe.
+  const [queryValue, setQueryValue] = useSearchState(url, 'q')
+  const query = queryValue ?? ''
+  const setQuery = (next: string) => setQueryValue(next === '' ? null : next)
+  const [selectedId, setSelectedId] = useSearchState(url, 'speaker')
 
   const filtered = entries.filter((e) => matchesQuery(query, [e.speaker.name]))
   const selected =

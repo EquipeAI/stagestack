@@ -11,7 +11,16 @@ import type {
   SortKey,
   ViewDef,
 } from '~/components/abstracts/model'
-import { Button, Callout, Card, EmptyState, SearchInput, Toolbar } from '~/ds'
+import type { BulkOutcomeView } from '~/components/abstracts/BulkBar'
+import {
+  ActionResult,
+  Button,
+  Callout,
+  Card,
+  EmptyState,
+  SearchInput,
+  Toolbar,
+} from '~/ds'
 import { copyToClipboard } from '~/lib/clipboard'
 import { AbstractsTable } from '~/components/abstracts/AbstractsTable'
 import { AddProposalDialog } from '~/components/abstracts/AddProposalDialog'
@@ -126,6 +135,10 @@ function Abstracts({
 
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [failures, setFailures] = useState<ReadonlyMap<string, string>>(new Map())
+  // The bulk outcome lives on the PAGE, not in the bar: a clean run clears the
+  // selection and unmounts the bar, and that is exactly when the organizer
+  // still needs to read what happened.
+  const [bulkResult, setBulkResult] = useState<BulkOutcomeView | null>(null)
   const [openId, setOpenId] = useState<ProposalId | null>(null)
   const [adding, setAdding] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -388,6 +401,16 @@ function Abstracts({
         </Card>
       ) : (
         <>
+          {bulkResult === null ? null : (
+            <ActionResult
+              status={bulkResult.status}
+              title={bulkResult.title}
+              details={bulkResult.lines}
+              onRetry={bulkResult.retry}
+              retryLabel={bulkResult.retryLabel}
+              onDismiss={() => setBulkResult(null)}
+            />
+          )}
           <div
             style={{
               display: 'flex',
@@ -450,6 +473,7 @@ function Abstracts({
           eventSlug={eventSlug}
           selection={selection}
           onFailures={setFailures}
+          onResult={setBulkResult}
           onClear={() => {
             clearSelection()
             setFailures(new Map())

@@ -293,36 +293,86 @@ The backbone the M9 surfaces consume. Build it before the control center.
 
 Each is small, each was individually named in the review.
 
-- [ ] **Persistent results replace toast-only outcomes.** Exports, bulk actions,
+- [x] **Persistent results replace toast-only outcomes.** Exports, bulk actions,
       publishes, imports, and restores keep an inline result on the page
       (prepared / downloaded / failed, with retry). Toasts stay for low-risk
-      confirmations only. Add the pattern to the DS beside `Toast` so routes
-      inherit it (`apps/web/src/ds/components/feedback/`).
-- [ ] **Proposal → session field inheritance.** Confirmed broken during plan
+      confirmations only. Added as `ActionResult` in the DS beside `Toast`
+      (`apps/web/src/ds/components/feedback/`), composing `Callout` so tone has
+      one owner. Converted: proposals export menu + review-results export +
+      attachment bundle (`abstracts/TableMenus.tsx`), files-library ZIP
+      (`tasks/FilesPanel.tsx`), proposal bulk moves/release and reviewer
+      assignment (`abstracts/BulkBar.tsx` → result rendered by the proposals
+      route so it survives the selection clearing; its retry re-attempts only
+      the failed ids), reviewer reminders and
+      auto-distribute (`reviews/ProgressPanel.tsx`), lineup/agenda publish
+      (`publish.tsx`), AI import refusal (`import.tsx`), speaker CSV import
+      (`speakers/ImportCsvDialog.tsx`), CRM CSV import and bulk outreach
+      (`contacts/CrmTools.tsx`), and the W3 restore result (promoted, not
+      duplicated). Embed enable/disable/create/delete stay toasts: config
+      toggles, not outcomes with arithmetic.
+- [x] **Proposal → session field inheritance.** Confirmed broken during plan
       review, and the cited line was the wrong path: `sessions.ts:769` is the
       **direct-invitation** path, which already carries format. The CFP accept
-      path is `materializeSession` (`convex/model/sessions.ts:316-338`), which
-      copies title/description/track but no format — and proposals have no
-      format field: format lives inside free-form `answers`. The fix needs a
-      `formatFromAnswers`-style match against W2's library (track has exactly
-      this helper at ~`sessions.ts:295`), so **this item depends on W2 landing
-      first**. Add the regression test.
-- [ ] **Headshot uploader provenance.** Attribution can render a generic "Event
-      contributor" (`convex/model/userDisplay.ts`); resolve to the real actor
-      where the record has one, and say plainly when it does not.
-- [ ] **Attribution names collected up front.** `requirePersonDisplayName`
-      (`convex/model/userDisplay.ts:35`) gates attribution-bearing work; collect
-      the name at first entry into a collaborative surface instead of blocking
-      mid-task.
-- [ ] **Embed brand colour**: picker + validation + contrast warning + live
-      preview (`apps/web/src/routes/app.e.$eventSlug.publish.tsx:695,789`;
-      validation exists backend-side at `convex/model/embeds.ts:40`).
-- [ ] **Public filters and session detail are deep-linkable** — facets, search,
-      and the expanded session reflected in the URL
-      (`apps/web/src/components/public/widgets/`), using TanStack
-      `validateSearch` as ARCHITECTURE.md already prescribes for saved views.
-- [ ] **Bulk actions state their arithmetic**: selection count, eligible,
-      excluded and why, expected result, then the actual outcome.
+      path is `materializeSession` (`convex/model/sessions.ts`), which
+      copied title/description/track but no format — and proposals have no
+      format field: format lives inside free-form `answers`. Fixed with
+      `formatFromAnswers`, which identifies the QUESTION first (exactly one
+      non-system choice field whose label names a format, read from the form
+      definition) and only then reads that question's answer — never by
+      scanning answers for a string that happens to match a format name, which
+      would promote a track answer of "Talk" into the session's format. The
+      answer goes through W2's shared `normalizeFormatLabel` (so a
+      materialized session and a hand-typed one store the same string and link
+      the same row) and links `formatId` on an exact library match. Zero or
+      multiple candidate questions, no answer, an over-long label, or a library
+      holding the same name twice all carry NOTHING: an empty format is one
+      edit away, a wrong one is a silent misstatement. Regression tests cover
+      the library-match, verbatim, nothing, stolen-track-answer and
+      duplicate-name cases.
+- [x] **Headshot uploader provenance.** `convex/model/tasks.ts` resolved the
+      uploader through `storedPersonName` alone and fell back to a generic
+      "Event contributor" — which named nobody while reading like a resolved
+      actor, and fired even when the event knew exactly who the person was. Now
+      resolved through `resolveEventUserDisplayName`, a reason-carrying sibling
+      of the shared `eventUserDisplayName` chain, so the row's model-produced
+      `uploadedByNote` distinguishes all three real gaps: nobody was recorded
+      (no provenance row), the account exists and has set no display name, and
+      the account record is missing or the event holds conflicting names for it
+      (not attributable). No blank is described as another kind of blank.
+- [x] **Attribution names collected up front.** Already at first entry for
+      `/app/**` (`AuthGate`) and the speaker portal; extended to the remaining
+      collaborative surface, the CFP proposal-management page
+      (`cfp.$eventSlug.proposal.$proposalId.tsx`), whose edits, withdrawals and
+      resubmissions reach organizer surfaces under this person's name. The
+      requirement itself (`requirePersonDisplayName`) is unchanged and still
+      backs the write path.
+- [x] **Embed brand colour**: picker + validation + contrast warning + live
+      preview. The rule now lives once in `convex/shared/brandColor.ts`
+      (`convex/model/embeds.ts` imports it), and the console's hint no longer
+      invites "any CSS color" into a hex-only validator. The pattern was also
+      **narrowed** from `{3,8}` to exactly 3/4/6/8 digits: 5- and 7-digit
+      values are not colours, so they used to validate, save, and then render
+      as nothing. Contrast is checked against both the light and dark embed
+      surfaces and WARNS below 3:1 without blocking. Built as
+      `components/publish/BrandColorField.tsx` so W10's rebuild inherits it by
+      import.
+- [x] **Public filters and session detail are deep-linkable** — facets, search,
+      and the expanded session/speaker reflected in the URL, via
+      `validateSearch` on `/e/$slug` over one typed schema
+      (`apps/web/src/lib/publicSearch.ts`). Facet and expansion changes push
+      history (Back undoes one step); the free-text query replaces. Widgets
+      take an optional controller, so the embed iframe — which does not own the
+      address bar — keeps working on local state through the same code path.
+      "My schedule" stays local: it reads this browser's starred sessions, so a
+      link carrying it would promise a schedule the recipient never starred.
+- [x] **Bulk actions state their arithmetic**: selection count, eligible,
+      excluded and why, expected result, then the actual outcome. The rules
+      live in `convex/shared/bulkDecisions.ts`, which `convex/model/sessions.ts`
+      imports for its own eligibility check, so the bar and the mutation cannot
+      disagree; the after-statement is derived from the mutation's per-id
+      results. `reviews.remind` gained per-reason skip counts
+      (`skippedNothingOutstanding` / `skippedNoAddress`) because one `skipped`
+      number could not say why.
 
 ## W6 — Accessibility floor
 

@@ -5,6 +5,7 @@ import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
 import { assertEventActive, assertText } from "./validation";
+import { BRAND_COLOR_RULE, isBrandColor } from "../shared/brandColor";
 import type { PublicProgram, PublicSession } from "./publish";
 import { servedProgramForEvent } from "./publish";
 import { ICS_PRODID, escapeIcsText, foldIcsLine, formatIcsUtc } from "./ics";
@@ -39,10 +40,12 @@ function assertConfig(config: EmbedConfig): EmbedConfig {
   }
   if (config.brandColor !== undefined && config.brandColor.trim() !== "") {
     const color = config.brandColor.trim();
-    if (!/^#[0-9a-fA-F]{3,8}$/.test(color)) {
+    // Same rule, same sentence, one module — the console's picker validates
+    // against this pattern client-side so the refusal is never a surprise.
+    if (!isBrandColor(color)) {
       throw new ConvexError({
         code: "invalid_config",
-        message: "The brand color must be a hex value like #7c5cff.",
+        message: BRAND_COLOR_RULE,
       });
     }
     out.brandColor = color;

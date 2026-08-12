@@ -1413,7 +1413,13 @@ describe("reviews.rounds", () => {
       eventSlug,
       reviewerUserIds: [rita.id],
     });
-    expect(reminded).toEqual({ sent: 1, failed: 0, skipped: 0 });
+    expect(reminded).toEqual({
+      sent: 1,
+      failed: 0,
+      skipped: 0,
+      skippedNothingOutstanding: 0,
+      skippedNoAddress: 0,
+    });
     const reminder = await t.run(async (ctx) =>
       ctx.db
         .query("messages")
@@ -1430,7 +1436,13 @@ describe("reviews.rounds", () => {
         reviewerUserIds: [rita.id],
       });
     });
-    expect(refused).toEqual({ sent: 0, failed: 1, skipped: 0 });
+    expect(refused).toEqual({
+      sent: 0,
+      failed: 1,
+      skipped: 0,
+      skippedNothingOutstanding: 0,
+      skippedNoAddress: 0,
+    });
 
     const mine = await rita.as.query(api.reviews.myAssignments, { eventSlug });
     await rita.as.mutation(api.reviews.submit, {
@@ -1456,7 +1468,15 @@ describe("reviews.rounds", () => {
         eventSlug,
         reviewerUserIds: [rita.id],
       }),
-    ).toEqual({ sent: 0, failed: 0, skipped: 1 });
+      // W5: the skip is counted BY REASON — nothing outstanding, not a
+      // missing address — so the bulk bar can say which.
+    ).toEqual({
+      sent: 0,
+      failed: 0,
+      skipped: 1,
+      skippedNothingOutstanding: 1,
+      skippedNoAddress: 0,
+    });
   });
 
   test("legacy reviews read through the default round and keep their content", async () => {

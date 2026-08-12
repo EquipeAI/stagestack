@@ -380,6 +380,7 @@ export const filesLibraryV2 = eventQuery({
       version: v.union(v.number(), v.null()),
       versionCount: v.union(v.number(), v.null()),
       uploadedByName: v.union(v.string(), v.null()),
+      uploadedByNote: v.union(v.string(), v.null()),
       uploadedAt: v.union(v.number(), v.null()),
       url: v.union(v.string(), v.null()),
       commentCount: v.number(),

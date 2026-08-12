@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import {
   FilterChips,
   IconLine,
@@ -13,6 +13,8 @@ import {
 } from './shared'
 import type * as React from 'react'
 import type { PublicProgram, PublicSession } from '@convex/model/publish'
+import type { PublicSearchController } from '~/lib/publicSearch'
+import { clearSearchKeys, useSearchState } from '~/lib/publicSearch'
 import { Avatar, Badge, Button, SearchInput, Tag } from '~/ds'
 
 // EMB-01..03 — filterable session catalog for external embedding. Derives
@@ -138,9 +140,13 @@ function CatalogCard({
 export function SessionsCatalog({
   program,
   accent,
+  url,
 }: {
   program: PublicProgram
   accent?: string
+  /** Present on the public page, where filters are URL state; absent inside an
+   * embed iframe, which does not own the address bar (W5). */
+  url?: PublicSearchController
 }) {
   const zone = program.event.timezone
   // Card per lineup session; when only the agenda is published, fall back to
@@ -155,10 +161,12 @@ export function SessionsCatalog({
     return [...base].sort(byStartTime)
   }, [program])
 
-  const [query, setQuery] = useState('')
-  const [track, setTrack] = useState<string | null>(null)
-  const [format, setFormat] = useState<string | null>(null)
-  const [room, setRoom] = useState<string | null>(null)
+  const [queryValue, setQueryValue] = useSearchState(url, 'q')
+  const query = queryValue ?? ''
+  const setQuery = (next: string) => setQueryValue(next === '' ? null : next)
+  const [track, setTrack] = useSearchState(url, 'track')
+  const [format, setFormat] = useSearchState(url, 'format')
+  const [room, setRoom] = useSearchState(url, 'room')
 
   const tracks = useMemo(
     () => distinct(sessions.map((s) => s.trackName)),
@@ -219,10 +227,14 @@ export function SessionsCatalog({
             variant="ghost"
             size="sm"
             onClick={() => {
-              setQuery('')
-              setTrack(null)
-              setFormat(null)
-              setRoom(null)
+              // One patch, so Back undoes the whole clear rather than
+              // restoring three quarters of it (W5).
+              clearSearchKeys(url, ['q', 'track', 'format', 'room'], () => {
+                setQuery('')
+                setTrack(null)
+                setFormat(null)
+                setRoom(null)
+              })
             }}
           >
             Clear filters

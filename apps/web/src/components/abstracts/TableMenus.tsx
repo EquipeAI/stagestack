@@ -27,8 +27,7 @@ import type {
   ViewDef,
 } from './model'
 import type { ExportInput, ReviewExportRow } from './exporters'
-import { Button, Field, Icon, IconButton, Input, Switch } from '~/ds'
-import { pushToast } from '~/components/toast'
+import { ActionResult, Button, Field, Icon, IconButton, Input, Switch } from '~/ds'
 
 // The three toolbar menus. Views and columns are preferences (URL + local
 // storage); export is a client-side action over exactly the rows on screen.
@@ -288,6 +287,16 @@ export function ColumnsMenu({
   )
 }
 
+/** W5: an export's outcome is a persistent result, not a toast — "did the
+ * download actually happen, and with how many rows?" is a question asked after
+ * the five seconds a toast lives. */
+export type ExportOutcome = {
+  status: 'success' | 'partial' | 'failed'
+  title: string
+  lines: Array<string>
+  retry?: () => void
+}
+
 export function ExportMenu({
   eventSlug,
   eventName,
@@ -301,8 +310,10 @@ export function ExportMenu({
   visibleCount: number
 }) {
   const [busy, setBusy] = useState(false)
-  const [exportResult, setExportResult] = useState<string | null>(null)
+  const [exportResult, setExportResult] = useState<ExportOutcome | null>(null)
   const base = `${slug(eventName)}-proposals`
+  const rowLabel = (count: number) =>
+    `${count} proposal ${count === 1 ? 'row' : 'rows'}`
 
   return (
     <div
@@ -318,14 +329,27 @@ export function ExportMenu({
             <MenuItem
               onClick={() => {
                 setExportResult(null)
-                exportCsv(buildInput(), base)
-                setExportResult(
-                  `CSV ready: ${visibleCount} proposal ${visibleCount === 1 ? 'row' : 'rows'} downloaded.`,
-                )
-                pushToast(
-                  'CSV exported',
-                  `${visibleCount} rows, visible columns + every answer.`,
-                )
+                const runCsv = () => {
+                  try {
+                    exportCsv(buildInput(), base)
+                    setExportResult({
+                      status: 'success',
+                      title: 'CSV downloaded',
+                      lines: [
+                        `${rowLabel(visibleCount)} — the rows loaded in this view.`,
+                        'Visible columns plus every answer.',
+                      ],
+                    })
+                  } catch {
+                    setExportResult({
+                      status: 'failed',
+                      title: 'CSV export failed',
+                      lines: ['The file could not be built. Nothing downloaded.'],
+                      retry: runCsv,
+                    })
+                  }
+                }
+                runCsv()
                 close()
               }}
             >
@@ -333,28 +357,36 @@ export function ExportMenu({
             </MenuItem>
             <MenuItem
               onClick={() => {
-                setExportResult(null)
-                setBusy(true)
-                void exportXlsx(buildInput(), base)
-                  .then(() => {
-                    setExportResult(
-                      `XLSX ready: ${visibleCount} proposal ${visibleCount === 1 ? 'row' : 'rows'} downloaded.`,
+                const runXlsx = () => {
+                  setExportResult(null)
+                  setBusy(true)
+                  void exportXlsx(buildInput(), base)
+                    .then(() => {
+                      setExportResult({
+                        status: 'success',
+                        title: 'XLSX downloaded',
+                        lines: [
+                          `${rowLabel(visibleCount)} — the rows loaded in this view.`,
+                          'One sheet.',
+                        ],
+                      })
+                    })
+                    .catch(() =>
+                      setExportResult({
+                        status: 'failed',
+                        title: 'XLSX export failed',
+                        lines: [
+                          'The workbook could not be built. Nothing downloaded.',
+                        ],
+                        retry: runXlsx,
+                      }),
                     )
-                    pushToast(
-                      'XLSX exported',
-                      `${visibleCount} rows, one sheet.`,
-                    )
-                  })
-                  .catch(() =>
-                    pushToast(
-                      'Export failed',
-                      'The workbook could not be built.',
-                    ),
-                  )
-                  .finally(() => {
-                    setBusy(false)
-                    close()
-                  })
+                    .finally(() => {
+                      setBusy(false)
+                    })
+                }
+                runXlsx()
+                close()
               }}
             >
               Export XLSX
@@ -367,19 +399,24 @@ export function ExportMenu({
               onDone={close}
             />
             <MenuLabel>Attachments</MenuLabel>
-            <FileBundleItem eventSlug={eventSlug} base={base} onDone={close} />
+            <FileBundleItem
+              eventSlug={eventSlug}
+              base={base}
+              onResult={setExportResult}
+              onDone={close}
+            />
           </>
         )}
       </Popover>
       {exportResult === null ? null : (
-        <span
-          role="status"
-          style={{
-            font: 'var(--type-caption)',
-            color: 'var(--status-success-fg)',
-          }}
-        >
-          {exportResult}
+        <span style={{ flex: '1 1 20rem', minWidth: 0 }}>
+          <ActionResult
+            status={exportResult.status}
+            title={exportResult.title}
+            details={exportResult.lines}
+            onRetry={exportResult.retry}
+            onDismiss={() => setExportResult(null)}
+          />
         </span>
       )}
     </div>
@@ -512,7 +549,7 @@ function ReviewsCsvItem({
   eventSlug: string
   base: string
   buildInput: () => ExportInput
-  onResult: (message: string | null) => void
+  onResult: (result: ExportOutcome | null) => void
   onDone: () => void
 }) {
   const convex = useConvex()
@@ -526,15 +563,24 @@ function ReviewsCsvItem({
       .then(async (rows) => {
         if (format === 'csv') exportReviewsCsv(rows, `${base}-reviews`)
         else await exportReviewsXlsx(rows, `${base}-reviews`)
-        const message = `${format.toUpperCase()} ready: ${rows.length} review result ${rows.length === 1 ? 'row' : 'rows'} downloaded.`
-        onResult(message)
-        pushToast(
-          `Review results ${format.toUpperCase()} exported`,
-          `${rows.length} rows with status, recommendations, aggregate and criterion scores.`,
-        )
+        onResult({
+          status: 'success',
+          title: `Review results ${format.toUpperCase()} downloaded`,
+          lines: [
+            `${rows.length} review result ${rows.length === 1 ? 'row' : 'rows'} — one per loaded proposal.`,
+            'Status, recommendations, aggregate and criterion scores.',
+          ],
+        })
       })
       .catch(() =>
-        pushToast('Export failed', 'The review summaries could not be read.'),
+        onResult({
+          status: 'failed',
+          title: 'Review results export failed',
+          lines: [
+            'The review summaries could not be read. Nothing downloaded.',
+          ],
+          retry: () => runExport(format),
+        }),
       )
       .finally(() => {
         setBusy(false)
@@ -570,10 +616,12 @@ function ReviewsCsvItem({
 function FileBundleItem({
   eventSlug,
   base,
+  onResult,
   onDone,
 }: {
   eventSlug: string
   base: string
+  onResult: (result: ExportOutcome | null) => void
   onDone: () => void
 }) {
   const files = useQuery(api.cfp.listFileAnswers, { eventSlug })
@@ -592,28 +640,47 @@ function FileBundleItem({
       onClick={() => {
         if (files === undefined) return
         if (files.length === 0) {
-          pushToast(
-            'No files to download',
-            'No proposal has a file answer yet.',
-          )
+          onResult({
+            status: 'success',
+            title: 'Nothing to download',
+            lines: ['No proposal has a file answer yet, so no zip was built.'],
+          })
           onDone()
           return
         }
-        setBusy(true)
-        void downloadFileBundle(files, `${base}-files`)
-          .then(({ added, failed }) => {
-            pushToast(
-              `${added} ${added === 1 ? 'file' : 'files'} bundled`,
-              failed === 0 ? undefined : `${failed} could not be fetched.`,
+        const runBundle = () => {
+          onResult(null)
+          setBusy(true)
+          void downloadFileBundle(files, `${base}-files`)
+            .then(({ added, failed }) => {
+              onResult({
+                status: failed === 0 ? 'success' : 'partial',
+                title: `${added} ${added === 1 ? 'file' : 'files'} downloaded in the zip`,
+                lines: [
+                  `${files.length} attached ${files.length === 1 ? 'file was' : 'files were'} requested.`,
+                  ...(failed === 0
+                    ? []
+                    : [
+                        `${failed} could not be fetched and ${failed === 1 ? 'is' : 'are'} missing from the zip.`,
+                      ]),
+                ],
+                retry: failed === 0 ? undefined : runBundle,
+              })
+            })
+            .catch(() =>
+              onResult({
+                status: 'failed',
+                title: 'Bundle failed',
+                lines: ['The zip could not be built. Nothing downloaded.'],
+                retry: runBundle,
+              }),
             )
-          })
-          .catch(() =>
-            pushToast('Bundle failed', 'The zip could not be built.'),
-          )
-          .finally(() => {
-            setBusy(false)
-            onDone()
-          })
+            .finally(() => {
+              setBusy(false)
+            })
+        }
+        runBundle()
+        onDone()
       }}
     >
       {label}

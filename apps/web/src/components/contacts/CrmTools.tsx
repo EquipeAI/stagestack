@@ -3,6 +3,7 @@ import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Doc, Id } from '@convex/_generated/dataModel'
 import {
+  ActionResult,
   Button,
   Callout,
   Card,
@@ -76,6 +77,13 @@ export function CrmTools({
   const merge = useMutation(api.contacts.merge)
   const [importing, setImporting] = useState(false)
   const [composing, setComposing] = useState(false)
+  // The outreach dialog closes on send, so its outcome belongs to the page —
+  // otherwise "3 failed" would leave with the dialog (W5).
+  const [outreachResult, setOutreachResult] = useState<{
+    status: 'success' | 'partial'
+    title: string
+    lines: Array<string>
+  } | null>(null)
   const [segmentName, setSegmentName] = useState('')
   const [mergePair, setMergePair] = useState<
     { primary: Contact; secondary: Contact } | undefined
@@ -91,6 +99,14 @@ export function CrmTools({
         gap: 'var(--space-4)',
       }}
     >
+      {outreachResult === null ? null : (
+        <ActionResult
+          status={outreachResult.status}
+          title={outreachResult.title}
+          details={outreachResult.lines}
+          onDismiss={() => setOutreachResult(null)}
+        />
+      )}
       <div
         style={{
           display: 'grid',
@@ -288,6 +304,7 @@ export function CrmTools({
             selected.includes(contact._id),
           )}
           onClose={() => setComposing(false)}
+          onResult={setOutreachResult}
           onSent={onClearSelection}
         />
       ) : null}
@@ -630,10 +647,6 @@ function CsvImportDialog({
               void state.run(async () => {
                 const next = await importRows({ orgSlug, rows: parsed.rows })
                 setResult(next)
-                pushToast(
-                  'Import finished',
-                  `${next.imported} imported, ${next.skipped} skipped.`,
-                )
               })
             }
           >
@@ -685,12 +698,16 @@ function CsvImportDialog({
         ))}
       </div>
       {result ? (
-        <Callout tone={result.skipped ? 'attention' : 'success'}>
-          {result.imported} imported, {result.skipped} skipped.{' '}
-          {result.errors
-            .map((error) => `Row ${error.rowNumber}: ${error.message}`)
-            .join(' ')}
-        </Callout>
+        <ActionResult
+          status={result.skipped ? 'partial' : 'success'}
+          title={`${result.imported} contact${result.imported === 1 ? '' : 's'} imported`}
+          details={[
+            `${parsed.rows.length} row${parsed.rows.length === 1 ? '' : 's'} submitted · ${result.imported} imported · ${result.skipped} skipped.`,
+            ...result.errors.map(
+              (error) => `Row ${error.rowNumber}: ${error.message}`,
+            ),
+          ]}
+        />
       ) : null}
     </Dialog>
   )
@@ -700,11 +717,17 @@ function BulkOutreachDialog({
   orgSlug,
   contacts,
   onClose,
+  onResult,
   onSent,
 }: {
   orgSlug: string
   contacts: Array<Contact>
   onClose: () => void
+  onResult: (result: {
+    status: 'success' | 'partial'
+    title: string
+    lines: Array<string>
+  }) => void
   onSent: () => void
 }) {
   const send = useMutation(api.contacts.sendBulkOutreach)
@@ -748,10 +771,26 @@ function BulkOutreachDialog({
                   subject,
                   body,
                 })
-                pushToast(
-                  'Outreach complete',
-                  `${result.queued} queued, ${result.failed} failed, ${result.skipped} skipped.`,
-                )
+                // Every count comes from the mutation, which is where
+                // eligibility (an address on file) is decided.
+                onResult({
+                  status:
+                    result.failed + result.skipped === 0
+                      ? 'success'
+                      : 'partial',
+                  title: `${result.queued} email${result.queued === 1 ? '' : 's'} queued`,
+                  lines: [
+                    `${contacts.length} contact${contacts.length === 1 ? '' : 's'} selected · ${result.queued} queued.`,
+                    ...(result.failed > 0
+                      ? [`${result.failed} could not be sent.`]
+                      : []),
+                    ...(result.skipped > 0
+                      ? [
+                          `${result.skipped} skipped — no email address on file.`,
+                        ]
+                      : []),
+                  ],
+                })
                 onSent()
                 onClose()
               })

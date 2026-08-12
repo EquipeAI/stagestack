@@ -366,7 +366,10 @@ export const remind = eventMutation({
   returns: v.object({
     sent: v.number(),
     failed: v.number(),
+    /** Total skipped, kept for clients written before the reasons existed. */
     skipped: v.number(),
+    skippedNothingOutstanding: v.number(),
+    skippedNoAddress: v.number(),
   }),
   handler: async (ctx, args) => {
     return await Reviews.remindReviewers(ctx, ctx.caller, args.reviewerUserIds);

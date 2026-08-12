@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import {
   IconLine,
   PublicSpeakerAvatar,
@@ -11,6 +11,8 @@ import {
 import type * as React from 'react'
 import type { PublicProgram } from '@convex/model/publish'
 import type { SpeakerEntry } from './shared'
+import type { PublicSearchController } from '~/lib/publicSearch'
+import { useSearchState } from '~/lib/publicSearch'
 import { Dialog, Icon, SearchInput } from '~/ds'
 
 // EMB-04/05 — speaker directory: everyone across lineup + agenda, deduped by
@@ -186,14 +188,20 @@ function SpeakerDetail({ entry, zone }: { entry: SpeakerEntry; zone: string }) {
 export function SpeakersDirectory({
   program,
   accent,
+  url,
 }: {
   program: PublicProgram
   accent?: string
+  url?: PublicSearchController
 }) {
   const zone = program.event.timezone
   const entries = useMemo(() => speakerEntries(program), [program])
-  const [query, setQuery] = useState('')
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Search and the expanded speaker are URL state on the public page (W5),
+  // local state inside an embed iframe.
+  const [queryValue, setQueryValue] = useSearchState(url, 'q')
+  const query = queryValue ?? ''
+  const setQuery = (next: string) => setQueryValue(next === '' ? null : next)
+  const [selectedId, setSelectedId] = useSearchState(url, 'speaker')
 
   const filtered = entries.filter((e) => matchesQuery(query, [e.speaker.name]))
   const selected =

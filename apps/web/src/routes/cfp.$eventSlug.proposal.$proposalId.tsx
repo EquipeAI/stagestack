@@ -16,6 +16,7 @@ import {
   PageHeader,
   StatusPill,
 } from '~/ds'
+import { DisplayNameGate } from '~/components/DisplayNameGate'
 import { PageBody } from '~/components/PageBody'
 import { pushToast } from '~/components/toast'
 import { formatDateTime } from '~/lib/datetime'
@@ -140,11 +141,19 @@ function ManageRoute() {
             </p>
           </PageBody>
         ) : (
-          <ManageProposal
-            key={manageProposalKey(data)}
-            eventSlug={eventSlug}
-            data={data}
-          />
+          // W5: attribution names are collected at FIRST ENTRY into a
+          // collaborative surface, not the first time an action needs one.
+          // Managing a proposal is collaborative — edits, withdrawals and
+          // resubmissions of an accepted proposal all reach organizer surfaces
+          // under this person's name — so the prompt belongs here, at the
+          // door, exactly as it already does for /app and the speaker portal.
+          <DisplayNameGate>
+            <ManageProposal
+              key={manageProposalKey(data)}
+              eventSlug={eventSlug}
+              data={data}
+            />
+          </DisplayNameGate>
         )}
       </Show>
     </>

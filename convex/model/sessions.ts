@@ -8,12 +8,18 @@ import * as Agenda from "./agenda";
 import { logAudit } from "./audit";
 import { sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
-import { proposalAbstract, proposalLink } from "./cfp";
+import { findForm, proposalAbstract, proposalLink } from "./cfp";
 import {
   assertDurationMinutes,
+  loadFormats,
   normalizeFormatLabel,
   resolveFormatId,
 } from "./library";
+import { allFields } from "../shared/formDef";
+import {
+  RELEASABLE_STATUSES,
+  STAGEABLE_STATUSES,
+} from "../shared/bulkDecisions";
 import { republishIfPublished } from "./publish";
 import {
   CURRENT_SNAPSHOT_LABEL,
@@ -66,13 +72,11 @@ export type BulkResult = {
   error?: string;
 };
 
-/** Statuses a staged decision may move between. Draft/withdrawn/decided
- * proposals are not stageable. */
-const STAGEABLE: ReadonlySet<Doc<"proposals">["status"]> = new Set([
-  "pending",
-  "acceptQueue",
-  "declineQueue",
-]);
+/** Eligibility is defined once, in `convex/shared/bulkDecisions.ts`, so the
+ * bulk bar's before/after arithmetic and this enforcement cannot disagree. */
+const STAGEABLE: ReadonlySet<Doc<"proposals">["status"]> = STAGEABLE_STATUSES;
+const RELEASABLE: ReadonlySet<Doc<"proposals">["status"]> =
+  RELEASABLE_STATUSES;
 
 function assertBulkSize(ids: ReadonlyArray<unknown>): void {
   if (ids.length === 0) {
@@ -325,6 +329,92 @@ async function trackFromAnswers(
   return hits.size === 1 ? [...hits][0] : undefined;
 }
 
+/**
+ * The CFP form's format question is an ordinary answer, not a typed column
+ * (W2 wired the wizard to OFFER the formats library, but nothing stamps the
+ * choice onto the proposal). Carrying it over is therefore a two-step problem,
+ * and the order matters:
+ *
+ *  1. Identify the QUESTION, from the form definition alone: exactly one
+ *     non-system choice field whose label names a format question. Never by
+ *     scanning answers for a string that happens to equal a format name — a
+ *     track answer of "Talk", or a custom question whose options overlap the
+ *     formats library, would otherwise be promoted into the session's format.
+ *  2. Read only THAT question's answer, and resolve it against the library.
+ *
+ * Anything else — no such question, more than one, no answer, or a library
+ * that holds the same name twice so the link would be a coin toss — carries
+ * nothing. An empty format is recoverable in one edit; a wrong one is a
+ * silent misstatement about a session nobody chose to make.
+ *
+ * The label itself goes through `normalizeFormatLabel`, the SAME normalization
+ * every other write path applies (`sessions.updateContent`,
+ * `portal.updateSessionContent`, `resolveFormatId`, the W2 backfill), so a
+ * session materialized here and a session typed by hand land on the same
+ * library row and store the same string. Its one refusal — an over-long label
+ * — is caught and treated as "carry nothing" rather than allowed to abort a
+ * release: refusing to release an accepted proposal over a decorative field
+ * would be the worse failure.
+ */
+
+/** Is this the form's "what kind of session is this" question? */
+function isFormatQuestion(label: string): boolean {
+  const normalized = label.toLowerCase();
+  return (
+    normalized.includes("format") ||
+    normalized.includes("session type") ||
+    normalized.includes("talk type")
+  );
+}
+
+/** The single field that asks for the format, or undefined if the form does
+ * not ask exactly once. */
+async function formatQuestionId(
+  ctx: QueryCtx,
+  proposal: Doc<"proposals">,
+): Promise<string | undefined> {
+  const form = await findForm(ctx, proposal.eventId);
+  const def = form?.published ?? form?.working;
+  if (def === undefined) return undefined;
+  const candidates = allFields(def).filter(
+    (field) =>
+      field.systemKey === undefined &&
+      (field.kind === "dropdown" ||
+        field.kind === "radio" ||
+        field.kind === "text") &&
+      isFormatQuestion(field.label),
+  );
+  return candidates.length === 1 ? candidates[0]?.id : undefined;
+}
+
+async function formatFromAnswers(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+  proposal: Doc<"proposals">,
+): Promise<{ formatId?: Id<"formats">; format?: string }> {
+  const fieldId = await formatQuestionId(ctx, proposal);
+  if (fieldId === undefined) return {};
+  const answer = proposal.answers[fieldId];
+  if (typeof answer !== "string") return {};
+
+  let label: string | undefined;
+  try {
+    label = normalizeFormatLabel(answer);
+  } catch {
+    // Over-long: refused, never truncated (truncation can land on another
+    // row's name). Carrying nothing is the safe half of that same rule.
+    return {};
+  }
+  if (label === undefined) return {};
+
+  // A library holding the same name twice cannot say which row was meant, and
+  // `resolveFormatId` would silently take the first. Say nothing instead.
+  const formats = await loadFormats(ctx, event._id);
+  const matches = formats.filter((row) => row.name === label);
+  if (matches.length > 1) return {};
+  return { formatId: matches[0]?._id, format: label };
+}
+
 async function materializeSession(
   ctx: MutationCtx,
   event: Doc<"events">,
@@ -336,6 +426,10 @@ async function materializeSession(
   const existing = await sessionForProposal(ctx, proposal._id);
   const trackId =
     existing?.trackId ?? (await trackFromAnswers(ctx, event, proposal));
+  const inherited =
+    existing !== null && existing.format !== undefined
+      ? { formatId: existing.formatId, format: existing.format }
+      : await formatFromAnswers(ctx, event, proposal);
   const sessionId =
     existing?._id ??
     (await ctx.db.insert("sessions", {
@@ -347,6 +441,8 @@ async function materializeSession(
       status: "planned",
       contentStatus: "draft",
       trackId,
+      formatId: inherited.formatId,
+      format: inherited.format,
     }));
   // A correction that restores an existing track-less session still gets the
   // carry-over (the eval saw "No track" on a converted session).
@@ -356,6 +452,18 @@ async function materializeSession(
     trackId !== undefined
   ) {
     await ctx.db.patch("sessions", existing._id, { trackId });
+  }
+  // Same for a format-less session restored by a decline→accept correction:
+  // fill the gap, never overwrite a format an organizer has since set.
+  if (
+    existing !== null &&
+    existing.format === undefined &&
+    inherited.format !== undefined
+  ) {
+    await ctx.db.patch("sessions", existing._id, {
+      format: inherited.format,
+      formatId: inherited.formatId,
+    });
   }
   const speakers = await ctx.db
     .query("proposalSpeakers")
@@ -546,10 +654,7 @@ export async function releaseDecisions(
       results.push({ proposalId, ok: false, error: "not_found" });
       continue;
     }
-    if (
-      proposal.status !== "acceptQueue" &&
-      proposal.status !== "declineQueue"
-    ) {
+    if (!RELEASABLE.has(proposal.status)) {
       results.push({ proposalId, ok: false, error: "invalid_status" });
       continue;
     }

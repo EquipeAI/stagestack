@@ -4,6 +4,7 @@ import { api } from '@convex/_generated/api'
 import type { FunctionReturnType } from 'convex/server'
 import type * as React from 'react'
 import {
+  ActionResult,
   Button,
   Callout,
   DataTable,
@@ -14,7 +15,6 @@ import {
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
-import { pushToast } from '~/components/toast'
 
 // Deterministic CSV import (SPK-03). The file is parsed in the browser with
 // the same pinned SheetJS build the proposals export uses (dynamically
@@ -185,11 +185,6 @@ export function ImportCsvDialog({
         rows: mappedRows,
       })
       setResult(outcome)
-      pushToast(
-        'Import finished',
-        `Created ${outcome.created} · merged ${outcome.merged} · skipped ${outcome.skipped.length}.`,
-        'upload',
-      )
     })
   }
 
@@ -399,22 +394,17 @@ export function ImportCsvDialog({
         ) : null}
 
         {result !== null ? (
-          <Callout
-            tone={result.skipped.length === 0 ? 'info' : 'attention'}
+          <ActionResult
+            status={result.skipped.length === 0 ? 'success' : 'partial'}
             title={`Created ${result.created} · merged ${result.merged} · skipped ${result.skipped.length}`}
-          >
-            {result.skipped.length === 0 ? (
-              'Every row landed. Merged rows matched an existing speaker by email and only filled blank fields.'
-            ) : (
-              <ul style={{ margin: 0, paddingLeft: 'var(--space-5)' }}>
-                {result.skipped.map((skip) => (
-                  <li key={skip.row}>
-                    Row {skip.row}: {skip.reason}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Callout>
+            details={[
+              `${mappedRows.length} mapped row${mappedRows.length === 1 ? '' : 's'} submitted.`,
+              'Merged rows matched an existing speaker by email and only filled blank fields.',
+              ...result.skipped.map(
+                (skip) => `Row ${skip.row} skipped: ${skip.reason}`,
+              ),
+            ]}
+          />
         ) : null}
       </div>
     </Dialog>

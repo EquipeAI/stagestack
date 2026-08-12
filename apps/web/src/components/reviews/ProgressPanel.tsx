@@ -4,6 +4,7 @@ import { api } from '@convex/_generated/api'
 import type { FunctionReturnType } from 'convex/server'
 import type { Id } from '@convex/_generated/dataModel'
 import {
+  ActionResult,
   Badge,
   Button,
   Callout,
@@ -16,7 +17,6 @@ import {
   Toolbar,
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
-import { pushToast } from '~/components/toast'
 
 // Per-reviewer completion, grouped by round: who is assigned what, who has
 // finished, and the two levers an organizer pulls when the numbers lag —
@@ -33,7 +33,11 @@ export function ProgressPanel({ eventSlug }: { eventSlug: string }) {
   // Selection is by reviewer, not by row — the reminder is one consolidated
   // message per person, however many rounds they appear in.
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
-  const [reminderResult, setReminderResult] = useState<string | null>(null)
+  const [reminderResult, setReminderResult] = useState<{
+    status: 'success' | 'partial' | 'failed'
+    title: string
+    lines: Array<string>
+  } | null>(null)
 
   if (rows === undefined) {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading progress…</p>
@@ -71,21 +75,41 @@ export function ProgressPanel({ eventSlug }: { eventSlug: string }) {
 
   const sendReminder = () => {
     const reviewerUserIds = [...selected] as Array<Id<'users'>>
+    const requested = reviewerUserIds.length
     setReminderResult(null)
     void reminder.run(async () => {
       const result = await remind({ eventSlug, reviewerUserIds })
-      const exact = `${[
-        `${result.sent} reminder${result.sent === 1 ? '' : 's'} sent`,
-        ...(result.failed > 0 ? [`${result.failed} failed`] : []),
-        ...(result.skipped > 0 ? [`${result.skipped} skipped`] : []),
-      ].join('; ')}.`
-      setReminderResult(exact)
-      pushToast(
-        result.failed > 0
-          ? 'Reminder send finished with errors'
-          : 'Reminders sent',
-        exact,
-      )
+      // Every count comes from the mutation, which is where eligibility is
+      // decided — the panel adds no arithmetic of its own (W5).
+      setReminderResult({
+        status:
+          result.failed > 0
+            ? result.sent === 0
+              ? 'failed'
+              : 'partial'
+            : result.skipped > 0
+              ? 'partial'
+              : 'success',
+        title: `${result.sent} reminder${result.sent === 1 ? '' : 's'} sent`,
+        lines: [
+          `${requested} reviewer${requested === 1 ? '' : 's'} selected · ${result.sent + result.failed} eligible.`,
+          ...(result.failed > 0
+            ? [
+                `${result.failed} could not be delivered — the message is logged as failed.`,
+              ]
+            : []),
+          ...(result.skippedNothingOutstanding > 0
+            ? [
+                `${result.skippedNothingOutstanding} skipped: nothing outstanding to remind them about.`,
+              ]
+            : []),
+          ...(result.skippedNoAddress > 0
+            ? [
+                `${result.skippedNoAddress} skipped: no email address on file.`,
+              ]
+            : []),
+        ],
+      })
       setSelected(new Set())
     })
   }
@@ -125,9 +149,12 @@ export function ProgressPanel({ eventSlug }: { eventSlug: string }) {
         <Callout tone="blocked">{reminder.error}</Callout>
       ) : null}
       {reminderResult === null ? null : (
-        <Callout tone="info">
-          <span role="status">{reminderResult}</span>
-        </Callout>
+        <ActionResult
+          status={reminderResult.status}
+          title={reminderResult.title}
+          details={reminderResult.lines}
+          onDismiss={() => setReminderResult(null)}
+        />
       )}
 
       {[...groups.entries()].map(([key, group]) => (
@@ -268,6 +295,13 @@ function AutoDistribute({
   const autoDistribute = useMutation(api.reviews.autoDistribute)
   const { pending, error, setError, run } = usePending()
   const [perProposal, setPerProposal] = useState('1')
+  // A bulk assignment leaves a persistent result: "unplaced 2" has to still be
+  // readable while the organizer works out who to add to the pool (W5).
+  const [result, setResult] = useState<{
+    status: 'success' | 'partial'
+    title: string
+    lines: Array<string>
+  } | null>(null)
 
   const distribute = () => {
     const count = Number(perProposal.trim())
@@ -276,19 +310,34 @@ function AutoDistribute({
       return
     }
     void run(async () => {
-      const result = await autoDistribute({
+      const outcome = await autoDistribute({
         eventSlug,
         roundId,
         perProposal: count,
       })
-      pushToast(
-        'Auto-distributed',
-        `Assigned ${result.assigned}, unplaced ${result.unplaced}.`,
-      )
+      setResult({
+        status: outcome.unplaced === 0 ? 'success' : 'partial',
+        title: `${outcome.assigned} assignment${outcome.assigned === 1 ? '' : 's'} created`,
+        lines: [
+          `${count} review${count === 1 ? '' : 's'} per proposal was requested.`,
+          ...(outcome.unplaced === 0
+            ? []
+            : [
+                `${outcome.unplaced} slot${outcome.unplaced === 1 ? '' : 's'} could not be filled — the round ran out of eligible reviewers.`,
+              ]),
+        ],
+      })
     })
   }
 
   return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-2)',
+      }}
+    >
     <div
       style={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--space-2)' }}
     >
@@ -314,6 +363,15 @@ function AutoDistribute({
       >
         {pending ? 'Distributing…' : 'Auto-distribute'}
       </Button>
+    </div>
+      {result === null ? null : (
+        <ActionResult
+          status={result.status}
+          title={result.title}
+          details={result.lines}
+          onDismiss={() => setResult(null)}
+        />
+      )}
     </div>
   )
 }

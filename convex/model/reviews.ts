@@ -1542,11 +1542,24 @@ export async function reviewerProgress(
 
 /** Nudge the selected reviewers about their outstanding reviews (ABS-09).
  * One consolidated email per reviewer, recorded in the comms log. */
+/** W5: a bulk action states its arithmetic, so the skips are counted BY REASON
+ * here — where eligibility is actually decided — rather than collapsed into
+ * one number the UI has to guess at. `skipped` stays the total. */
+export type RemindOutcome = {
+  sent: number;
+  failed: number;
+  skipped: number;
+  /** Selected, but had no assigned/draft review waiting. */
+  skippedNothingOutstanding: number;
+  /** Selected and behind, but we hold no address for them. */
+  skippedNoAddress: number;
+};
+
 export async function remindReviewers(
   ctx: MutationCtx,
   caller: EventCaller,
   reviewerUserIds: Array<Id<"users">>,
-): Promise<{ sent: number; failed: number; skipped: number }> {
+): Promise<RemindOutcome> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
   if (reviewerUserIds.length === 0 || reviewerUserIds.length > MAX_POOL) {
@@ -1572,13 +1585,18 @@ export async function remindReviewers(
   }
   let sent = 0;
   let failed = 0;
-  let skipped = 0;
+  let skippedNothingOutstanding = 0;
+  let skippedNoAddress = 0;
   for (const userId of new Set(reviewerUserIds)) {
     const count = outstanding.get(userId) ?? 0;
     const user = await ctx.db.get("users", userId);
     const email = user?.email?.trim();
-    if (count === 0 || email === undefined || email.length === 0) {
-      skipped += 1;
+    if (count === 0) {
+      skippedNothingOutstanding += 1;
+      continue;
+    }
+    if (email === undefined || email.length === 0) {
+      skippedNoAddress += 1;
       continue;
     }
     const eventName = caller.event.name;
@@ -1608,7 +1626,19 @@ export async function remindReviewers(
     action: "review.remind",
     targetType: "event",
     targetId: caller.event._id,
-    meta: { sent, failed, skipped },
+    meta: {
+      sent,
+      failed,
+      skipped: skippedNothingOutstanding + skippedNoAddress,
+      skippedNothingOutstanding,
+      skippedNoAddress,
+    },
   });
-  return { sent, failed, skipped };
+  return {
+    sent,
+    failed,
+    skipped: skippedNothingOutstanding + skippedNoAddress,
+    skippedNothingOutstanding,
+    skippedNoAddress,
+  };
 }

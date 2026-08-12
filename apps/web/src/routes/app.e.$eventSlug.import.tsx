@@ -7,7 +7,7 @@ import type { Id } from '@convex/_generated/dataModel'
 // the review UI reads it from convex/shared/importPlan.ts instead of restating
 // it — a field added to vImportRecord must not silently become invisible here.
 import type { ImportPlan, PlannedRecord } from '@convex/shared/importPlan'
-import { Badge, Button, Callout, Card, Checkbox, DescriptionList, EmptyState, Tag, Textarea } from '~/ds'
+import { ActionResult, Badge, Button, Callout, Card, Checkbox, DescriptionList, EmptyState, Tag, Textarea } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
 import { errorMessage } from '~/lib/errors'
@@ -327,6 +327,9 @@ function PlanView({
   const confirm = useMutation(api.imports.confirm)
   const { pending, error, run } = usePending()
   const [excluded, setExcluded] = useState<ReadonlySet<string>>(new Set())
+  // W5: a refused import is a persistent result with a retry — it used to be a
+  // toast that took the reason with it when it faded.
+  const [startFailure, setStartFailure] = useState<string | null>(null)
 
   const plan = (job?.status === 'done' ? (job.result as ImportPlan) : null) ?? null
   const included = useMemo(
@@ -464,12 +467,24 @@ function PlanView({
               {plan.skippedRows.length > 8 ? ' · …' : ''}
             </Callout>
           ) : null}
+          {startFailure === null ? null : (
+            <ActionResult
+              status="failed"
+              title="The import was not started"
+              details={[
+                startFailure,
+                `Nothing was written. ${included.length} record${included.length === 1 ? '' : 's'} ${included.length === 1 ? 'is' : 'are'} still selected.`,
+              ]}
+              onDismiss={() => setStartFailure(null)}
+            />
+          )}
           <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
             <Button
               variant="primary"
               disabled={pending || included.length === 0}
               onClick={() => {
                 void run(async () => {
+                  setStartFailure(null)
                   try {
                     const executeJobId = await confirm({
                       eventSlug,
@@ -478,10 +493,9 @@ function PlanView({
                       // re-validates against vPlannedRecord.
                       records: included,
                     })
-                    pushToast('Import approved', `${included.length} records queued.`)
                     onConfirmed(executeJobId)
                   } catch (err) {
-                    pushToast('Could not start import', errorMessage(err), 'octagon-alert')
+                    setStartFailure(errorMessage(err))
                     throw err
                   }
                 })

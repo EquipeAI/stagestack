@@ -2,9 +2,11 @@ import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
+import { checkBrandColor } from '@convex/shared/brandColor'
 import type { PublicProgram } from '@convex/model/publish'
 import type { Id } from '@convex/_generated/dataModel'
 import {
+  ActionResult,
   Badge,
   Button,
   Callout,
@@ -23,6 +25,7 @@ import { usePending } from '~/lib/usePending'
 import { copyToClipboard } from '~/lib/clipboard'
 import { pushToast } from '~/components/toast'
 import { CopyLinkRow } from '~/components/CopyLinkRow'
+import { BrandColorField } from '~/components/publish/BrandColorField'
 import { formatDateTime } from '~/lib/datetime'
 import {
   ProgramView,
@@ -126,6 +129,75 @@ function MastersCard({
   const setAgenda = useMutation(api.publish.setAgenda)
   const lineup = usePending()
   const agenda = usePending()
+  // W5: publishing is not a low-risk confirmation — it is the moment the
+  // outside world sees (or stops seeing) the program. The outcome stays on the
+  // card, with what it exposed and a retry when it did not land.
+  const [result, setResult] = useState<{
+    status: 'success' | 'failed'
+    title: string
+    lines: Array<string>
+    retry: () => void
+  } | null>(null)
+
+  const publishLineup = (next: boolean) => {
+    setResult(null)
+    void lineup.run(async () => {
+      try {
+        await setLineup({ eventSlug, enabled: next })
+        setResult({
+          status: 'success',
+          title: next ? 'Public page published' : 'Public page unpublished',
+          lines: [
+            next
+              ? `${state.acceptedSessions} accepted session${state.acceptedSessions === 1 ? '' : 's'} can now appear — each still needs its own toggle below.`
+              : 'The public page no longer serves the lineup. Embeds and the read API follow the same projection.',
+          ],
+          retry: () => publishLineup(next),
+        })
+      } catch (error) {
+        setResult({
+          status: 'failed',
+          title: next ? 'Publish failed' : 'Unpublish failed',
+          lines: [
+            'Nothing changed for the public page.',
+            error instanceof Error ? error.message : 'The call did not run.',
+          ],
+          retry: () => publishLineup(next),
+        })
+        throw error
+      }
+    })
+  }
+
+  const publishAgenda = (next: boolean) => {
+    setResult(null)
+    void agenda.run(async () => {
+      try {
+        await setAgenda({ eventSlug, enabled: next })
+        setResult({
+          status: 'success',
+          title: next ? 'Agenda published' : 'Agenda unpublished',
+          lines: [
+            next
+              ? `${state.releasedSessions} released session${state.releasedSessions === 1 ? '' : 's'} and the agenda items are now on the public page.`
+              : 'The schedule is no longer public; the lineup is unaffected.',
+          ],
+          retry: () => publishAgenda(next),
+        })
+      } catch (error) {
+        setResult({
+          status: 'failed',
+          title: next ? 'Publish failed' : 'Unpublish failed',
+          lines: [
+            'Nothing changed for the public agenda.',
+            error instanceof Error ? error.message : 'The call did not run.',
+          ],
+          retry: () => publishAgenda(next),
+        })
+        throw error
+      }
+    })
+  }
 
   return (
     <Card
@@ -165,20 +237,22 @@ function MastersCard({
           gap: 'var(--space-5)',
         }}
       >
+        {result === null ? null : (
+          <ActionResult
+            status={result.status}
+            title={result.title}
+            details={result.lines}
+            onRetry={result.status === 'failed' ? result.retry : undefined}
+            onDismiss={() => setResult(null)}
+          />
+        )}
         <MasterRow
           title="Public event page"
           published={state.lineupPublished}
           pending={lineup.pending}
           error={lineup.error}
           description={`Exposes accepted sessions and confirmed speaker profiles. ${state.acceptedSessions} session${state.acceptedSessions === 1 ? '' : 's'} accepted. Each session still needs its own toggle below.`}
-          onToggle={(next) =>
-            void lineup.run(async () => {
-              await setLineup({ eventSlug, enabled: next })
-              pushToast(
-                next ? 'Public page published' : 'Public page unpublished',
-              )
-            })
-          }
+          onToggle={publishLineup}
         />
         <MasterRow
           title="Public agenda / schedule"
@@ -186,12 +260,7 @@ function MastersCard({
           pending={agenda.pending}
           error={agenda.error}
           description={`Adds released, scheduled sessions and agenda items to the page. ${state.releasedSessions} session${state.releasedSessions === 1 ? '' : 's'} released.`}
-          onToggle={(next) =>
-            void agenda.run(async () => {
-              await setAgenda({ eventSlug, enabled: next })
-              pushToast(next ? 'Agenda published' : 'Agenda unpublished')
-            })
-          }
+          onToggle={publishAgenda}
         />
       </div>
     </Card>
@@ -727,7 +796,11 @@ function NewEmbedDialog({
           <Button onClick={onClose}>Cancel</Button>
           <Button
             variant="primary"
-            disabled={pending || name.trim() === ''}
+            disabled={
+              pending ||
+              name.trim() === '' ||
+              checkBrandColor(brandColor).error !== null
+            }
             onClick={submit}
           >
             Create embed
@@ -780,17 +853,7 @@ function NewEmbedDialog({
             />
           )}
         </Field>
-        <Field
-          label="Brand color"
-          optional
-          hint="Any CSS color; it accents tags, chips and highlights."
-        >
-          <Input
-            value={brandColor}
-            placeholder="Any CSS color, e.g. rebeccapurple"
-            onChange={(e) => setBrandColor(e.target.value)}
-          />
-        </Field>
+        <BrandColorField value={brandColor} onChange={setBrandColor} />
         <Field label="Hide fields" optional>
           <div
             style={{

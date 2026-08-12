@@ -13,7 +13,7 @@ import type {
 } from '@convex/shared/sessionContent'
 import type { FunctionReturnType } from 'convex/server'
 import type { Id } from '@convex/_generated/dataModel'
-import { Badge, Button, Callout, Dialog } from '~/ds'
+import { ActionResult, Badge, Button, Callout, Dialog } from '~/ds'
 import { usePending } from '~/lib/usePending'
 
 // W3 — "Snapshots, not inverse edits".
@@ -324,9 +324,13 @@ export function ContentHistoryDialog({
         {error === null ? null : <Callout tone="blocked">{error}</Callout>}
 
         {result === null ? null : (
-          <Callout
-            tone="success"
+          // The shared persistent-result pattern (W5) — same component the
+          // exports, bulk actions, publishes and imports report through.
+          <ActionResult
+            status="success"
             title="Snapshot restored"
+            details={[result.message]}
+            onDismiss={() => setResult(null)}
             actions={
               result.undoRevisionId === null ? null : (
                 <Button
@@ -343,9 +347,7 @@ export function ContentHistoryDialog({
                 </Button>
               )
             }
-          >
-            <span role="status">{result.message}</span>
-          </Callout>
+          />
         )}
 
         {previewing !== null && current !== null ? (

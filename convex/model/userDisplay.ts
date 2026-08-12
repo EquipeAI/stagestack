@@ -82,18 +82,28 @@ export function storedPersonName(user: Doc<"users"> | null): string | null {
   return name;
 }
 
+/** Why a name could not be resolved. Callers that must SAY something about
+ * the gap need this: "no display name set" and "we cannot tell which name is
+ * theirs" are different facts, and a surface that prints one when the other is
+ * true is guessing in the user's face. */
+export type DisplayNameResolution =
+  | { name: string; reason: "resolved" }
+  | { name: null; reason: "no_user" }
+  | { name: null; reason: "unnamed_account" }
+  | { name: null; reason: "ambiguous" };
+
 /**
  * Resolve the best human name known for an event actor. An exact resource's
  * claimed speaker snapshot wins, then the canonical auth profile, then a
  * single nonconflicting event-scoped snapshot fills the legacy-name gap.
  */
-export async function eventUserDisplayName(
+export async function resolveEventUserDisplayName(
   ctx: QueryCtx,
   eventId: Id<"events">,
   user: Doc<"users"> | null,
   exactEventContactId?: Id<"eventContacts">,
-): Promise<string | null> {
-  if (user === null) return null;
+): Promise<DisplayNameResolution> {
+  if (user === null) return { name: null, reason: "no_user" };
   if (exactEventContactId !== undefined) {
     const exact = await ctx.db.get("eventContacts", exactEventContactId);
     if (
@@ -104,11 +114,11 @@ export async function eventUserDisplayName(
       const exactName = `${exact.firstName} ${exact.lastName}`
         .trim()
         .replace(/\s+/g, " ");
-      if (exactName !== "") return exactName;
+      if (exactName !== "") return { name: exactName, reason: "resolved" };
     }
   }
   const profileName = storedPersonName(user);
-  if (profileName !== null) return profileName;
+  if (profileName !== null) return { name: profileName, reason: "resolved" };
 
   // Without an exact resource relationship, use an event snapshot only when
   // every bounded match agrees. Never choose an arbitrary contact or cross an
@@ -119,7 +129,8 @@ export async function eventUserDisplayName(
       q.eq("eventId", eventId).eq("userId", user._id),
     )
     .take(51);
-  if (contacts.length > 50) return null;
+  // Past the ceiling we have not read them all, so we cannot claim agreement.
+  if (contacts.length > 50) return { name: null, reason: "ambiguous" };
   const names = new Set(
     contacts
       .map((contact) =>
@@ -127,5 +138,22 @@ export async function eventUserDisplayName(
       )
       .filter((name) => name !== ""),
   );
-  return names.size === 1 ? ([...names][0] ?? null) : null;
+  if (names.size > 1) return { name: null, reason: "ambiguous" };
+  const only = names.size === 1 ? [...names][0] : undefined;
+  return only === undefined
+    ? // The account exists and simply carries no human name anywhere.
+      { name: null, reason: "unnamed_account" }
+    : { name: only, reason: "resolved" };
+}
+
+/** The name only. Unchanged behaviour for every caller that just renders it. */
+export async function eventUserDisplayName(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+  user: Doc<"users"> | null,
+  exactEventContactId?: Id<"eventContacts">,
+): Promise<string | null> {
+  return (
+    await resolveEventUserDisplayName(ctx, eventId, user, exactEventContactId)
+  ).name;
 }

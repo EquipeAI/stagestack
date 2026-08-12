@@ -27,6 +27,7 @@ export { EmptyState } from './components/layout/EmptyState.jsx'
 export { PageHeader } from './components/layout/PageHeader.jsx'
 export { Toolbar } from './components/layout/Toolbar.jsx'
 
+export { ActionResult } from './components/feedback/ActionResult.jsx'
 export { Callout } from './components/feedback/Callout.jsx'
 export { Dialog } from './components/feedback/Dialog.jsx'
 export { ReadinessMeter } from './components/feedback/ReadinessMeter.jsx'
