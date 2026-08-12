@@ -1,8 +1,10 @@
 # StageStack — Product Milestones
 
-Product-led decomposition of what StageStack needs, in build order. Each milestone is independently demoable and maps to a business capability, not a technical layer. PLAN.md pulls its current tasks from exactly one milestone at a time.
+Product-led decomposition of what StageStack needs, in build order. Each milestone is independently demoable and maps to a business capability, not a technical layer. PLAN.md pulls its current tasks from one milestone at a time — or, where two milestones are one bet, from an explicitly named pair (the current plan covers M8 + M9).
 
 Dependency spine: **M0 → M1 → M2 → M3 → M4/M5 (parallel) → M6 → M7**. M3 (portal) unlocks both speaker ops (M4) and comms (M5).
+
+M0–M7 are the capability arc and are shipped. **M8 → M9 → M10** is the UX maturity arc that follows them: same capabilities, made operable. It exists because the 2026-08-11 evaluation scored 100% of applicable requirements while the accompanying expert UX review concluded that "StageStack already behaves like a serious event-operations system, but it still presents itself as a collection of administrative modules." Nothing in M8–M10 adds a new module; each item removes bookkeeping the organizer currently does in their head.
 
 ## M0 — Foundation: event & library
 
@@ -146,6 +148,49 @@ Event content flows outward without re-entry.
 - Post-event content remains attached to its original session: organizers may add a recording URL, select an approved slide deck, attach resources, and explicitly publish each item. Task evidence stays private unless deliberately selected for publication. V1 stores approved files and external links but does not host/transcode video or push to YouTube or a CMS.
 - The private Abstracts CSV/XLSX export in M2 is the challenge slice's only non-public export. Broad operational export packs, full-organization backups, Airtable/Sheets synchronization, and other destination connectors are post-v1.
 
+## M8 — Operational truth
+
+The product never tells an organizer something that is not true, and never makes them infer a state it already knows. (The anti-"I think that email went out?" milestone.)
+
+- Every automation states its real schedule. A predicted next run is derived from the same constant the scheduler is anchored to, or it is not shown at all. "Next evaluation around 18:00" followed by a run at 18:20 is a correctness bug, not a rounding preference.
+- One reminder-eligibility model, worded identically wherever reminders appear: automatic reminders on/off, the evaluation interval, the cadence floor before the same person can be reminded again, last automatic send, last manual send, and next eligible send. Settings and the task surfaces describe the same rules in the same words, including what an empty cadence means.
+- Delivery lifecycle is exposed as it actually progresses — Queued → Provider accepted → Delivered, or Failed/Bounced — carrying the provider event's own timestamp. A message the provider already accepted never reads as Queued; when no delivery event has arrived, the UI says delivery is unconfirmed rather than implying the mail is still waiting to leave.
+- A manual send names the qualifying recipients before it goes, and states that sending resets their cadence.
+- Assisted scheduling respects what the system already knows: session duration, room, speaker, track, and organizer constraints. It proposes before it writes, explains every session it could not place, explains a non-obvious choice, and is undoable in one action.
+- Content history is a list of snapshots — Current, Before edit at 13:42, Before edit at 13:41 — not a chain of inverse edits. Restoring previews the field-level change first (Title: X → Y; Format: Talk → empty; Description: unchanged), is itself recorded as a snapshot, and can be undone. Restoration entries are grouped so the log does not read as an argument between two versions.
+- Every derived state has exactly one explanation, produced by one capability and reused verbatim by every surface that mentions it. "Why isn't this public?" is answerable from the session itself, in the same words the publish surface uses.
+- A consequential result persists where the work happened. Transient toasts confirm low-risk actions only; anything an organizer may need to read, cite, retry, or act on stays on the page.
+- Accessibility floor, verified rather than assumed: every control has an accessible name derived from its own requirement or setting, modal focus is trapped and returned, asynchronous state changes are announced, every status carries text or shape as well as color, targets meet the WCAG 2.2 24×24 CSS-pixel minimum or its spacing exception, and tables, dialogs, filters, and schedule placement are fully operable from the keyboard — including a non-drag path for every drag interaction.
+- Information a person's collaborators will see is collected before it is needed, not demanded mid-task as a surprise gate.
+- Records inherit what their source already stated: a session generated from an accepted proposal carries that proposal's format and content forward without re-entry.
+
+## M9 — Operating surfaces
+
+The organizer stops holding the system in their head. (The anti-"which of the fourteen tabs owns this?" milestone.)
+
+- An **event control center** answers four questions on one screen: what needs my attention, what is blocked, what changed recently, and what happens next. Every count is a link into the already-filtered work, never a number the organizer has to go re-derive.
+- A first event shows the lifecycle as a visible checklist; a returning event shows the same information collapsed into a readiness summary. Neither is a product tour.
+- **Speaker workspace**: one place holding a person's identity, contact details, participations, sessions, readiness, files, comments, and communication history.
+- **Session workspace**: one place holding a session's source proposal, speakers, content approval, tasks and files, schedule, publication state, and history.
+- The existing top-level modules remain as cross-event and batch views. They stop being the only way to complete one speaker's or one session's journey.
+- Navigation follows the lifecycle — Setup, Collect, Select, Prepare, Schedule, Publish — with one operational, time-sensitive home, and stable event information kept unmistakably distinct from it. On a phone the same grouping is a real drawer with breadcrumbs, not a clipped horizontal strip.
+- **Publish Center**: lineup and schedule presented as separate decisions, a list of blockers with direct repair links, a preview of what publishing will add, change, or remove, attribution for the last publish, and bulk publication of everything currently eligible.
+- Review rounds are launched through a guided flow — basics, scorecard, reviewers and pools, eligible proposals, assignment policy, blind preview, launch summary — whose final screen states exactly what will happen and to whom, and whose outcome explains itself ("no new assignments: both selected proposals are already assigned") instead of reporting a bare zero.
+- A blind round always offers "Preview as reviewer". Anonymity is demonstrated, not reasoned about field by field.
+- Every organizer job is completable on a phone, including scheduling. The lists become card lists rather than shrunken tables, and the schedule stops being a two-dimensional grid at phone width: one day and one room in view, tap-to-place instead of drag, move and resize through a dialog. Tap-to-place is the same code path as the keyboard placement the accessibility floor requires, so touch and keyboard are not two implementations.
+- One table pattern everywhere: a single toolbar (search, filters, saved view, columns, export), removable filter chips, URL-persisted state, row click opening the workspace, at most two visible row actions with the rest in overflow, selection revealing a batch bar that states eligibility and exclusions, and zero-count filters hidden unless the zero is operationally meaningful.
+
+## M10 — Expert efficiency
+
+The organizer running their fourth event moves faster than the one running their first.
+
+- Global search across events, sessions, speakers, and proposals, and a command palette for people who already know where they are going.
+- Saved views with shareable URLs, built on the same URL-persisted table state M9 introduces.
+- Message composition uses a rich editor with clickable merge tokens and a live personalized preview; raw HTML remains available as an advanced mode rather than the only mode.
+- A customizable control center: the organizer chooses which readiness signals lead.
+- Readiness and turnaround analytics — how long decisions, confirmations, and content actually take — derived from the audit history already recorded.
+- Offline-tolerant phone behaviour and installability, once M9's phone parity has real usage behind it: the organizer surfaces that matter on site (readiness, tasks, the day's schedule) survive a bad venue network.
+
 ## Explicit non-goals
 
-Registration/ticketing, attendee-facing apps, payments on submissions, exhibitor/sponsor management, newsletters, promotional campaigns, automated prospect sourcing/enrichment, drip marketing, marketing analytics, in-product inbox/reply threading, multiple concurrent CFP forms, a generic import column-mapping wizard, AI review, multiple/category-specific review rubrics, weighted scoring formulas, automated acceptance recommendations, anonymous/blind review, venue sourcing, agency workspaces, multi-level external delegation, global speaker discovery, cross-tenant profile merging, custom permission builders, agent superuser access, fully local authentication, public microsite builders, custom public domains/layouts, separate embed configuration, broad operational export packs, full-organization backups, live or bidirectional synchronization, external write access, a public mutation API, developer portal/API-key management, webhooks, and SDKs. Integrations beyond the public read API, optional minimal embeds, and the narrow Abstracts export are post-v1.
+Guided product tours, per-control tooltips as a substitute for clear labels, additional top-level modules, a HubSpot-style CRM, registration/ticketing, attendee-facing apps, payments on submissions, exhibitor/sponsor management, newsletters, promotional campaigns, automated prospect sourcing/enrichment, drip marketing, marketing analytics, in-product inbox/reply threading, multiple concurrent CFP forms, a generic import column-mapping wizard, AI review, multiple/category-specific review rubrics, weighted scoring formulas, automated acceptance recommendations, anonymous/blind review, venue sourcing, agency workspaces, multi-level external delegation, global speaker discovery, cross-tenant profile merging, custom permission builders, agent superuser access, fully local authentication, public microsite builders, custom public domains/layouts, separate embed configuration, broad operational export packs, full-organization backups, live or bidirectional synchronization, external write access, a public mutation API, developer portal/API-key management, webhooks, and SDKs. Integrations beyond the public read API, optional minimal embeds, and the narrow Abstracts export are post-v1.

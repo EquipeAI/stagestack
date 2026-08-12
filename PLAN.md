@@ -1,293 +1,674 @@
-# PLAN — Eval fix cycle (v2)
+# PLAN — UX maturity cycle (v3)
 
-## STATUS: ALL WORKSTREAMS LANDED — 2026-08-10
+## STATUS: NOT STARTED — planned 2026-08-11
 
-W1–W8 built, tested (315+ convex tests incl. new rounds/embeds/content/
-auto-place suites, 75 web tests), browser-verified against the dev
-deployment, codex-reviewed, committed per milestone. Bonus fix found during
-verification: createDirectSession had the same email-coupling bug class as
-eval finding #4 (now deferred post-commit). RESEND_TEST_MODE=false is set on
-the dev deployment so lifecycle emails really deliver during eval runs.
-Awaiting: full eval re-run (Alvaro).
+Covers **M8 (Operational truth)** and **M9 (Operating surfaces)** from
+[docs/MILESTONES.md](docs/MILESTONES.md). M10 (expert efficiency) is deliberately
+out of this plan; it gets its own once M9 has real usage behind it.
 
-Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) · [docs/CHALLENGE.md](docs/CHALLENGE.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-Previous plan (original build, M0–M8): [docs/PLAN-2026-08-submission.md](docs/PLAN-2026-08-submission.md)
+Context: [docs/BUSINESS_CONTEXT.md](docs/BUSINESS_CONTEXT.md) ·
+[docs/CHALLENGE.md](docs/CHALLENGE.md) ·
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ·
+[docs/MILESTONES.md](docs/MILESTONES.md)
+Previous plans: [eval fix cycle](docs/PLAN-2026-08-eval-fix.md) ·
+[original build M0–M8](docs/PLAN-2026-08-submission.md)
 
 ## Why this plan exists
 
-The 2026-08-10 direct-browser eval (killmysaas-evals, 18 required scenarios + 2
-optional, 98 rubric items) against `stagestack-git-develop-…vercel.app` scored
-**49.8% required / 83.4% coverage**. Area scores: CFP 76.5%, **Abstract
-Management 5.4%**, Speaker Mgmt 74.0%, Content Mgmt 54.2% (38.7% coverage —
-blocked by a datetime input bug), AI Agenda 93.3%, **Public Widgets 24.3%**,
-optional CRM 26.3%. This plan closes the gaps, ordered so that cheap unblockers
-land first (they restore coverage for whole areas), then the two big rebuilds.
+The 2026-08-11 direct-browser eval scored **100% of applicable requirements**
+(score report at `~/Code/killmysaas-evals/runs/codex-20260811T174250Z/report.md`;
+method: Codex Desktop direct browser, not the killmysaas harness). The expert UX
+review written against that same run (20 scenarios, 322 screenshots) was
+delivered in-session and is **not preserved as a file** — this plan is the
+surviving record of its findings, so the requirement lists below (W8's rows, the
+protected list, the five "clicking too much" jobs) are authoritative here and
+cannot be re-consulted elsewhere. The score report independently confirms three
+of them (the `:20` cron anchor, "Event contributor" provenance, the
+Lightning-Talk-in-a-60-minute-slot). The review reached a different verdict
+about the same product:
 
-Decisions made with Alvaro (2026-08-10): **full multi-round review rebuild**,
-**light CRM only**, no deadline pressure — plan for completeness.
+> StageStack's feature architecture is stronger than its interaction
+> architecture. The next leap is not more capability. It is helping organizers
+> understand what needs attention, why something is blocked, and what will
+> happen next.
 
-Eval rubric source: `~/Code/killmysaas-evals/specs/*.yaml` (IDs like ABS-05
-below refer to those rubrics). Re-run target: same harness, same fixtures.
+So this plan adds **no new modules**. Every workstream either makes an existing
+statement true (M8) or removes bookkeeping the organizer currently does in their
+head (M9).
 
-## W1 — Unblockers & small correctness fixes (do first)
+The review also named what must survive the work, and these are treated as
+regressions if they degrade: the coherent proposal→session lineage; the
+one-job-at-a-time reviewer queue; the tightly scoped speaker portal; the unusually
+good consequence copy on declines, reopens, and blocked releases; the audit trail
+(human attribution, timestamps, version history, non-destructive corrections);
+the shared publication projection behind page/embed/API; and the restrained
+visual language, including empty states like "No requirements yet" that explain
+the concept and offer one next action.
 
-These four bugs each blocked whole scenario chains in the eval:
+## Decisions made with Alvaro (2026-08-11)
 
-- [x] **Popover opens below the viewport in the bulk bar** (blocked ABS-05
-  assignment + the whole reviewer round trip / CFP-11).
-  `apps/web/src/components/abstracts/Popover.tsx:88` hard-codes downward
-  opening (`top: calc(100% + …)`); `BulkBar.tsx` is fixed to the viewport
-  bottom, so the 22rem panel is unreachable. Add flip logic (open upward when
-  the host is in the lower half / insufficient space below) or portal the
-  panel with collision-aware positioning. Verify with the bar at the bottom in
-  a normal viewport.
-- [x] **CFP wizard advances past empty required fields** (CFP-01 partial).
-  `apps/web/src/routes/cfp.$eventSlug.submit.tsx` `goto()` (~line 735) never
-  blocks: when leaving `submission` (and `participants`) with `blockers > 0`,
-  block the step change, set the flagged set, scroll to the first missing
-  field, and show the validation error inline. Keep the Review-step jump list.
-- [x] **`submitProposal` rolls back when email send throws** (eval finding 4:
-  Resend test-mode + real address → whole submission rolled back).
-  `convex/model/cfp.ts:1046-1150` awaits both `sendLoggedEmail` and
-  `notifyOrganizers` inline in the mutation. Move both sends to
-  `ctx.scheduler.runAfter(0, …)` (pattern already used by
-  `convex/model/publish.ts:455`) so the proposal commit never depends on email
-  rendering/delivery. Same review for other user-facing mutations that await
-  sends inline.
-- [x] **`datetime-local` value parsing rejects browser-driven fill** (made 9
-  of 14 CNT items cannot-judge). `apps/web/src/lib/datetime.ts:72`
-  `fromInputValue` only accepts strict ISO; drivers can deliver localized
-  strings to the controlled state. Make it tolerant: try `fromISO`, then
-  luxon `fromFormat` fallbacks for common localized shapes, then
-  `new Date(value)` as last resort; on total failure show the parse error
-  instead of silently blocking. Three call sites:
-  `components/tasks/NewRequirementDialog.tsx:187`, `RequirementCard.tsx:322`,
-  `InstanceActions.tsx:457` (and the agenda `PlaceDialog.tsx` uses the same
-  control — route it through the same helper).
-- [x] **Reviewer sees organizer navigation** (CFP-10 partial, eval finding 3).
-  `apps/web/src/routes/app.e.$eventSlug.tsx:49-137`: nav items without
-  `requires` leak to reviewers (Overview, CFP, Proposals, Settings, Team).
-  Default nav items to organizer-only; give reviewers a reviewer-scoped
-  landing (Reviews + their queue) with no organizer tabs. Backend scoping is
-  already enforced — this is presentation, but it's a scored rubric item.
+1. **Evals will re-run and are tolerant.** The harness re-derives paths from the
+   UI, so renamed labels and merged pages are acceptable **as long as every
+   capability stays reachable**. (Verified: the killmysaas harness is an LLM
+   driving aria snapshots with no hardcoded selectors — "Dashboard"/"/dashboard"
+   appear only as discovery hints — and the 100% run itself was Codex direct
+   browser; both re-derive. Exception: a few spec criteria assert **verbatim
+   strings** — the CFP format option labels and a visible CRM analytics widget —
+   see the label constraint in W2 and the CRM note in W12.) Practical rule for this plan: no capability may
+   become harder to find than it is today, and every current route keeps
+   resolving (redirect, never 404) — see Cross-cutting.
+2. **Scope is trust + the big bet** — M8 and M9 in one plan, ordered so the trust
+   work lands first and the readiness vocabulary it produces becomes the
+   backbone of the control center, the workspaces, and the Publish Center.
+3. **Workspaces are routed pages, not drawers** (my call, made on the mobile
+   constraint — reasoning in W7).
+4. **No new editor dependency** for templates: token palette + insert-at-cursor
+   + live personalized preview over the existing textarea, raw HTML kept as an
+   explicit advanced mode. Full WYSIWYG is an M10 question.
+5. **Dashboard and Overview merge.** The event root becomes the control center;
+   today's Overview facts fold into Setup → Overview; `/dashboard` redirects to
+   the root.
+6. **Decisions is a filtered view of Proposals**, not a fifteenth module — a
+   Select-group nav entry that deep-links into Proposals pre-filtered to staged
+   decisions, with the release action there.
+7. **Formats become a library type with default durations** (alongside tracks,
+   rooms, tags), with an optional per-session override. This is what gives
+   auto-place, the public widgets, and the CFP form one shared answer to "how
+   long is a Lightning Talk".
+8. **Full mobile parity, including the agenda board.** The schedule grid gets a
+   real touch design, not a scroller. This is the one place the plan goes beyond
+   the review's recommendations, and it carries its own workstream (W13).
 
-## W2 — Abstract Management rebuild (ABS-01…13; area weight 20, scored 5.4%)
+## Constraints that shape every workstream
 
-Full multi-round build. Today reviews are one table with a fixed 1–5 score +
-recommendation + comment (`convex/model/reviews.ts`, no rounds/criteria/
-weights/pools). Target model:
+- **Mobile web is a first-class target at full parity** (decision 8) — every
+  organizer job, including scheduling, must be completable on a phone. The shell
+  already flips at 860px (`apps/web/src/styles/app.css:45`) and the sidebar
+  becomes a scroll-snapping strip
+  (`apps/web/src/ds/components/navigation/navigation.css:36`). Every new surface
+  below states its phone behaviour explicitly; "it scrolls" is not a design, and
+  "desktop only" is no longer an available answer for any surface.
+- **Design system first.** All new UI composes `apps/web/src/ds` primitives
+  (`Callout`, `ReadinessMeter`, `StatusPill`, `Toolbar`, `DataTable`,
+  `Breadcrumb`, `Tabs`, `EmptyState`) and the `stagestack-design` skill. New
+  patterns are added to the DS, not to one route.
+- **Convex rules unchanged**: read `convex/_generated/ai/guidelines.md` first;
+  validators on everything; capabilities in `convex/model/*` with thin public
+  wrappers; convex-test coverage including negative authz for every new surface.
+- **One explanation, one producer.** Any sentence the UI says about state
+  (readiness, blockers, publication, eligibility) is generated in
+  `convex/model/*` and rendered verbatim. No route re-derives it in TSX.
 
-- [x] **Schema**: `reviewRounds` (eventId, name, opensAt, closesAt,
-  anonymized, order), `scorecardFields` per round (kind: numeric{min,max,
-  weight} | dropdown{options} | text; label; order), `roundReviewers` (per-
-  round pool membership), and `reviews` keyed (roundId, proposalId,
-  reviewerId) with `answers` keyed by scorecard field. Migrate the existing
-  reviews into a default "Initial Review" round with a scorecard matching the
-  current fixed fields (score→numeric 1-5, recommendation→dropdown,
-  comments→text) so history survives. (ABS-01, ABS-02, ABS-03, ABS-04)
-- [x] **Evaluation-plan UI**: new organizer route (Reviews → Rounds /
-  "Evaluation plan"): CRUD rounds with names + open/close dates + per-round
-  anonymization toggle + scorecard editor (add numeric/dropdown/text
-  criteria, per-criterion weight input). Persist + render after reload.
-  (ABS-01, ABS-03, ABS-04, ABS-07)
-- [x] **Per-round reviewer pools**: attach reviewers to a round (reuse team
-  invitations for account provisioning); round 2 pool independent of round 1.
-  (ABS-02)
-- [x] **Assignment at scale**: assignment UI gains (a) per-reviewer cap
-  setting, (b) auto-distribute action (spread unassigned proposals across the
-  round pool respecting caps), (c) track filter before bulk assign. Any one
-  passes ABS-06 — build auto-distribute + track filter, cap if cheap.
-- [x] **Blind review**: when the round is anonymized, the reviewer projection
-  strips speaker names/companies/emails everywhere (queue, readout, files);
-  organizer views unaffected. Extend the existing reviewer privacy projection
-  in `convex/model/reviews.ts` / `ProposalReadout.tsx`. (ABS-07)
-- [x] **Reviewer scoring UI**: render the round's scorecard dynamically
-  (numeric steppers, dropdown, textarea), draft autosave, submit; reopen shows
-  stored values. Queue scoped to (round, assigned) only — already enforced,
-  keep it. (ABS-03, ABS-05)
-- [x] **Conflict-of-interest**: "Declare conflict" action on an assigned
-  review → flags the row, removes it from the reviewer's actionable queue,
-  surfaces to organizer for reassignment. (ABS-12)
-- [x] **Progress dashboard**: per-reviewer assigned/completed counts per
-  round, live; select lagging reviewers → bulk reminder email (template +
-  comms log). (ABS-08, ABS-09)
-- [x] **Aggregate results table**: per-proposal aggregate (weighted mean of
-  numeric criteria; label it "weighted"), sortable asc/desc by score column,
-  visible per-review breakdown; co-authors with role labels visible in the
-  organizer results/detail view. (ABS-10, ABS-11, CFP-11)
-- [x] **Export**: CSV/XLSX of review results (one row per proposal: title,
-  per-criterion aggregates, recommendation, status) — reuse
-  `components/abstracts/exporters.ts`. (ABS-13)
-- [x] **Co-author role labels**: participants already exist; ensure the CFP
-  wizard's participants step offers a role label (Co-author/Co-speaker/…)
-  and it renders in speaker dashboard detail + organizer review views.
-  (ABS-11)
-- [x] ABS-14 (AI triage) is judged only if we claim AI review — we don't;
-  explicitly out of scope.
+---
 
-## W3 — Public Widgets (EMB-01…16; area weight 20, scored 24.3%)
+# M8 — Operational truth
 
-Today: one flat lineup list + one grouped agenda list on `/e/$slug`, an embed
-route with `?section=`, one JSON endpoint. The eval wants five distinct widget
-surfaces + an embed console. Build on the existing published-blob architecture
-(one privacy-filtered projection — keep it).
+## W1 — Truthful automation & delivery status
 
-- [x] **Blob enrichment** (`convex/model/publish.ts`): add per-speaker
-  jobTitle/company (tagline split or new fields — see W5 speaker fields),
-  session format everywhere, stable per-day grouping data. Watch the 1MiB
-  guard — dedupe agenda/lineup session duplication while in here (carried
-  from M8 W-A).
-- [x] **Sessions catalog widget**: card list with title, truncated
-  description + "Show more" expansion, date/time, room, speakers (name +
-  title/company), format + track tags; keyword search matching titles AND
-  speaker names with live result count; faceted filters (Track, Format,
-  Room). (EMB-01, EMB-02, EMB-03)
-- [x] **Speakers directory widget**: alphabetical-by-surname directory
-  (headshot, name, title, company), name search, drill-down detail with bio +
-  that speaker's sessions (title, date/time, room). (EMB-04, EMB-05)
-- [x] **Agenda grid widget**: room-columns × time-gutter grid per day (reuse
-  the internal `TimeGrid` rendering read-only), day navigation tabs, click a
-  block → detail view (full time range, room, description, format, track) with
-  back/close. (EMB-06, EMB-07, EMB-08)
-- [x] **Schedule itinerary widget**: day tabs, chronological cards with time
-  headers, full card anatomy (track chip, title, description + show more,
-  date/time, room, speakers w/ title+company); keyword search + track filter.
-  (EMB-09)
-- [x] **Personal schedule**: star/add control per itinerary card; "My
-  schedule" view with exactly the chosen sessions in time order; persists
-  across reload (localStorage for anonymous is enough per rubric); remove
-  updates the view; .ics export of the selection (reuse `convex/model/ics.ts`
-  building blocks client-side or via an endpoint). (EMB-10, EMB-11)
-- [x] **Speaker gallery widget**: photo-grid visually distinct from the
-  directory (headshot-forward cards), name search, graceful fallback for
-  missing photos, card → detail modal (photo, name, title, bio + show more,
-  company, "Sessions (N)" list) restoring the grid on close. (EMB-12, EMB-13)
-- [x] **Embed console upgrade** (`app.e.$eventSlug.publish.tsx`): named,
-  saved embeds with enable/disable; widget-type picker covering all five;
-  output formats: styled iframe/script snippet, basic HTML, **JSON feed**,
-  **iCal feed** (new HTTP endpoints in `convex/http.ts`); config options —
-  content filter by track, field selection checkboxes, basic brand color;
-  per-embed "Get Code" snippet copy. (EMB-15, EMB-14)
-- [x] **All five widgets reachable by a non-admin** — public page routes
-  (`/e/$slug/…` tabs or paths) + embed variants render anonymously. (EMB-14)
-- [x] **Consistency** (EMB-16): guaranteed by the shared blob — but see W4
-  staleness fixes; verify one session shows identical fields across catalog/
-  agenda/itinerary and organizer record.
+The single biggest remaining trust issue in the review.
 
-## W4 — Publish freshness (eval finding 8; EMB-16, SPK partials)
+- [ ] **The predicted next run must be the real next run.** `automationStatus`
+      (`convex/reminders.ts`, ~line 917) returns
+      `floor(now / hour) * hour + hour` — a clean clock hour. The sweep is
+      `crons.interval("reminder sweep", { hours: 1 }, …)` (`convex/crons.ts`),
+      which is anchored to when the cron was **first deployed** ("beginning when
+      the job is first deployed to Convex" — installed-source jsdoc), so it
+      actually fires at :20-past or wherever that deploy landed. Fix the anchor,
+      not the wording: switch the sweep to `crons.cron` with a fixed minute —
+      **not** `crons.hourly`, which `convex/_generated/ai/guidelines.md:374`
+      forbids (and whose `minuteUTC` is backend-chosen when omitted, the exact
+      unpredictability being fixed) — and export the `SWEEP_MINUTE` constant
+      from one module that both `crons.ts` and `automationStatus` import
+      (precedent: `worker.ts` imports `shared/jobTypes`; no isolate restriction
+      applies). Cron minutes are UTC; the existing epoch-hour math stays correct
+      in every timezone. Then the prediction is derived from the schedule
+      instead of guessing at it.
+- [ ] **Say it in event time, and say what it is.** The copy at
+      `apps/web/src/routes/app.e.$eventSlug.tasks.tsx:197-198` renders a browser
+      local time with no zone label, in a product whose stated rule is that
+      organizer surfaces show and label event time. Render the next evaluation
+      in the event timezone via `apps/web/src/lib/datetime.ts`, labelled, and
+      keep the honest hedge already in the backend comment — it is the next
+      *evaluation*, not a promise of a send.
+- [ ] **Reconcile the two cadence stories.** The task page says daily safety
+      reminders continue when the event cadence is off; Settings says an empty
+      cadence sends none. Decide which is true (read `convex/reminders.ts`
+      eligibility — the code is the tiebreaker), then state that one model in
+      one shared copy constant used by both `tasks.tsx` and
+      `app.e.$eventSlug.settings.tsx`.
+- [ ] **Delivery lifecycle, end to end.** `messages.deliveryStatus` starts at
+      `queued` (`convex/model/comms.ts:118`) and is advanced by the Resend
+      webhook (`convex/emails.ts:117`, routed at `convex/http.ts:103`). The
+      review saw `Queued` on mail Gmail had already received, so **first
+      diagnose transport** — a persistent `Queued` means the row truly never
+      advanced (only the webhook moves batch sends off `queued`), and there are
+      two candidate causes on `develop` (`marvelous-snail-907`), check both:
+      `RESEND_WEBHOOK_SECRET` unset there (the component throws "Webhook secret
+      is not set" and the endpoint 500s loudly; env vars do not mirror from dev
+      — see CLAUDE.md deploy table), or **no Resend-dashboard webhook endpoint
+      pointing at that deployment's own `.convex.site/resend-webhook` URL** —
+      Svix secrets are per-endpoint, and a missing endpoint fails silently with
+      no errors anywhere. Then fix the surface either way.
+- [ ] **Never claim Queued for something that left.** Render the lifecycle as
+      Queued → Provider accepted → Delivered / Failed / Bounced with the
+      provider event's own timestamp, in `components/comms/` and the per-contact
+      log. (Corrected during plan review: `convex/model/contacts.ts:937-941` is
+      NOT the bug — it is the same-transaction send result, correctly `queued`
+      at that instant, consumed only by a one-shot toast. The persistent
+      surfaces — `outreachHistory` at `contacts.ts:880`, `contactLog` at
+      `comms.ts:594` → `LogPanel` — already render raw `deliveryStatus`, so a
+      persistent "Queued" means the webhook never fired: transport is the whole
+      fix, and this item is the lifecycle *rendering* upgrade only.) When the
+      provider accepted but no delivery event has arrived, say
+      "Sent — delivery unconfirmed", not "Queued".
+- [ ] **Manual send confirmation states the audience and the consequence.**
+      `apps/web/src/components/comms/SendPanel.tsx`: before sending, name who
+      qualifies and who is excluded and why, and state that sending resets those
+      recipients' cadence.
+- [ ] **Reminder facts panel** wherever reminders are configured or triggered:
+      automatic on/off · evaluation interval · cadence floor · last automatic ·
+      last manual · next eligible. One component, one query, both pages.
+- *Mobile*: the lifecycle is a labelled vertical list, never a horizontal
+  stepper; the facts panel stacks via `DescriptionList` (already stacks at
+  640px, `layout.css:88`).
 
-Confirmed speakers and profile edits currently don't reach an already-
-published program until a manual republish (`convex/model/portal.ts`: decline
-and withdraw trigger rebuilds; **confirm and updateMyProfile do not**).
+## W2 — Assisted placement you can trust
 
-- [x] Trigger `requestRebuild` on: speaker **confirm** (portal.ts:~786 — today
-  only `declined` triggers), `updateMyProfile` (:717), `updateSessionContent`
-  (:906), organizer speaker-record edits, and content-approval changes (W5).
-  Keep explicit publish for editorial control of *whether* something is
-  published; auto-rebuild only refreshes already-published content.
-- [x] Test: publish → speaker confirms + saves profile → public blob shows the
-  named speaker without any organizer action.
+- [ ] **Formats become a library type with default durations** (decision 7).
+      Today `sessions.format` is a free-text optional string
+      (`convex/schema.ts:675`) and no duration **default** exists anywhere in
+      the schema — placed sessions carry an implicit one via `startsAt`/`endsAt`
+      (`schema.ts:694-695`) and `PlaceDialog` already accepts arbitrary ends;
+      what is missing is the *pre-placement* default — so the scheduler has
+      nothing to be smart with. Add `formats` to the event
+      library beside tracks/rooms/tags (`convex/model/library.ts`,
+      `convex/schema.ts`): name + `defaultDurationMinutes` + order, plus an
+      optional `durationMinutes` override on the session. Migrate existing
+      free-text values into library rows per event (distinct strings → formats,
+      unmatched left as free text so nothing is lost), and keep the free-text
+      display fallback for any session that never matched.
+- [ ] **Wire formats through the surfaces that already show them**: the CFP form
+      offers the library's formats where it currently takes free text
+      (`components/cfp/CfpForm.tsx`), the public blob and widgets render the
+      library label (`convex/model/publish.ts`, `components/public/widgets/`),
+      and the accept path inherits it (W5). **Label constraint**: the eval
+      asserts the CFP format options verbatim, duration parenthetical included
+      ("Workshop (120 min)" — `specs/01-call-for-papers.yaml:39-64`), and CFP
+      conditional logic matches by exact string
+      (`convex/shared/formDef.ts:83-106`). Migrated library rows must render
+      exactly the existing labels; do not normalize away the "(120 min)".
+- [ ] **Duration-aware placement.** `autoPlace` (`convex/model/agenda.ts:1729`)
+      walks an hourly grid and writes `endsAt = startsAt + HOUR_MS` for every
+      session, which is how a 10-minute Lightning Talk landed in a 60-minute
+      slot. Derive the block from session override → format default → event
+      default, and keep the slot walk independent of the block length so short
+      sessions pack instead of each consuming an hour.
+- [ ] **Respect the constraints we already model.** The conflict engine
+      (`conflictsFor`) is consulted for blockers; extend the candidate scoring to
+      prefer track grouping and speaker gaps rather than taking the first
+      non-blocking cell.
+- [ ] **Propose before writing.** Turn the action into "Suggest schedule" →
+      preview list (session · day · time · room · why) → Apply / Discard. The
+      mutation stays one call; the preview is a query over the same planner, so
+      there is no second placement implementation.
+- [ ] **Explain the leftovers.** `unplaced` currently returns only
+      `{sessionId, title}`. Add a reason per entry (no free room of that length,
+      speaker double-booked at every candidate, outside event bounds) and render
+      it — an unexplained "unplaced 2" is the thing the review objected to.
+- [ ] **Undo.** One action reverting exactly the placements this run wrote
+      (the audit row at `convex/model/agenda.ts:1822` already records the run;
+      extend its `meta` to carry the placement set).
+- [ ] **Surface the non-drag path that already exists.** `PlaceDialog.tsx` and
+      keyboard placement (`keyboardDrag.ts`) both work; what is missing is a
+      *visible* "Place…" action on every unscheduled session, so the alternative
+      to dragging is discoverable rather than only keyboard-reachable. (Also W6,
+      W13.)
+- *Mobile*: the suggestion preview is the primary scheduling interface on a
+  phone — it is a list, it reviews well at 375px, and it is how most phone
+  scheduling should happen. The board's own touch design is W13.
 
-## W5 — Content Management (CNT; area weight 15, coverage was 38.7%)
+## W3 — Snapshots, not inverse edits
 
-The datetime fix in W1 restores the whole task-fixture chain. Then:
+- [ ] **Reframe the history model.** `sessionRevisions` (`convex/schema.ts:262`)
+      stores `before` and `after` per edit as **full snapshots** (no chain
+      replay needed), so a snapshot list is already derivable: **Current**, then
+      one entry per edit labelled "Before edit on 11 Aug at 13:42". Scope: these
+      snapshot **content fields only** — title, description, format
+      (`schema.ts:267`); schedule, track, and tags are not versioned, and the
+      snapshot UI must not imply they are. Build that projection in `convex/model/sessions.ts`
+      (near `listRevisions`, ~line 1145) and stop presenting rows as actions
+      whose direction the organizer must infer.
+- [ ] **Restore previews the diff first.** Action becomes "Restore this
+      snapshot" → field-level preview (`Title: X → Y`, `Format: Talk → empty`,
+      `Description: unchanged`) → confirm. Note the existing sharp edge in the
+      preview: absent fields restore as **cleared**, not as kept-current
+      (`convex/model/sessions.ts:1180`) — that is defensible, but it must be
+      shown, not discovered.
+- [ ] **Undo the restore.** The restore already writes its own revision
+      (`restoreRevision`, ~line 1169); expose that as a one-click Undo in the
+      persistent result (W5) rather than expecting a second manual restore.
+- [ ] **Group restoration entries** visually in the log so a restore reads as
+      one event, not as another edit war.
+- *Mobile*: the diff is a stacked before/after list, not a two-column table.
 
-- [x] **File comments**: comment thread on task uploads (author + timestamp,
-  visible cross-role, organizer can reply). New `uploadComments` table +
-  thread UI in `InstanceActions`/portal task views. (CNT-05)
-- [x] **Upload constraints copy**: state accepted types + max size at the
-  upload control (portal + organizer). (CNT-06)
-- [x] **Files library**: per-event Files view aggregating all task uploads
-  with session/speaker association, upload date, version count; per-session
-  Files tab if cheap. Data exists in `uploads` — this is a query + route.
-  (CNT-13)
-- [x] **Bulk ZIP export of deliverables**: multi-select sessions/files →
-  jszip bundle of latest versions, folder per session/speaker grouping option
-  (reuse `components/abstracts/exporters.ts` pattern). (CNT-14)
-- [x] **Session content history + restore**: record before/after values on
-  session title/description edits (extend the existing audit rows or a new
-  `sessionRevisions` table), history panel with editor + timestamp, restore a
-  prior version. (CNT-11)
-- [x] **Content approval status**: per-session content status
-  (draft/approved), organizer control, and the **publish projection excludes
-  unapproved sessions** — this is the gate CNT-12 grades; wire into W3
-  widgets and W4 auto-rebuild.
-- [x] Organizer speaker profile editing (bio + headshot upload from the admin
-  side) — verify it exists end-to-end; the eval couldn't reach it. (CNT-10)
+## W4 — One readiness vocabulary
 
-## W6 — Speaker Management gaps (SPK-01, SPK-03, SPK-15)
+The backbone the M9 surfaces consume. Build it before the control center.
 
-- [x] **Dedicated Speakers roster route** (`app.e.$eventSlug.speakers`):
-  all event speakers with identity fields, search/filter, status, link to
-  sessions/tasks/comms. Today the roster is implicit in sessions + dashboard.
-  (SPK-01, helps several SPK partials)
-- [x] **Deterministic CSV import**: plain column-mapping importer for
-  speakers (upload → map columns → dedupe by email → create), alongside the
-  AI import. The eval failed SPK-03 because only the AI-plan path exists.
-  (SPK-03, also CRM-05 at org level if pointed at contacts)
-- [x] **Custom/logistics fields wired**: `customFields` schema exists
-  (`appliesTo: "speaker"`) but no value storage — add value storage on
-  eventContacts, render on speaker record (organizer side), persist.
-  (SPK-15)
-- [x] Speaker fields: add jobTitle/company as first-class fields (today only
-  `tagline`) — needed by W3 widgets and SPK/EMB card anatomy. Migrate
-  tagline→jobTitle heuristically only if trivial; else keep tagline as
-  fallback display.
+- [ ] **Extend `convex/model/readiness.ts`** — which already derives
+      `{status, reasons}` and is explicitly never stored — with a **publication**
+      dimension: `whyNotPublic(session)` returning structured reasons, each with
+      a machine `code`, a rendered sentence, and a repair target (route + params)
+      so every count and every blocker can deep-link.
+- [ ] **Compose the exact sentences the review asked for**, from the real
+      dependency chain (content approval · speaker confirmation · lineup toggle ·
+      slot release · public event state · agenda publication state):
+      "Not public: content is Draft. Speaker and schedule are ready." /
+      "Public in lineup, not agenda: its session is approved and lineup-enabled,
+      but the slot has not been released."
+- [ ] **One producer, many surfaces.** Render the same strings in the sessions
+      table, the session workspace (W7), the Publish Center (W8), and the
+      dashboard/control center (W6). Any surface that re-words a state in TSX is
+      a bug in this workstream.
+- [ ] **A cheap counts query for the nav rail** (consumed by W7): per-module
+      attention counts via `takeCapped` (truncating, never `event_too_large`),
+      no ticking argument, derived from the same model code — the full
+      `dashboard()` scan stays a per-page query and is never subscribed from
+      the shell.
+- [ ] Convex tests: one case per reason code, plus the all-ready case, plus a
+      negative-authz case per new query.
 
-## W7 — Agenda auto-place (AIA-08, weight 1)
+## W5 — Rough edges from the 100% run
 
-- [x] "Auto-place" button in the agenda toolbar right cluster
-  (`AgendaBoard.tsx:289`): one action places all unscheduled sessions into
-  free slots using the existing conflict engine (greedy: iterate released-
-  hours grid, skip blockers). Deterministic is fine — rubric judges "any
-  one-action assisted placement" generously. Optionally label it "Suggest
-  schedule" with a review-before-apply preview.
+Each is small, each was individually named in the review.
 
-## W8 — Light CRM (optional area; cheap wins only)
+- [ ] **Persistent results replace toast-only outcomes.** Exports, bulk actions,
+      publishes, imports, and restores keep an inline result on the page
+      (prepared / downloaded / failed, with retry). Toasts stay for low-risk
+      confirmations only. Add the pattern to the DS beside `Toast` so routes
+      inherit it (`apps/web/src/ds/components/feedback/`).
+- [ ] **Proposal → session field inheritance.** Confirmed broken during plan
+      review, and the cited line was the wrong path: `sessions.ts:769` is the
+      **direct-invitation** path, which already carries format. The CFP accept
+      path is `materializeSession` (`convex/model/sessions.ts:316-338`), which
+      copies title/description/track but no format — and proposals have no
+      format field: format lives inside free-form `answers`. The fix needs a
+      `formatFromAnswers`-style match against W2's library (track has exactly
+      this helper at ~`sessions.ts:295`), so **this item depends on W2 landing
+      first**. Add the regression test.
+- [ ] **Headshot uploader provenance.** Attribution can render a generic "Event
+      contributor" (`convex/model/userDisplay.ts`); resolve to the real actor
+      where the record has one, and say plainly when it does not.
+- [ ] **Attribution names collected up front.** `requirePersonDisplayName`
+      (`convex/model/userDisplay.ts:35`) gates attribution-bearing work; collect
+      the name at first entry into a collaborative surface instead of blocking
+      mid-task.
+- [ ] **Embed brand colour**: picker + validation + contrast warning + live
+      preview (`apps/web/src/routes/app.e.$eventSlug.publish.tsx:695,789`;
+      validation exists backend-side at `convex/model/embeds.ts:40`).
+- [ ] **Public filters and session detail are deep-linkable** — facets, search,
+      and the expanded session reflected in the URL
+      (`apps/web/src/components/public/widgets/`), using TanStack
+      `validateSearch` as ARCHITECTURE.md already prescribes for saved views.
+- [ ] **Bulk actions state their arithmetic**: selection count, eligible,
+      excluded and why, expected result, then the actual outcome.
 
-On the existing org Contacts tab (`app.org.$orgSlug.tsx` ContactsTab):
+## W6 — Accessibility floor
 
-- [x] Company + jobTitle fields on contacts (shared with W6).
-- [x] **Tags** on contacts, editable inline, shown as chips. (CRM-04)
-- [x] **Attribute filter** beyond text search (by tag, company); clearable.
-  (CRM-02)
-- [x] **Internal notes** on a contact (persist, timestamped) + a simple
-  history surface: linked events/sessions list from `eventContacts` (data
-  already exists). (CRM-03)
-- [x] **Add-to-event**: push a contact into an event (creates eventContact
-  snapshot, optional invite) with profile carried over. (CRM-10)
-- [x] Explicitly out of scope: kanban pipeline (CRM-07/08), merge (CRM-06),
-  saved segments (CRM-09), CRM dashboard (CRM-12), org-level bulk outreach
-  (CRM-11).
+Scheduled as its own pass, before the organizer UX is called mature.
+
+- [ ] **Audit first, fix second**: axe + manual keyboard pass over dashboard,
+      proposals, reviews, sessions, speakers, agenda, tasks, comms, publish,
+      settings, portal, and the public widgets. Record findings in
+      `docs/reference/` so the fixes are checkable.
+- [ ] Every `Switch` named by its own requirement/setting (the review found at
+      least one bare `Active` switch) — `ds/components/forms/Switch.jsx` should
+      make an unnamed switch hard to write.
+- [ ] Modal focus trapped and returned to the invoking control
+      (`ds/components/feedback/Dialog.jsx`).
+- [ ] Toasts and async state changes announced via a live region.
+- [ ] Every status carries text or shape as well as colour (`StatusPill`,
+      `Badge`, `ReadinessMeter`).
+- [ ] Targets meet WCAG 2.2 24×24 or the spacing exception — audit icon buttons
+      and date controls first (`ds/components/core/IconButton.jsx`;
+      `app.css:298` already has a `pointer: coarse` block to extend).
+- [ ] Tables, filters, dialogs, and agenda placement fully keyboard-operable.
+      Two of these are already done and the audit's job is to confirm, not
+      rebuild: `DataTable` rows are focusable and Enter/Space-activated
+      (`ds/components/layout/DataTable.jsx`), and the agenda has real keyboard
+      placement with screen-reader instructions
+      (`components/agenda/keyboardDrag.ts`). The open ground is menus, popovers,
+      and date controls.
+- [ ] **Tooltips are hover-only** (`feedback.css` `.ss-tooltip:hover`,
+      `:focus-within`), so any information carried solely by a tooltip is
+      unreachable on touch. Census done during plan review: only two Tooltip
+      sites exist in the app. The one real gap is **agenda-item conflict
+      messages** (`Block.tsx:175` ConflictMark — session conflicts have a
+      tap-reachable duplicate in `SessionDetailDialog.tsx:252`; agenda items
+      have none, `AgendaItemDialog` renders no conflicts). This item is one
+      fix, not a sweep.
+- [ ] 200% zoom and 375px width hide no navigation or action.
+
+---
+
+# M9 — Operating surfaces
+
+## W7 — Lifecycle navigation & the mobile drawer
+
+Bigger than "cheap": the drawer is a new DS variant (Dialog is a bottom sheet
+under 640px, not full-height), there is no topbar menu affordance today, and
+this workstream owns the active-tab fix below — but it still unblocks how
+everything else is found.
+
+- [ ] **Regroup the fourteen entries by lifecycle** in
+      `apps/web/src/routes/app.e.$eventSlug.tsx:52-133` (`SidebarNav` already
+      supports groups; `NAV_GROUPS` is a single group today):
+      **Setup** (Overview, Settings, Team, Import) · **Collect** (Call for
+      speakers) · **Select** (Proposals, Reviews, Decisions) · **Prepare**
+      (Sessions, Speakers, Tasks, Communications) · **Schedule** (Agenda) ·
+      **Publish** (Public page, embeds, feeds).
+- [ ] **Merge Dashboard into the event root** (decision 5). The root becomes the
+      **control center** (operational, time-sensitive); today's Overview content
+      — stable event facts, CFP link, archive — folds into Setup → Overview.
+      `/dashboard` redirects to the root, and the `dashboard` entry leaves
+      `TAB_PATHS` while its path keeps resolving. (Verified safe: no external
+      deep links, no search params. But note the root is a real page today —
+      Overview, visible to reviewers and speakers — not a redirect, and
+      Dashboard is `requires: 'organizer'` (`app.e.$eventSlug.tsx:60`): the
+      merged root needs **role-conditional rendering**, not just a route swap.)
+- [ ] **Decisions as a filtered Proposals view** (decision 6). A Select-group
+      entry that navigates to `/proposals` with the staged-decision filter
+      applied through W12's URL-persisted search params — so it is a saved view,
+      not a new route, and the release action stays where the proposals already
+      are. The lifecycle step becomes visible without a fifteenth module.
+- [ ] **Attention counts in the rail**: `SidebarNav`'s `count` slot already
+      renders (`navigation.css` `.ss-navitem__count`). Do NOT subscribe
+      `Readiness.dashboard` from the shell — it is five `takeAll` reads that
+      REFUSE with `event_too_large` (`convex/model/validation.ts:67-80`) plus a
+      ticking per-minute `now`; under every page that turns one over-ceiling
+      table into "navigation errors everywhere" and re-runs a five-table scan
+      per minute on every route. W4 must also ship a **cheap counts query**
+      (`takeCapped` counts, no ticking arg) for the rail, and the rail degrades
+      to no badges on error — it never blocks navigation. Same numbers, same
+      producer, different query shape, so rail and control center still cannot
+      disagree.
+- [ ] **Real mobile drawer.** Under 860px the rail becomes a horizontal strip
+      with group labels hidden (`navigation.css:36-79`,
+      `.ss-sidebar__group{display:none}`) — so on a phone the lifecycle grouping,
+      the thing this workstream adds, is invisible, and fourteen items become a
+      memory test. Replace the strip with a topbar menu button opening a
+      full-height drawer that shows the groups and counts. Keep the strip only
+      if it can show the active group; otherwise drop it.
+- [ ] **Prefix-based active matching.** `app.e.$eventSlug.tsx:149-153` resolves
+      the active nav entry by **exact** pathname equality with an
+      `?? 'overview'` fallback — W9's routed workspaces (`/sessions/$id`) would
+      highlight the control center and scroll the phone strip to the wrong
+      item. Switch to longest-prefix matching before W9 lands.
+- [ ] **Breadcrumbs everywhere.** `PageHeader` takes them and the event layout
+      passes three levels already (`app.e.$eventSlug.tsx:202`); extend through
+      the new workspace routes so a phone always has an up-path. Note those
+      breadcrumbs terminate at the event: per-workspace crumbs mean making the
+      shared layout header route-aware (owned here, consumed by W9).
+- *Eval compatibility*: labels may change, but every `TAB_PATHS` entry keeps
+  resolving, and the old label stays as a search alias.
+
+## W8 — Event control center
+
+The headline bet, part one.
+
+- [ ] **One screen, four questions**: what needs my attention · what is blocked ·
+      what changed recently · what happens next. Built from one new capability
+      (`convex/model/readiness.ts` + a thin `convex/events.ts` wrapper) so it is
+      a handful of subscriptions, not twelve. Not literally one: readiness reads
+      REFUSE (`event_too_large`) rather than truncate, so one over-ceiling table
+      blanks whatever subscribes to it — keep the center as a few per-panel
+      queries so a refusal blanks one panel, not the screen (today's dashboard
+      is already three subscriptions, split to isolate the ticking `now`;
+      preserve that split). The readiness caps also sum past Convex's
+      16,384-doc transaction limit at worst case, so one mega-query is the
+      wrong shape regardless.
+- [ ] **The rows the review specified**, each with a count that deep-links to
+      the already-filtered work: CFP state + submission count + close countdown ·
+      reviews incomplete + reviewers overdue · decisions staged, not released ·
+      speakers unconfirmed + outstanding tasks · content drafts blocking
+      publication · schedule conflicts + unscheduled sessions · publication state
+      per channel with "last published by … at …".
+- [ ] **What changed recently** reads the audit rows already written by every
+      capability (`convex/model/audit.ts`) — no new write path.
+- [ ] **First event vs returning event**: visible lifecycle checklist for an
+      event with no history; the same information collapsed to a readiness
+      summary once it has. GOV.UK's task-list guidance is the reference, with its
+      own warning applied — the smallest useful number of statuses, not another
+      giant checklist.
+- [ ] Preserve today's dashboard strengths while merging: the live subscription
+      behaviour, `ReadinessMeter`, per-speaker drill-down, and the ticking `now`
+      argument (`app.e.$eventSlug.dashboard.tsx:41-60`).
+- *Mobile*: single column of collapsible sections, attention first; counts are
+  full-width tap targets; no KPI grid that shrinks to unreadable tiles.
+
+## W9 — Speaker & session workspaces
+
+The headline bet, part two. **Routed pages** —
+`/app/e/$eventSlug/speakers/$eventContactId` and
+`/app/e/$eventSlug/sessions/$sessionId` — with in-page `Tabs`.
+
+Why routed rather than drawers, given mobile: a drawer over a table at 375px is
+a scroll-locked overlay competing with the list underneath, and its back-button
+and focus behaviour has to be hand-built; a route is the native phone pattern
+(list → full-screen detail → back). Routes also give W4's blockers somewhere to
+link to and satisfy the review's URL-persistence asks for free. Desktop keeps
+list context through breadcrumbs and a "next/previous in list" control rather
+than by keeping the table on screen.
+
+- [ ] **Speaker workspace**: identity + contact details · participations ·
+      sessions · readiness · tasks · files · comments · communication history.
+      Composed from existing pieces (`components/speakers/SpeakerProfileDialog.tsx`,
+      `components/tasks/`, `components/comms/`), which then shed their dialog
+      shells.
+- [ ] **Session workspace**: source proposal · speakers · content approval ·
+      tasks and files · schedule · publication state (W4 sentences, verbatim) ·
+      history (W3 snapshots).
+- [ ] **Rows open workspaces.** Speakers, sessions, and proposals tables
+      navigate on row click; existing dialogs (`ProposalDetailDialog.tsx`,
+      `SpeakerProfileDialog.tsx`, `SessionDetailDialog.tsx`) are either promoted
+      to the workspace or reduced to a quick-peek that links to it. Do not leave
+      two competing detail surfaces for the same record.
+- [ ] **Top-level modules stay** as batch/cross-event views — this workstream
+      removes no capability, it adds the per-record path the review found
+      missing.
+- [ ] **Tab state in the URL** so a blocker can link to
+      `…/sessions/$id?tab=content`.
+- *Mobile*: full-page workspace, sticky title + back, tabs in the existing
+  overflow-scrolling `ss-tabs` strip (`navigation.css:80`), primary action
+  pinned within thumb reach. Chrome budget: the event layout already renders its
+  own header (breadcrumbs + event name + role badge) above every child
+  (`app.e.$eventSlug.tsx:200-228`) and the nav strip is already sticky — the
+  workspace must absorb or collapse that header at phone width, not stack a
+  second uncoordinated sticky region under it. Route-aware header work is owned
+  by W7's breadcrumb item; this workstream consumes it.
+
+## W10 — Publish Center
+
+- [ ] Rebuild `apps/web/src/routes/app.e.$eventSlug.publish.tsx` (1123 lines
+      today) around **lineup and schedule as separate decisions**, each with its
+      own state, blockers, and history. History caveat: `publishedPrograms` is
+      one row/one `version` per event and any rebuild rewrites both halves
+      (`convex/model/publish.ts:426-473`). A per-channel *diff* is derivable
+      from the combined blob (`program.lineup` / `program.agenda`); independent
+      per-channel *version history* needs a schema change — decide which this
+      means before building.
+- [ ] **Blocker list** straight from W4, each row linking to the repair.
+- [ ] **Diff preview before publishing**: what will be added, changed, removed.
+      The published blob already exists (`convex/model/publish.ts`) — the
+      comparison is against the last published projection, not a new store.
+      (Verified feasible in one query: `publishState` at `publish.ts:711-714`
+      already loads the blob and recomputes fresh in the same query to derive
+      `stale`; the diff is that read pattern with a structural diff instead of
+      a boolean. Two ~900KiB guarded blobs are far under read limits.)
+- [ ] **"Last published by Jordan Alvarez at …"** attribution on both channels.
+- [ ] **Bulk publish everything eligible**, with the eligibility arithmetic from
+      W5 stated before and after.
+- [ ] Keep the embed console; it moves under Publish in the new grouping and
+      inherits the brand-colour work from W5.
+
+## W11 — Review round launch flow
+
+- [ ] Turn round setup (`apps/web/src/components/reviews/RoundsPanel.tsx`, 807
+      lines) into a guided flow: basics → scorecard → reviewers and pools →
+      eligible proposals → assignment policy → blind preview → launch summary.
+- [ ] **The summary states consequences in sentences**: "2 proposals will be
+      assigned to Sam Whitfield. Both already have released decisions; those
+      decisions will not change. Reviewer identities are hidden. Cap: 2."
+- [ ] **Outcomes explain themselves**: replace `Assigned 0 · unplaced 0` with
+      "No new assignments: both selected proposals are already assigned."
+- [ ] **"Preview as reviewer"** on every blind round — demonstrate anonymity
+      rather than asking the organizer to reason about which custom fields carry
+      identity. This is also the cheapest guard against a blind-round leak.
+- [ ] Post-launch dashboard: per-reviewer progress and overdue state (exists —
+      wire it as the flow's destination).
+- *Mobile*: one step per screen, sticky Back/Next, the summary readable without
+  horizontal scroll.
+
+## W12 — Table & batch-action standard
+
+Applied as the surfaces above are touched, not as a big-bang refactor.
+
+- [ ] **One toolbar** (`ds/components/layout/Toolbar.jsx`): search · filters ·
+      saved view · columns · export.
+- [ ] **Removable filter chips**, and **URL-persisted filter state** via typed
+      `validateSearch` — the ARCHITECTURE.md saved-views mechanism, finally used
+      consistently.
+- [ ] **Row click opens the workspace**; at most two visible row actions, rest in
+      overflow.
+- [ ] **Selection reveals a batch bar** stating count, eligibility, exclusions,
+      expected result (`components/abstracts/BulkBar.tsx` is the existing
+      pattern — promote it into the DS).
+- [ ] **Hide zero-count filters** unless the zero is operationally meaningful
+      (an empty "Blocked" is worth showing; an empty "Withdrawn" is noise).
+- [ ] **Skeleton/progress during load and export.**
+- [ ] **CRM page order** (`apps/web/src/routes/app.org.$orgSlug.tsx`): the
+      contact directory leads; KPIs, segments, and duplicates move below. Eval
+      constraint: `specs/07-speaker-crm.yaml:337-351` requires a
+      screenshot-visible populated analytics widget — do **not** collapse the
+      KPIs by default. The primary work should not be the last thing on screen.
+- *Mobile*: under 640px the operational tables (proposals, sessions, speakers,
+  tasks, contacts) render as a **card list** — primary identity, the one or two
+  states that matter, one action, tap to open the workspace — with the existing
+  horizontal scroller (`DataTable.jsx` + `.scroll-x`) kept for genuinely tabular
+  comparison views like review results. Selection and the batch bar work in both
+  renderings from the same state.
+
+## W13 — Agenda on a phone
+
+Decision 8 goes beyond the review, which accepted a desktop-only board. **Most of
+the foundation is already built** — this workstream is four additions on top of
+it, not a new interaction model. What exists today:
+
+- `TouchSensor`, `MouseSensor` and `KeyboardSensor` are configured separately
+  with deliberate activation constraints, because one `PointerSensor` gave touch
+  the wrong contract (`AgendaBoard.tsx:142-164`).
+- Full keyboard placement: `keyboardDrag.ts` walks the 15-minute droppable
+  lattice by arrow key, with screen-reader instructions and board-specific
+  dnd-kit announcements, and it is unit-tested (`keyboardDrag.test.ts`).
+- `PlaceDialog.tsx` already edits start, end and room without any gesture.
+- `ListView.tsx` already renders the whole board chronologically — sessions and
+  agenda items interleaved, unscheduled trailing — and works with nothing
+  scheduled.
+- `Dialog` already becomes a bottom sheet below 640px
+  (`ds/components/feedback/feedback.css:44+`), and the agenda layout already
+  stacks its tray at 860px with measured phone fixes (`app.css:79-113`).
+
+What is genuinely missing:
+
+- [ ] **Scoping pickers.** The grid still renders every room as a column and
+      relies on horizontal scroll, so at 375px the organizer sees a sliver of a
+      two-dimensional layout. Add day and room/track pickers that reduce the
+      phone view to one column of time — reusing `ListView`'s data shaping rather
+      than writing a third rendering of the board.
+- [ ] **Tap-to-place.** Select a session from the tray → eligible slots highlight
+      → tap to place. Keyboard pick-up exists; select-then-tap does not, and
+      neither does slot **eligibility highlighting** (today the board shows
+      conflicts for placements that already exist, not which empty cells would be
+      legal).
+- [ ] **Client-visible eligibility.** That highlighting needs the conflict math
+      where the client can call it. `conflictsFor` is pure but lives in
+      `convex/model/agenda.ts`; move the pure part to `convex/shared/agenda.ts` —
+      the repo already shares `formDef`, `scorecard`, `importPlan` and `jobTypes`
+      this way — so the board, `autoPlace`, and W2's preview all agree by
+      construction instead of by careful maintenance. (Verified a pure move:
+      `conflictsFor`/`overlaps`/`blockers` + their types move verbatim — no
+      ctx/db/clock, `Id<>` types erase. One addition: the client holds
+      `BoardSession` projections, not raw docs, so it needs a ~15-line
+      `BoardSession → ScheduledThing` adapter replicating the `counts()`
+      withdrawn/declined filter at `agenda.ts:184-186`; the existing
+      `api.agenda.board` subscription already carries every required field.)
+- [ ] **Touch-reachable conflict explanations.** `Tooltip` reveals on
+      `:hover`/`:focus-within` only (`feedback.css`), which a touch device never
+      triggers — so any conflict reason carried by a tooltip is invisible on a
+      phone. Render blocker reasons inline on the block or in the sheet, using
+      W4's sentences.
+- [ ] **Duration-accurate blocks** once W2 lands: block height and the
+      `PlaceDialog` default end come from the format's duration rather than a
+      fixed hour (`PlaceDialog.tsx:34` `DEFAULT_DURATION_MS`).
+- [ ] Verify at 375px and 320px, both orientations, with `pointer: coarse` target
+      sizes from W6.
+
+---
 
 ## Cross-cutting
 
-- Convex rules: read `convex/_generated/ai/guidelines.md` before backend
-  work; validators on everything; capabilities in `convex/model/*` with thin
-  wrappers; tests in convex-test incl. negative authz for every new
-  reviewer/round/public surface.
-- Schema migrations: reviews→rounds migration must not strand the deployed
-  dev data (`scintillating-heron-597`); use @convex-dev/migrations if a
-  backfill is needed.
-- Blob size guard: W3 enrichment + W5 approval gating touch
-  `assertProgramFits` — do the lineup/agenda dedupe (M8 leftover) as part of
-  W3.
-- Design system: all new UI through `apps/web/src/ds` + the
-  stagestack-design skill.
+- **Eval compatibility** (per decision 1): every path in `TAB_PATHS` and every
+  current deep link keeps resolving — redirect, never 404. No capability moves
+  behind more clicks than today. Renamed labels keep their old wording as a
+  nav/search alias for one cycle.
+- **Nothing regresses the protected list** in "Why this plan exists". Reviewer
+  scoping, portal scoping, audit attribution, and the shared publication
+  projection are invariants, not features to redesign.
+- **Copy is code.** Any user-facing sentence about state comes from the model
+  layer (W4). Two surfaces disagreeing about the same fact is the exact class of
+  bug this plan exists to remove.
+- **Schema changes**: W3's snapshot projection and W2's undo metadata should be
+  derivable from existing tables; if a backfill is needed use
+  `@convex-dev/migrations` and do not strand `dev:scintillating-heron-597` or
+  `develop:marvelous-snail-907`.
+- **Env parity**: W1's webhook diagnosis is a per-deployment check — Convex env
+  vars do not mirror between dev, develop, staging, and prod.
 - Every workstream ends browser-verified against the dev deployment, then
-  deployed to develop (Vercel preview) for the next eval run.
+  deployed to `develop` for the next eval run.
 
 ## Verification
 
-- [x] `tsc` + full convex-test + web tests green per workstream.
-- [x] Self-run the relevant eval scenario steps (specs in
-  `~/Code/killmysaas-evals/specs/`) in the browser before calling a
-  workstream done — the rubric pass_criteria are the acceptance tests.
-- [ ] Final: full eval re-run by Alvaro; target ≥85% required score with
-  ~100% coverage (no cannot-judge from our own bugs).
+- [ ] `tsc` + full convex-test + web tests green per workstream; new negative
+      authz tests for every new query.
+- [ ] **Browser-verified at 1440px and at 375px** for every workstream — the
+      phone pass is not optional and not deferred to the end.
+- [ ] **Keyboard-only pass** of the changed surface before a workstream is called
+      done (tab order, focus return, no drag-only action).
+- [ ] **Route-resolution check**: every path in `TAB_PATHS` plus the public and
+      portal routes still resolve after W7.
+- [ ] Re-walk the review's five "clicking too much" jobs and confirm each is now
+      one workspace or one flow: prepare a speaker · publish a session · launch a
+      review round · resolve an uploaded file · answer "why isn't this public?".
+- [ ] Eval re-run by Alvaro; target is **no regression from 100%** with the UX
+      report's named rough edges closed.
 
 ## Suggested order
 
-W1 (unblockers) → W2 (review rebuild) → W4 (freshness, small) → W6 speaker
-fields (W3 depends on jobTitle/company) → W3 (widgets + embeds) → W5 (content)
-→ W7 (auto-place) → W8 (light CRM).
+W1 → W2 → W3 → W5 → **W4** → W6 → W7 → **W8** → W9 → W10 → W12 → W13 → W11
+
+Trust first, because the review's own recommendation is to fix what the product
+says before restructuring where it says it. W4 sits at the hinge: it is trust
+work, and it is the vocabulary W8, W9, and W10 all render. W7 (navigation) is
+cheap and comes before the control center so the new surfaces have a home. W12
+is applied continuously from W9 onward rather than as its own sprint. W13 follows
+W12 so it inherits the settled DS mobile patterns, and it is smaller than it
+first looks — the sensors, keyboard placement, place dialog, list rendering and
+bottom-sheet dialog all already exist, so it is four additions rather than a new
+interaction model. W11 is last because the reviewer experience is already the
+cleanest role in the product.
+
+The item that carries the most risk relative to its line count is the **format
+library migration** in W2: it changes a field that the CFP form, the published
+blob, and the public widgets all render, and existing values are free text with
+no guaranteed vocabulary. Rehearse the backfill (`convex-migrate-rehearse`)
+rather than running it straight at `develop`.
