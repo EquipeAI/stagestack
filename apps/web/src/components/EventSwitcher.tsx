@@ -21,6 +21,8 @@ export function EventSwitcher() {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement | null>(null)
+  const trigger = useRef<HTMLButtonElement | null>(null)
+  const panel = useRef<HTMLDivElement | null>(null)
   const panelId = useId()
 
   const eventSlug = params.eventSlug
@@ -36,7 +38,28 @@ export function EventSwitcher() {
       }
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key === 'Escape') {
+        setOpen(false)
+        // Escape used to unmount the panel from under whichever menuitem had
+        // focus, dropping the keyboard on <body> at the top of the document.
+        trigger.current?.focus()
+        return
+      }
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') {
+        return
+      }
+      // role="menu" promises arrow-key navigation; without it the only way
+      // through the list is Tab, which also walks straight out of the menu.
+      const items = panel.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')
+      if (items === undefined || items.length === 0) return
+      const list = Array.prototype.slice.call(items) as Array<HTMLButtonElement>
+      const at = list.indexOf(document.activeElement as HTMLButtonElement)
+      event.preventDefault()
+      if (event.key === 'Home') return list[0].focus()
+      if (event.key === 'End') return list[list.length - 1].focus()
+      const step = event.key === 'ArrowDown' ? 1 : -1
+      const next = at === -1 ? (step === 1 ? 0 : list.length - 1) : (at + step + list.length) % list.length
+      list[next].focus()
     }
     document.addEventListener('mousedown', onPointerDown)
     document.addEventListener('keydown', onKeyDown)
@@ -44,6 +67,13 @@ export function EventSwitcher() {
       document.removeEventListener('mousedown', onPointerDown)
       document.removeEventListener('keydown', onKeyDown)
     }
+  }, [open])
+
+  // Focus moves into the menu on open, so the keyboard is never left behind an
+  // overlay it cannot see.
+  useEffect(() => {
+    if (!open) return
+    panel.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus()
   }, [open])
 
   const entries = home ?? []
@@ -72,6 +102,7 @@ export function EventSwitcher() {
   return (
     <div className="switcher" ref={root}>
       <button
+        ref={trigger}
         type="button"
         className="switcher__trigger"
         aria-haspopup="menu"
@@ -84,7 +115,7 @@ export function EventSwitcher() {
       </button>
 
       {open ? (
-        <div className="switcher__panel" id={panelId} role="menu">
+        <div ref={panel} className="switcher__panel" id={panelId} role="menu">
           <button
             type="button"
             role="menuitem"

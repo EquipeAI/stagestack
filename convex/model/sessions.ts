@@ -8,8 +8,26 @@ import * as Agenda from "./agenda";
 import { logAudit } from "./audit";
 import { sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
-import { proposalAbstract, proposalLink } from "./cfp";
+import { findForm, proposalAbstract, proposalLink } from "./cfp";
+import {
+  assertDurationMinutes,
+  loadFormats,
+  normalizeFormatLabel,
+  resolveFormatId,
+} from "./library";
+import { allFields } from "../shared/formDef";
+import {
+  RELEASABLE_STATUSES,
+  STAGEABLE_STATUSES,
+} from "../shared/bulkDecisions";
 import { republishIfPublished } from "./publish";
+import {
+  CURRENT_SNAPSHOT_LABEL,
+  editSnapshotLabel,
+  restoreSnapshotLabel,
+  restoredFromSentence,
+  type SessionContentFields as SharedContentFields,
+} from "../shared/sessionContent";
 import { instantiateForSession } from "./tasks";
 import { eventUserDisplayName } from "./userDisplay";
 import { assertEventActive, assertText, normalizeEmail } from "./validation";
@@ -54,13 +72,11 @@ export type BulkResult = {
   error?: string;
 };
 
-/** Statuses a staged decision may move between. Draft/withdrawn/decided
- * proposals are not stageable. */
-const STAGEABLE: ReadonlySet<Doc<"proposals">["status"]> = new Set([
-  "pending",
-  "acceptQueue",
-  "declineQueue",
-]);
+/** Eligibility is defined once, in `convex/shared/bulkDecisions.ts`, so the
+ * bulk bar's before/after arithmetic and this enforcement cannot disagree. */
+const STAGEABLE: ReadonlySet<Doc<"proposals">["status"]> = STAGEABLE_STATUSES;
+const RELEASABLE: ReadonlySet<Doc<"proposals">["status"]> =
+  RELEASABLE_STATUSES;
 
 function assertBulkSize(ids: ReadonlyArray<unknown>): void {
   if (ids.length === 0) {
@@ -313,6 +329,92 @@ async function trackFromAnswers(
   return hits.size === 1 ? [...hits][0] : undefined;
 }
 
+/**
+ * The CFP form's format question is an ordinary answer, not a typed column
+ * (W2 wired the wizard to OFFER the formats library, but nothing stamps the
+ * choice onto the proposal). Carrying it over is therefore a two-step problem,
+ * and the order matters:
+ *
+ *  1. Identify the QUESTION, from the form definition alone: exactly one
+ *     non-system choice field whose label names a format question. Never by
+ *     scanning answers for a string that happens to equal a format name — a
+ *     track answer of "Talk", or a custom question whose options overlap the
+ *     formats library, would otherwise be promoted into the session's format.
+ *  2. Read only THAT question's answer, and resolve it against the library.
+ *
+ * Anything else — no such question, more than one, no answer, or a library
+ * that holds the same name twice so the link would be a coin toss — carries
+ * nothing. An empty format is recoverable in one edit; a wrong one is a
+ * silent misstatement about a session nobody chose to make.
+ *
+ * The label itself goes through `normalizeFormatLabel`, the SAME normalization
+ * every other write path applies (`sessions.updateContent`,
+ * `portal.updateSessionContent`, `resolveFormatId`, the W2 backfill), so a
+ * session materialized here and a session typed by hand land on the same
+ * library row and store the same string. Its one refusal — an over-long label
+ * — is caught and treated as "carry nothing" rather than allowed to abort a
+ * release: refusing to release an accepted proposal over a decorative field
+ * would be the worse failure.
+ */
+
+/** Is this the form's "what kind of session is this" question? */
+function isFormatQuestion(label: string): boolean {
+  const normalized = label.toLowerCase();
+  return (
+    normalized.includes("format") ||
+    normalized.includes("session type") ||
+    normalized.includes("talk type")
+  );
+}
+
+/** The single field that asks for the format, or undefined if the form does
+ * not ask exactly once. */
+async function formatQuestionId(
+  ctx: QueryCtx,
+  proposal: Doc<"proposals">,
+): Promise<string | undefined> {
+  const form = await findForm(ctx, proposal.eventId);
+  const def = form?.published ?? form?.working;
+  if (def === undefined) return undefined;
+  const candidates = allFields(def).filter(
+    (field) =>
+      field.systemKey === undefined &&
+      (field.kind === "dropdown" ||
+        field.kind === "radio" ||
+        field.kind === "text") &&
+      isFormatQuestion(field.label),
+  );
+  return candidates.length === 1 ? candidates[0]?.id : undefined;
+}
+
+async function formatFromAnswers(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+  proposal: Doc<"proposals">,
+): Promise<{ formatId?: Id<"formats">; format?: string }> {
+  const fieldId = await formatQuestionId(ctx, proposal);
+  if (fieldId === undefined) return {};
+  const answer = proposal.answers[fieldId];
+  if (typeof answer !== "string") return {};
+
+  let label: string | undefined;
+  try {
+    label = normalizeFormatLabel(answer);
+  } catch {
+    // Over-long: refused, never truncated (truncation can land on another
+    // row's name). Carrying nothing is the safe half of that same rule.
+    return {};
+  }
+  if (label === undefined) return {};
+
+  // A library holding the same name twice cannot say which row was meant, and
+  // `resolveFormatId` would silently take the first. Say nothing instead.
+  const formats = await loadFormats(ctx, event._id);
+  const matches = formats.filter((row) => row.name === label);
+  if (matches.length > 1) return {};
+  return { formatId: matches[0]?._id, format: label };
+}
+
 async function materializeSession(
   ctx: MutationCtx,
   event: Doc<"events">,
@@ -324,6 +426,10 @@ async function materializeSession(
   const existing = await sessionForProposal(ctx, proposal._id);
   const trackId =
     existing?.trackId ?? (await trackFromAnswers(ctx, event, proposal));
+  const inherited =
+    existing !== null && existing.format !== undefined
+      ? { formatId: existing.formatId, format: existing.format }
+      : await formatFromAnswers(ctx, event, proposal);
   const sessionId =
     existing?._id ??
     (await ctx.db.insert("sessions", {
@@ -335,6 +441,8 @@ async function materializeSession(
       status: "planned",
       contentStatus: "draft",
       trackId,
+      formatId: inherited.formatId,
+      format: inherited.format,
     }));
   // A correction that restores an existing track-less session still gets the
   // carry-over (the eval saw "No track" on a converted session).
@@ -344,6 +452,18 @@ async function materializeSession(
     trackId !== undefined
   ) {
     await ctx.db.patch("sessions", existing._id, { trackId });
+  }
+  // Same for a format-less session restored by a decline→accept correction:
+  // fill the gap, never overwrite a format an organizer has since set.
+  if (
+    existing !== null &&
+    existing.format === undefined &&
+    inherited.format !== undefined
+  ) {
+    await ctx.db.patch("sessions", existing._id, {
+      format: inherited.format,
+      formatId: inherited.formatId,
+    });
   }
   const speakers = await ctx.db
     .query("proposalSpeakers")
@@ -534,10 +654,7 @@ export async function releaseDecisions(
       results.push({ proposalId, ok: false, error: "not_found" });
       continue;
     }
-    if (
-      proposal.status !== "acceptQueue" &&
-      proposal.status !== "declineQueue"
-    ) {
+    if (!RELEASABLE.has(proposal.status)) {
       results.push({ proposalId, ok: false, error: "invalid_status" });
       continue;
     }
@@ -710,6 +827,7 @@ export type DirectSessionArgs = {
   title: string;
   description?: string;
   format?: string;
+  durationMinutes?: number;
   trackId?: Id<"tracks">;
   speaker: {
     firstName: string;
@@ -762,11 +880,22 @@ export async function createDirectSession(
     }
   }
 
+  // Normalized once, then stored and matched from the same value — the direct
+  // path used to store the raw string, which could differ from what the
+  // matcher looked up.
+  const format = normalizeFormatLabel(args.format);
   const sessionId = await ctx.db.insert("sessions", {
     eventId: event._id,
     title,
     description: args.description,
-    format: args.format,
+    format,
+    // A label that exactly matches a library format links to it, so the
+    // scheduler knows how long this session is; anything else stays free text.
+    formatId: await resolveFormatId(ctx, event._id, format),
+    durationMinutes:
+      args.durationMinutes === undefined
+        ? undefined
+        : assertDurationMinutes(args.durationMinutes),
     trackId: args.trackId,
     source: "direct",
     status: "planned",
@@ -1029,11 +1158,7 @@ export async function setContentStatus(
 
 // ── Content editing & revision history (W5: CNT-09/CNT-11) ───────────────
 
-type SessionContentFields = {
-  title: string;
-  description?: string;
-  format?: string;
-};
+type SessionContentFields = SharedContentFields;
 
 function contentFields(session: Doc<"sessions">): SessionContentFields {
   return {
@@ -1052,17 +1177,22 @@ export async function recordRevision(
     session: Doc<"sessions">;
     after: SessionContentFields;
     editedBy: Id<"users">;
+    /** Set only by `restoreRevision`, so the history can group the restore. */
+    origin?: RevisionOrigin;
   },
-): Promise<void> {
-  await ctx.db.insert("sessionRevisions", {
+): Promise<Id<"sessionRevisions">> {
+  return await ctx.db.insert("sessionRevisions", {
     eventId: args.event._id,
     sessionId: args.session._id,
     editedBy: args.editedBy,
     editedAt: Date.now(),
     before: contentFields(args.session),
     after: args.after,
+    origin: args.origin,
   });
 }
+
+export type RevisionOrigin = NonNullable<Doc<"sessionRevisions">["origin"]>;
 
 /** Organizer content edit from the central admin view (CNT-09): patches the
  * content fields, records the revision, keeps public output current. */
@@ -1070,8 +1200,18 @@ export async function updateContent(
   ctx: MutationCtx,
   caller: EventCaller,
   sessionId: Id<"sessions">,
-  patch: { title?: string; description?: string; format?: string },
-): Promise<void> {
+  patch: {
+    title?: string;
+    description?: string;
+    format?: string;
+    /** null clears the override and falls back to the format's default. */
+    durationMinutes?: number | null;
+  },
+  options?: {
+    /** Marks the revision this save records as the product of a restore. */
+    origin?: RevisionOrigin;
+  },
+): Promise<{ revisionId: Id<"sessionRevisions"> | null }> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
   const session = await ctx.db.get("sessions", sessionId);
@@ -1089,25 +1229,61 @@ export async function updateContent(
         : patch.description.trim() === ""
           ? undefined
           : patch.description.slice(0, 10000),
+    // Trim-and-refuse through the shared helper: the same normalization the
+    // library, the portal and the matcher apply, so a label can never be
+    // stored in a shape that stops resolving (and is never TRUNCATED into a
+    // different resolvable one).
     format:
       patch.format === undefined
         ? session.format
-        : patch.format.trim() === ""
-          ? undefined
-          : patch.format.slice(0, 80),
+        : normalizeFormatLabel(patch.format),
   };
-  const unchanged =
+  // `formatId` and `durationMinutes` are scheduling facts, not content: they
+  // ride along on the same save but are deliberately NOT part of the revision
+  // snapshot, which versions title/description/format only (schema.ts).
+  //
+  // An unchanged label keeps the link it already has rather than re-resolving:
+  // a title-only edit must never be able to drop a session's format link
+  // because the denormalized copy drifted.
+  const nextFormatId =
+    next.format !== undefined &&
+    next.format === session.format &&
+    session.formatId !== undefined
+      ? session.formatId
+      : await resolveFormatId(ctx, caller.event._id, next.format);
+  const nextDuration =
+    patch.durationMinutes === undefined
+      ? session.durationMinutes
+      : patch.durationMinutes === null
+        ? undefined
+        : assertDurationMinutes(patch.durationMinutes);
+
+  const contentUnchanged =
     next.title === session.title &&
     next.description === session.description &&
     next.format === session.format;
-  if (unchanged) return;
-  await recordRevision(ctx, {
-    event: caller.event,
-    session,
-    after: next,
-    editedBy: caller.user._id,
+  if (
+    contentUnchanged &&
+    nextFormatId === session.formatId &&
+    nextDuration === session.durationMinutes
+  ) {
+    return { revisionId: null };
+  }
+  let revisionId: Id<"sessionRevisions"> | null = null;
+  if (!contentUnchanged) {
+    revisionId = await recordRevision(ctx, {
+      event: caller.event,
+      session,
+      after: next,
+      editedBy: caller.user._id,
+      origin: options?.origin,
+    });
+  }
+  await ctx.db.patch("sessions", sessionId, {
+    ...next,
+    formatId: nextFormatId,
+    durationMinutes: nextDuration,
   });
-  await ctx.db.patch("sessions", sessionId, next);
   await republishIfPublished(ctx, caller.event._id);
   await logAudit(ctx, {
     orgId: caller.org._id,
@@ -1118,6 +1294,7 @@ export async function updateContent(
     targetId: sessionId,
     meta: { fields: Object.keys(patch) },
   });
+  return { revisionId };
 }
 
 export type RevisionRow = {
@@ -1164,13 +1341,115 @@ export async function listRevisions(
   return out.sort((a, b) => b.editedAt - a.editedAt);
 }
 
+// ── Snapshot projection (W3) ─────────────────────────────────────────────
+
+/**
+ * One restorable state of the session's content. The list is
+ * **Current, then one entry per revision, newest first** — the organizer picks
+ * a state to go back to, rather than reasoning about the direction of an edit.
+ *
+ * `label` and `originLabel` are composed HERE, in event time, and rendered
+ * verbatim (one explanation, one producer). Content fields only: schedule,
+ * track and tags are not versioned and must not appear here.
+ */
+export type SnapshotEntry = {
+  /** Stable React key; the revision id, or "current". */
+  key: string;
+  /** null on the Current entry — there is nothing to restore it onto. */
+  revisionId: Id<"sessionRevisions"> | null;
+  label: string;
+  /** null on Current: it is now, not a moment in the log. */
+  editedAt: number | null;
+  editorName: string | null;
+  editorEmail: string | null;
+  content: SessionContentFields;
+  /** "edit" | "restore" — grouping marker for the history list. */
+  origin: "current" | "edit" | "restore";
+  /** Only on restore entries: "Restored the snapshot from 11 Aug at 13:42 UTC". */
+  originLabel: string | null;
+};
+
+/** History cap: past this many revisions the projection reports `truncated`
+ * rather than silently presenting a prefix as the whole history. */
+const SNAPSHOT_CAP = 200;
+
+export async function listSnapshots(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  sessionId: Id<"sessions">,
+): Promise<{ entries: SnapshotEntry[]; truncated: boolean }> {
+  requireOrganizer(caller);
+  const session = await ctx.db.get("sessions", sessionId);
+  if (session === null || session.eventId !== caller.event._id) {
+    notFound("session", "No such session on this event.");
+  }
+  const timezone = caller.event.timezone;
+  // Probe one past the cap so a long history is REPORTED as truncated instead
+  // of silently presenting the newest 200 edits as "one entry per edit".
+  const probed = await ctx.db
+    .query("sessionRevisions")
+    .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+    .order("desc")
+    .take(SNAPSHOT_CAP + 1);
+  const truncated = probed.length > SNAPSHOT_CAP;
+  const rows = truncated ? probed.slice(0, SNAPSHOT_CAP) : probed;
+  const entries: SnapshotEntry[] = [
+    {
+      key: "current",
+      revisionId: null,
+      label: CURRENT_SNAPSHOT_LABEL,
+      editedAt: null,
+      editorName: null,
+      editorEmail: null,
+      content: contentFields(session),
+      origin: "current",
+      originLabel: null,
+    },
+  ];
+  // `take` already returned newest-first off the index; sort defensively so the
+  // contract "Current, then newest revision" holds whatever the read order is.
+  const ordered = [...rows].sort((a, b) => b.editedAt - a.editedAt);
+  for (const row of ordered) {
+    const editor = await ctx.db.get("users", row.editedBy);
+    const restored = row.origin?.kind === "restore";
+    entries.push({
+      key: row._id,
+      revisionId: row._id,
+      // The snapshot IS `before`: the content as it stood until this edit.
+      label: restored
+        ? restoreSnapshotLabel(row.editedAt, timezone)
+        : editSnapshotLabel(row.editedAt, timezone),
+      editedAt: row.editedAt,
+      editorName:
+        (await eventUserDisplayName(ctx, caller.event._id, editor)) ??
+        "Event team member",
+      editorEmail: editor?.email ?? null,
+      content: row.before,
+      origin: restored ? "restore" : "edit",
+      originLabel: restored
+        ? restoredFromSentence(row.origin?.restoredSnapshotAt ?? null, timezone)
+        : null,
+    });
+  }
+  return { entries, truncated };
+}
+
+export type RestoreResult = {
+  /** The revision the restore itself recorded — restoring THAT undoes this
+   * restore. null when the snapshot already matched the live content, so
+   * nothing was written and there is nothing to undo. */
+  undoRevisionId: Id<"sessionRevisions"> | null;
+  /** The persistent result sentence, composed once, in event time. */
+  message: string;
+};
+
 /** Restore the content as it was BEFORE the given revision (CNT-11). The
  * restore itself is recorded as a new revision, so nothing is ever lost. */
 export async function restoreRevision(
   ctx: MutationCtx,
   caller: EventCaller,
   revisionId: Id<"sessionRevisions">,
-): Promise<void> {
+): Promise<RestoreResult> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
   const revision = await ctx.db.get("sessionRevisions", revisionId);
@@ -1178,12 +1457,33 @@ export async function restoreRevision(
     notFound("revision", "No such revision on this event.");
   }
   // Absent fields restore as CLEARED, not as kept-current — "" is
-  // updateContent's explicit clear.
-  await updateContent(ctx, caller, revision.sessionId, {
-    title: revision.before.title,
-    description: revision.before.description ?? "",
-    format: revision.before.format ?? "",
-  });
+  // updateContent's explicit clear. The restore diff shown before this call
+  // says so in as many words (shared/sessionContent.ts CLEARED_NOTE).
+  const { revisionId: undoRevisionId } = await updateContent(
+    ctx,
+    caller,
+    revision.sessionId,
+    {
+      title: revision.before.title,
+      description: revision.before.description ?? "",
+      format: revision.before.format ?? "",
+    },
+    {
+      origin: {
+        kind: "restore",
+        restoredRevisionId: revision._id,
+        restoredSnapshotAt: revision.editedAt,
+      },
+    },
+  );
+  const from = restoredFromSentence(revision.editedAt, caller.event.timezone);
+  return {
+    undoRevisionId,
+    message:
+      undoRevisionId === null
+        ? `${from} — nothing changed: that snapshot already matched the current content.`
+        : `${from}. The previous content is kept, so this restore can be undone.`,
+  };
 }
 
 /** Post-commit half of `createDirectSession`: render + send the invitation

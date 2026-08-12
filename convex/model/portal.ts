@@ -14,6 +14,7 @@ import {
 } from "./comms";
 import { renderTemplate } from "./templates";
 import { publicProposalStatus } from "./cfp";
+import * as Library from "./library";
 import * as Publish from "./publish";
 import * as Sessions from "./sessions";
 import * as Tasks from "./tasks";
@@ -1093,7 +1094,9 @@ export async function updateSessionContent(
     );
   }
   if (args.patch.format !== undefined) {
-    patch.format = optionalText(args.patch.format, "Session format", 80);
+    // The same shared normalization the organizer path uses, so a manager and
+    // an organizer typing the same label always land on the same library row.
+    patch.format = Library.normalizeFormatLabel(args.patch.format);
   }
   // The change history (W5) records manager edits alongside organizer ones.
   await Sessions.recordRevision(ctx, {
@@ -1109,7 +1112,16 @@ export async function updateSessionContent(
     },
     editedBy: user._id,
   });
-  await ctx.db.patch("sessions", session._id, patch);
+  await ctx.db.patch("sessions", session._id, {
+    ...patch,
+    // A manager editing the format string must not leave a stale library link
+    // behind — the same exact-name resolution the organizer path uses.
+    ...(args.patch.format === undefined
+      ? {}
+      : {
+          formatId: await Library.resolveFormatId(ctx, event._id, patch.format),
+        }),
+  });
   // Title/description/format are exactly what the public program renders —
   // keep an already-published blob current (eval: stale-snapshot finding).
   await Publish.requestRebuild(ctx, event._id);

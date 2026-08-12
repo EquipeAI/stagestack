@@ -28,16 +28,19 @@ import { Route as AppEEventSlugAgendaRouteImport } from './routes/app.e.$eventSl
 import { Route as AppEEventSlugCfpRouteImport } from './routes/app.e.$eventSlug.cfp'
 import { Route as AppEEventSlugCommsRouteImport } from './routes/app.e.$eventSlug.comms'
 import { Route as AppEEventSlugDashboardRouteImport } from './routes/app.e.$eventSlug.dashboard'
+import { Route as AppEEventSlugDetailsRouteImport } from './routes/app.e.$eventSlug.details'
 import { Route as AppEEventSlugImportRouteImport } from './routes/app.e.$eventSlug.import'
 import { Route as AppEEventSlugProposalsRouteImport } from './routes/app.e.$eventSlug.proposals'
 import { Route as AppEEventSlugPublishRouteImport } from './routes/app.e.$eventSlug.publish'
 import { Route as AppEEventSlugReviewsRouteImport } from './routes/app.e.$eventSlug.reviews'
-import { Route as AppEEventSlugSessionsRouteImport } from './routes/app.e.$eventSlug.sessions'
 import { Route as AppEEventSlugSettingsRouteImport } from './routes/app.e.$eventSlug.settings'
-import { Route as AppEEventSlugSpeakersRouteImport } from './routes/app.e.$eventSlug.speakers'
 import { Route as AppEEventSlugTasksRouteImport } from './routes/app.e.$eventSlug.tasks'
 import { Route as AppEEventSlugTeamRouteImport } from './routes/app.e.$eventSlug.team'
 import { Route as CfpEventSlugProposalProposalIdRouteImport } from './routes/cfp.$eventSlug.proposal.$proposalId'
+import { Route as AppEEventSlugSessionsIndexRouteImport } from './routes/app.e.$eventSlug.sessions.index'
+import { Route as AppEEventSlugSessionsSessionIdRouteImport } from './routes/app.e.$eventSlug.sessions.$sessionId'
+import { Route as AppEEventSlugSpeakersIndexRouteImport } from './routes/app.e.$eventSlug.speakers.index'
+import { Route as AppEEventSlugSpeakersEventContactIdRouteImport } from './routes/app.e.$eventSlug.speakers.$eventContactId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -134,6 +137,11 @@ const AppEEventSlugDashboardRoute = AppEEventSlugDashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => AppEEventSlugRoute,
 } as any)
+const AppEEventSlugDetailsRoute = AppEEventSlugDetailsRouteImport.update({
+  id: '/details',
+  path: '/details',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
 const AppEEventSlugImportRoute = AppEEventSlugImportRouteImport.update({
   id: '/import',
   path: '/import',
@@ -154,19 +162,9 @@ const AppEEventSlugReviewsRoute = AppEEventSlugReviewsRouteImport.update({
   path: '/reviews',
   getParentRoute: () => AppEEventSlugRoute,
 } as any)
-const AppEEventSlugSessionsRoute = AppEEventSlugSessionsRouteImport.update({
-  id: '/sessions',
-  path: '/sessions',
-  getParentRoute: () => AppEEventSlugRoute,
-} as any)
 const AppEEventSlugSettingsRoute = AppEEventSlugSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
-  getParentRoute: () => AppEEventSlugRoute,
-} as any)
-const AppEEventSlugSpeakersRoute = AppEEventSlugSpeakersRouteImport.update({
-  id: '/speakers',
-  path: '/speakers',
   getParentRoute: () => AppEEventSlugRoute,
 } as any)
 const AppEEventSlugTasksRoute = AppEEventSlugTasksRouteImport.update({
@@ -184,6 +182,30 @@ const CfpEventSlugProposalProposalIdRoute =
     id: '/proposal/$proposalId',
     path: '/proposal/$proposalId',
     getParentRoute: () => CfpEventSlugRoute,
+  } as any)
+const AppEEventSlugSessionsIndexRoute =
+  AppEEventSlugSessionsIndexRouteImport.update({
+    id: '/sessions/',
+    path: '/sessions/',
+    getParentRoute: () => AppEEventSlugRoute,
+  } as any)
+const AppEEventSlugSessionsSessionIdRoute =
+  AppEEventSlugSessionsSessionIdRouteImport.update({
+    id: '/sessions/$sessionId',
+    path: '/sessions/$sessionId',
+    getParentRoute: () => AppEEventSlugRoute,
+  } as any)
+const AppEEventSlugSpeakersIndexRoute =
+  AppEEventSlugSpeakersIndexRouteImport.update({
+    id: '/speakers/',
+    path: '/speakers/',
+    getParentRoute: () => AppEEventSlugRoute,
+  } as any)
+const AppEEventSlugSpeakersEventContactIdRoute =
+  AppEEventSlugSpeakersEventContactIdRouteImport.update({
+    id: '/speakers/$eventContactId',
+    path: '/speakers/$eventContactId',
+    getParentRoute: () => AppEEventSlugRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -205,17 +227,20 @@ export interface FileRoutesByFullPath {
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
   '/app/e/$eventSlug/comms': typeof AppEEventSlugCommsRoute
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
+  '/app/e/$eventSlug/details': typeof AppEEventSlugDetailsRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/publish': typeof AppEEventSlugPublishRoute
   '/app/e/$eventSlug/reviews': typeof AppEEventSlugReviewsRoute
-  '/app/e/$eventSlug/sessions': typeof AppEEventSlugSessionsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
-  '/app/e/$eventSlug/speakers': typeof AppEEventSlugSpeakersRoute
   '/app/e/$eventSlug/tasks': typeof AppEEventSlugTasksRoute
   '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
   '/cfp/$eventSlug/proposal/$proposalId': typeof CfpEventSlugProposalProposalIdRoute
   '/app/e/$eventSlug/': typeof AppEEventSlugIndexRoute
+  '/app/e/$eventSlug/sessions/$sessionId': typeof AppEEventSlugSessionsSessionIdRoute
+  '/app/e/$eventSlug/speakers/$eventContactId': typeof AppEEventSlugSpeakersEventContactIdRoute
+  '/app/e/$eventSlug/sessions/': typeof AppEEventSlugSessionsIndexRoute
+  '/app/e/$eventSlug/speakers/': typeof AppEEventSlugSpeakersIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -233,17 +258,20 @@ export interface FileRoutesByTo {
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
   '/app/e/$eventSlug/comms': typeof AppEEventSlugCommsRoute
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
+  '/app/e/$eventSlug/details': typeof AppEEventSlugDetailsRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/publish': typeof AppEEventSlugPublishRoute
   '/app/e/$eventSlug/reviews': typeof AppEEventSlugReviewsRoute
-  '/app/e/$eventSlug/sessions': typeof AppEEventSlugSessionsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
-  '/app/e/$eventSlug/speakers': typeof AppEEventSlugSpeakersRoute
   '/app/e/$eventSlug/tasks': typeof AppEEventSlugTasksRoute
   '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
   '/cfp/$eventSlug/proposal/$proposalId': typeof CfpEventSlugProposalProposalIdRoute
   '/app/e/$eventSlug': typeof AppEEventSlugIndexRoute
+  '/app/e/$eventSlug/sessions/$sessionId': typeof AppEEventSlugSessionsSessionIdRoute
+  '/app/e/$eventSlug/speakers/$eventContactId': typeof AppEEventSlugSpeakersEventContactIdRoute
+  '/app/e/$eventSlug/sessions': typeof AppEEventSlugSessionsIndexRoute
+  '/app/e/$eventSlug/speakers': typeof AppEEventSlugSpeakersIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -265,17 +293,20 @@ export interface FileRoutesById {
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
   '/app/e/$eventSlug/comms': typeof AppEEventSlugCommsRoute
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
+  '/app/e/$eventSlug/details': typeof AppEEventSlugDetailsRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/publish': typeof AppEEventSlugPublishRoute
   '/app/e/$eventSlug/reviews': typeof AppEEventSlugReviewsRoute
-  '/app/e/$eventSlug/sessions': typeof AppEEventSlugSessionsRoute
   '/app/e/$eventSlug/settings': typeof AppEEventSlugSettingsRoute
-  '/app/e/$eventSlug/speakers': typeof AppEEventSlugSpeakersRoute
   '/app/e/$eventSlug/tasks': typeof AppEEventSlugTasksRoute
   '/app/e/$eventSlug/team': typeof AppEEventSlugTeamRoute
   '/cfp/$eventSlug/proposal/$proposalId': typeof CfpEventSlugProposalProposalIdRoute
   '/app/e/$eventSlug/': typeof AppEEventSlugIndexRoute
+  '/app/e/$eventSlug/sessions/$sessionId': typeof AppEEventSlugSessionsSessionIdRoute
+  '/app/e/$eventSlug/speakers/$eventContactId': typeof AppEEventSlugSpeakersEventContactIdRoute
+  '/app/e/$eventSlug/sessions/': typeof AppEEventSlugSessionsIndexRoute
+  '/app/e/$eventSlug/speakers/': typeof AppEEventSlugSpeakersIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -298,17 +329,20 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug/cfp'
     | '/app/e/$eventSlug/comms'
     | '/app/e/$eventSlug/dashboard'
+    | '/app/e/$eventSlug/details'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/publish'
     | '/app/e/$eventSlug/reviews'
-    | '/app/e/$eventSlug/sessions'
     | '/app/e/$eventSlug/settings'
-    | '/app/e/$eventSlug/speakers'
     | '/app/e/$eventSlug/tasks'
     | '/app/e/$eventSlug/team'
     | '/cfp/$eventSlug/proposal/$proposalId'
     | '/app/e/$eventSlug/'
+    | '/app/e/$eventSlug/sessions/$sessionId'
+    | '/app/e/$eventSlug/speakers/$eventContactId'
+    | '/app/e/$eventSlug/sessions/'
+    | '/app/e/$eventSlug/speakers/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -326,17 +360,20 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug/cfp'
     | '/app/e/$eventSlug/comms'
     | '/app/e/$eventSlug/dashboard'
+    | '/app/e/$eventSlug/details'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/publish'
     | '/app/e/$eventSlug/reviews'
-    | '/app/e/$eventSlug/sessions'
     | '/app/e/$eventSlug/settings'
-    | '/app/e/$eventSlug/speakers'
     | '/app/e/$eventSlug/tasks'
     | '/app/e/$eventSlug/team'
     | '/cfp/$eventSlug/proposal/$proposalId'
     | '/app/e/$eventSlug'
+    | '/app/e/$eventSlug/sessions/$sessionId'
+    | '/app/e/$eventSlug/speakers/$eventContactId'
+    | '/app/e/$eventSlug/sessions'
+    | '/app/e/$eventSlug/speakers'
   id:
     | '__root__'
     | '/'
@@ -357,17 +394,20 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug/cfp'
     | '/app/e/$eventSlug/comms'
     | '/app/e/$eventSlug/dashboard'
+    | '/app/e/$eventSlug/details'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/publish'
     | '/app/e/$eventSlug/reviews'
-    | '/app/e/$eventSlug/sessions'
     | '/app/e/$eventSlug/settings'
-    | '/app/e/$eventSlug/speakers'
     | '/app/e/$eventSlug/tasks'
     | '/app/e/$eventSlug/team'
     | '/cfp/$eventSlug/proposal/$proposalId'
     | '/app/e/$eventSlug/'
+    | '/app/e/$eventSlug/sessions/$sessionId'
+    | '/app/e/$eventSlug/speakers/$eventContactId'
+    | '/app/e/$eventSlug/sessions/'
+    | '/app/e/$eventSlug/speakers/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -516,6 +556,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEEventSlugDashboardRouteImport
       parentRoute: typeof AppEEventSlugRoute
     }
+    '/app/e/$eventSlug/details': {
+      id: '/app/e/$eventSlug/details'
+      path: '/details'
+      fullPath: '/app/e/$eventSlug/details'
+      preLoaderRoute: typeof AppEEventSlugDetailsRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
     '/app/e/$eventSlug/import': {
       id: '/app/e/$eventSlug/import'
       path: '/import'
@@ -544,25 +591,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEEventSlugReviewsRouteImport
       parentRoute: typeof AppEEventSlugRoute
     }
-    '/app/e/$eventSlug/sessions': {
-      id: '/app/e/$eventSlug/sessions'
-      path: '/sessions'
-      fullPath: '/app/e/$eventSlug/sessions'
-      preLoaderRoute: typeof AppEEventSlugSessionsRouteImport
-      parentRoute: typeof AppEEventSlugRoute
-    }
     '/app/e/$eventSlug/settings': {
       id: '/app/e/$eventSlug/settings'
       path: '/settings'
       fullPath: '/app/e/$eventSlug/settings'
       preLoaderRoute: typeof AppEEventSlugSettingsRouteImport
-      parentRoute: typeof AppEEventSlugRoute
-    }
-    '/app/e/$eventSlug/speakers': {
-      id: '/app/e/$eventSlug/speakers'
-      path: '/speakers'
-      fullPath: '/app/e/$eventSlug/speakers'
-      preLoaderRoute: typeof AppEEventSlugSpeakersRouteImport
       parentRoute: typeof AppEEventSlugRoute
     }
     '/app/e/$eventSlug/tasks': {
@@ -586,6 +619,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CfpEventSlugProposalProposalIdRouteImport
       parentRoute: typeof CfpEventSlugRoute
     }
+    '/app/e/$eventSlug/sessions/': {
+      id: '/app/e/$eventSlug/sessions/'
+      path: '/sessions'
+      fullPath: '/app/e/$eventSlug/sessions/'
+      preLoaderRoute: typeof AppEEventSlugSessionsIndexRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
+    '/app/e/$eventSlug/sessions/$sessionId': {
+      id: '/app/e/$eventSlug/sessions/$sessionId'
+      path: '/sessions/$sessionId'
+      fullPath: '/app/e/$eventSlug/sessions/$sessionId'
+      preLoaderRoute: typeof AppEEventSlugSessionsSessionIdRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
+    '/app/e/$eventSlug/speakers/': {
+      id: '/app/e/$eventSlug/speakers/'
+      path: '/speakers'
+      fullPath: '/app/e/$eventSlug/speakers/'
+      preLoaderRoute: typeof AppEEventSlugSpeakersIndexRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
+    '/app/e/$eventSlug/speakers/$eventContactId': {
+      id: '/app/e/$eventSlug/speakers/$eventContactId'
+      path: '/speakers/$eventContactId'
+      fullPath: '/app/e/$eventSlug/speakers/$eventContactId'
+      preLoaderRoute: typeof AppEEventSlugSpeakersEventContactIdRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
   }
 }
 
@@ -594,16 +655,19 @@ interface AppEEventSlugRouteChildren {
   AppEEventSlugCfpRoute: typeof AppEEventSlugCfpRoute
   AppEEventSlugCommsRoute: typeof AppEEventSlugCommsRoute
   AppEEventSlugDashboardRoute: typeof AppEEventSlugDashboardRoute
+  AppEEventSlugDetailsRoute: typeof AppEEventSlugDetailsRoute
   AppEEventSlugImportRoute: typeof AppEEventSlugImportRoute
   AppEEventSlugProposalsRoute: typeof AppEEventSlugProposalsRoute
   AppEEventSlugPublishRoute: typeof AppEEventSlugPublishRoute
   AppEEventSlugReviewsRoute: typeof AppEEventSlugReviewsRoute
-  AppEEventSlugSessionsRoute: typeof AppEEventSlugSessionsRoute
   AppEEventSlugSettingsRoute: typeof AppEEventSlugSettingsRoute
-  AppEEventSlugSpeakersRoute: typeof AppEEventSlugSpeakersRoute
   AppEEventSlugTasksRoute: typeof AppEEventSlugTasksRoute
   AppEEventSlugTeamRoute: typeof AppEEventSlugTeamRoute
   AppEEventSlugIndexRoute: typeof AppEEventSlugIndexRoute
+  AppEEventSlugSessionsSessionIdRoute: typeof AppEEventSlugSessionsSessionIdRoute
+  AppEEventSlugSpeakersEventContactIdRoute: typeof AppEEventSlugSpeakersEventContactIdRoute
+  AppEEventSlugSessionsIndexRoute: typeof AppEEventSlugSessionsIndexRoute
+  AppEEventSlugSpeakersIndexRoute: typeof AppEEventSlugSpeakersIndexRoute
 }
 
 const AppEEventSlugRouteChildren: AppEEventSlugRouteChildren = {
@@ -611,16 +675,20 @@ const AppEEventSlugRouteChildren: AppEEventSlugRouteChildren = {
   AppEEventSlugCfpRoute: AppEEventSlugCfpRoute,
   AppEEventSlugCommsRoute: AppEEventSlugCommsRoute,
   AppEEventSlugDashboardRoute: AppEEventSlugDashboardRoute,
+  AppEEventSlugDetailsRoute: AppEEventSlugDetailsRoute,
   AppEEventSlugImportRoute: AppEEventSlugImportRoute,
   AppEEventSlugProposalsRoute: AppEEventSlugProposalsRoute,
   AppEEventSlugPublishRoute: AppEEventSlugPublishRoute,
   AppEEventSlugReviewsRoute: AppEEventSlugReviewsRoute,
-  AppEEventSlugSessionsRoute: AppEEventSlugSessionsRoute,
   AppEEventSlugSettingsRoute: AppEEventSlugSettingsRoute,
-  AppEEventSlugSpeakersRoute: AppEEventSlugSpeakersRoute,
   AppEEventSlugTasksRoute: AppEEventSlugTasksRoute,
   AppEEventSlugTeamRoute: AppEEventSlugTeamRoute,
   AppEEventSlugIndexRoute: AppEEventSlugIndexRoute,
+  AppEEventSlugSessionsSessionIdRoute: AppEEventSlugSessionsSessionIdRoute,
+  AppEEventSlugSpeakersEventContactIdRoute:
+    AppEEventSlugSpeakersEventContactIdRoute,
+  AppEEventSlugSessionsIndexRoute: AppEEventSlugSessionsIndexRoute,
+  AppEEventSlugSpeakersIndexRoute: AppEEventSlugSpeakersIndexRoute,
 }
 
 const AppEEventSlugRouteWithChildren = AppEEventSlugRoute._addFileChildren(

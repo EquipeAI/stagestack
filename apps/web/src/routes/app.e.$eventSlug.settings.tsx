@@ -11,6 +11,7 @@ import {
   Card,
   Dialog,
   Field,
+  Icon,
   IconButton,
   Input,
   Select,
@@ -19,6 +20,13 @@ import {
   Tag,
   Textarea,
 } from '~/ds'
+import { ReminderFactsPanel } from '~/components/reminders/ReminderFactsPanel'
+import {
+  REMINDER_CADENCE_HINT,
+  reminderCadenceBadge,
+  reminderCadenceCopy,
+  reminderCadenceSavedCopy,
+} from '~/components/reminders/copy'
 import { fromInputValue, timezoneOptions, toInputValue } from '~/lib/datetime'
 import { siteOrigin } from '~/lib/origin'
 import { usePending } from '~/lib/usePending'
@@ -30,14 +38,16 @@ export const Route = createFileRoute('/app/e/$eventSlug/settings')({
 })
 
 /** Swatches are design-system colour tokens, so tracks stay on-palette. */
+// Each swatch is named, not described by its CSS variable: `aria-label={`Use
+// colour ${color}`}` used to announce "Use colour var(--amber-400)".
 const PALETTE = [
-  'var(--amber-400)',
-  'var(--jade-500)',
-  'var(--beam-500)',
-  'var(--iris-500)',
-  'var(--rust-500)',
-  'var(--ember-500)',
-  'var(--gray-500)',
+  { color: 'var(--amber-400)', name: 'Amber' },
+  { color: 'var(--jade-500)', name: 'Jade' },
+  { color: 'var(--beam-500)', name: 'Blue' },
+  { color: 'var(--iris-500)', name: 'Violet' },
+  { color: 'var(--rust-500)', name: 'Red' },
+  { color: 'var(--ember-500)', name: 'Orange' },
+  { color: 'var(--gray-500)', name: 'Grey' },
 ]
 
 function Settings() {
@@ -65,6 +75,10 @@ function Settings() {
       <DatesSection key={`dates-${event._id}`} eventSlug={eventSlug} event={event} />
       <CfpSection key={`cfp-${event._id}`} eventSlug={eventSlug} event={event} />
       <CommsSection key={`comms-${event._id}`} eventSlug={eventSlug} event={event} />
+      {/* The same facts panel the tasks page shows, from the same query — the
+          page where the cadence is CHANGED is the page that most needs to state
+          what the automation is currently doing. */}
+      <ReminderFactsPanel eventSlug={eventSlug} timezone={event.timezone} />
       <LibrarySections eventSlug={eventSlug} />
     </div>
   )
@@ -579,25 +593,27 @@ function CommsSection({
           replyTo: address === '' ? null : address,
         },
       })
-      pushToast(
-        'Communications saved',
-        days === null
-          ? 'Reminders are off for this event.'
-          : `Reminders go out every ${days} ${days === 1 ? 'day' : 'days'}.`,
-      )
+      pushToast('Communications saved', reminderCadenceSavedCopy(days))
       form.saved()
     })
   }
+
+  // The badge reflects what is currently typed, so the cadence copy under it
+  // has to be produced from the same value — one producer, one model, whether
+  // the field is saved or still being edited.
+  const cadenceDraft = cadence.trim()
+  const cadenceDraftDays =
+    cadenceDraft === '' || !Number.isFinite(Number(cadenceDraft))
+      ? null
+      : Number(cadenceDraft)
 
   return (
     <Card
       title="Communications"
       subtitle="How StageStack chases outstanding work, and where replies land."
       actions={
-        <Badge tone={cadence.trim() === '' ? 'neutral' : 'success'} dot>
-          {cadence.trim() === ''
-            ? 'Reminders off'
-            : `Every ${cadence.trim()} days`}
+        <Badge tone={cadenceDraftDays === null ? 'neutral' : 'success'} dot>
+          {reminderCadenceBadge(cadenceDraftDays)}
         </Badge>
       }
       footer={<SectionFooter pending={pending} error={error} onSave={save} />}
@@ -609,7 +625,7 @@ function CommsSection({
             label="Reminder cadence"
             htmlFor="s-cadence"
             optional
-            hint="Days between reminders. Leave empty to send none."
+            hint={REMINDER_CADENCE_HINT}
           >
             <Input
               id="s-cadence"
@@ -635,10 +651,8 @@ function CommsSection({
           </Field>
         </div>
         <p style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
-          Consolidated task reminders are sent on this cadence — one message
-          listing everything outstanding, never one email per item. Unconfirmed
-          speakers get participation reminders instead of task chasing, because
-          the only thing they owe is an answer.
+          {reminderCadenceCopy(cadenceDraftDays)} Reminders are consolidated —
+          one message listing everything outstanding, never one email per item.
         </p>
       </div>
     </Card>
@@ -663,12 +677,13 @@ function LibrarySections({ eventSlug }: { eventSlug: string }) {
       <TracksSection eventSlug={eventSlug} items={library.tracks} />
       <TagsSection eventSlug={eventSlug} items={library.tags} />
       <RoomsSection eventSlug={eventSlug} items={library.rooms} />
+      <FormatsSection eventSlug={eventSlug} items={library.formats} />
       <CustomFieldsSection eventSlug={eventSlug} items={library.customFields} />
     </>
   )
 }
 
-type LibraryTable = 'tracks' | 'tags' | 'rooms' | 'customFields'
+type LibraryTable = 'tracks' | 'tags' | 'rooms' | 'formats' | 'customFields'
 
 /** What the confirmation dialog is about to delete. */
 type RemoveTarget = { table: LibraryTable; id: string; kind: string; label: string }
@@ -811,33 +826,51 @@ function List({ children }: { children: React.ReactNode }) {
 }
 
 function Swatches({
+  label,
   value,
   onChange,
 }: {
+  /** What these swatches colour — a track, a tag — so the group is named. */
+  label: string
   value: string
   onChange: (color: string) => void
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-      {PALETTE.map((color) => (
-        <button
-          key={color}
-          type="button"
-          aria-label={`Use colour ${color}`}
-          onClick={() => onChange(value === color ? '' : color)}
-          style={{
-            width: 'var(--space-6)',
-            height: 'var(--space-6)',
-            borderRadius: 'var(--radius-pill)',
-            background: color,
-            cursor: 'pointer',
-            border:
-              value === color
+    <div
+      role="group"
+      aria-label={label}
+      style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}
+    >
+      {PALETTE.map((swatch) => {
+        const selected = value === swatch.color
+        return (
+          <button
+            key={swatch.color}
+            type="button"
+            aria-label={swatch.name}
+            // Selection was a thicker, darker border and nothing else — a
+            // colour-only state on a control whose whole content is colour.
+            aria-pressed={selected}
+            onClick={() => onChange(selected ? '' : swatch.color)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 'var(--space-6)',
+              height: 'var(--space-6)',
+              borderRadius: 'var(--radius-pill)',
+              background: swatch.color,
+              color: 'var(--gray-0)',
+              cursor: 'pointer',
+              border: selected
                 ? 'var(--space-half) solid var(--gray-900)'
                 : 'var(--space-px) solid var(--border-default)',
-          }}
-        />
-      ))}
+            }}
+          >
+            {selected ? <Icon name="check" size={12} /> : null}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -939,7 +972,7 @@ function TracksSection({
           </Field>
         </div>
         <Field label="Colour" optional hint="Shown on agenda blocks and tags.">
-          <Swatches value={color} onChange={setColor} />
+          <Swatches label="Track colour" value={color} onChange={setColor} />
         </Field>
         <div>
           <Button iconLeft="plus" onClick={addItem} disabled={lib.pending}>
@@ -1019,7 +1052,7 @@ function TagsSection({
           />
         </Field>
         <Field label="Colour" optional>
-          <Swatches value={color} onChange={setColor} />
+          <Swatches label="Tag colour" value={color} onChange={setColor} />
         </Field>
         <div>
           <Button iconLeft="plus" onClick={addItem} disabled={lib.pending}>
@@ -1139,6 +1172,131 @@ function RoomsSection({
         <div>
           <Button iconLeft="plus" onClick={addItem} disabled={lib.pending}>
             {lib.pending ? 'Working…' : 'Add room'}
+          </Button>
+        </div>
+      </div>
+      <RemoveConfirm
+        target={lib.confirming}
+        onCancel={() => lib.askRemove(null)}
+        onConfirm={lib.remove}
+      />
+    </LibraryShell>
+  )
+}
+
+function FormatsSection({
+  eventSlug,
+  items,
+}: {
+  eventSlug: string
+  items: Array<Doc<'formats'>>
+}) {
+  const lib = useLibrary(eventSlug)
+  const [name, setName] = useState('')
+  const [minutes, setMinutes] = useState('')
+
+  const addItem = () => {
+    if (name.trim() === '') return lib.setError('Name the format.')
+    const trimmed = minutes.trim()
+    let parsed: number | undefined
+    if (trimmed !== '') {
+      const value = Number(trimmed)
+      if (!Number.isInteger(value) || value < 1 || value > 1440) {
+        return lib.setError(
+          'A default length must be a whole number of minutes between 1 and 1440.',
+        )
+      }
+      parsed = value
+    }
+    void lib.run(async () => {
+      await lib.add({
+        eventSlug,
+        table: 'formats',
+        item: { name: name.trim(), defaultDurationMinutes: parsed },
+      })
+      setName('')
+      setMinutes('')
+    })
+  }
+
+  return (
+    <LibraryShell
+      title="Formats"
+      subtitle="Session types and how long each one runs. The default length is what assisted placement books, and the name is what the CFP form offers — including any “(120 min)” you put in it."
+      error={lib.error}
+      count={items.length}
+    >
+      {items.length === 0 ? (
+        <Muted>
+          No formats yet. Add one and sessions can carry a length the scheduler
+          understands.
+        </Muted>
+      ) : (
+        <List>
+          {items.map((item) => (
+            <ItemRow
+              key={item._id}
+              removing={lib.removingId === item._id}
+              onRemove={() =>
+                lib.askRemove({
+                  table: 'formats',
+                  id: item._id,
+                  kind: 'format',
+                  label: item.name,
+                })
+              }
+            >
+              <span
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 'var(--space-3)',
+                }}
+              >
+                {item.name}
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-xs)',
+                    color: 'var(--text-tertiary)',
+                  }}
+                >
+                  {item.defaultDurationMinutes === undefined
+                    ? 'no default length'
+                    : `${item.defaultDurationMinutes} min`}
+                </span>
+              </span>
+            </ItemRow>
+          ))}
+        </List>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+        <div style={twoCol}>
+          <Field label="Format name" htmlFor="lib-format-name">
+            <Input
+              id="lib-format-name"
+              value={name}
+              placeholder="Workshop (120 min)"
+              onChange={(e) => setName(e.target.value)}
+            />
+          </Field>
+          <Field
+            label="Default length (minutes)"
+            htmlFor="lib-format-min"
+            optional
+            hint="Left blank, a “(120 min)” in the name is used."
+          >
+            <Input
+              id="lib-format-min"
+              type="number"
+              value={minutes}
+              onChange={(e) => setMinutes(e.target.value)}
+            />
+          </Field>
+        </div>
+        <div>
+          <Button iconLeft="plus" onClick={addItem} disabled={lib.pending}>
+            {lib.pending ? 'Working…' : 'Add format'}
           </Button>
         </div>
       </div>

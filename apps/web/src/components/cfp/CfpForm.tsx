@@ -25,6 +25,7 @@ import {
   Select,
   Textarea,
 } from '~/ds'
+import { FileButton } from '~/components/FileButton'
 import { errorMessage } from '~/lib/errors'
 
 // The CFP form renderer, shared by the submission wizard and the manage page.
@@ -269,7 +270,6 @@ function renderControl({
           disabled={disabled}
           // Select has no `invalid` prop; it spreads unknown props onto its
           // <select>, so the state is stated as the ARIA attribute directly.
-          // eslint-disable-next-line no-restricted-syntax -- aria-* is not a design-system prop
           aria-invalid={invalid || undefined}
           onChange={(e) => {
             onChange(e.target.value)
@@ -328,7 +328,6 @@ function renderControl({
               checked={selected.includes(option)}
               // <Field> can only mark the wrapper, so each box states it
               // itself. Checkbox spreads unknown props onto its <input>.
-              // eslint-disable-next-line no-restricted-syntax -- aria-* is not a design-system prop
               aria-invalid={invalid || undefined}
               onChange={(e) => {
                 onChange(
@@ -462,19 +461,15 @@ function FileControl({
             {label}
           </Button>
         ) : (
-          <Button as="label" size="sm" iconLeft="upload">
-            <input
-              type="file"
-              accept={field.accept}
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                e.target.value = ''
-                if (file !== undefined) void upload(file)
-              }}
-            />
+          <FileButton
+            size="sm"
+            accept={field.accept}
+            onFile={(file) => {
+              void upload(file)
+            }}
+          >
             {label}
-          </Button>
+          </FileButton>
         )}
         {hasFile ? (
           <span

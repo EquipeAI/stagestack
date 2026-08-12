@@ -12,6 +12,10 @@ import {
   Tag,
   Textarea,
 } from '~/ds'
+import {
+  DeliveryLifecycle,
+  DeliveryPill,
+} from '~/components/comms/DeliveryLifecycle'
 import { pushToast } from '~/components/toast'
 import { usePending } from '~/lib/usePending'
 import { browserTimezone, formatDateTime } from '~/lib/datetime'
@@ -255,8 +259,18 @@ function CrmActivitySection({
             </li>
           ))}
           {outreach.map((row) => (
-            <li key={row.messageId}>
-              <span>Email: {row.subject}</span> <Tag>{row.deliveryStatus}</Tag>{' '}
+            <li
+              key={row.messageId}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--space-1)',
+              }}
+            >
+              <span>
+                <span>Email: {row.subject}</span>{' '}
+                <DeliveryPill status={row.deliveryStatus} />
+              </span>
               <span
                 style={{
                   color: 'var(--text-tertiary)',
@@ -265,6 +279,13 @@ function CrmActivitySection({
               >
                 {formatDateTime(row.sentAt, zone)} · {row.toEmail}
               </span>
+              {/* Same lifecycle rendering as the comms log — the CRM must not
+                  word delivery differently from the event surfaces. */}
+              <DeliveryLifecycle
+                status={row.deliveryStatus}
+                timezone={zone}
+                updatedAt={row.deliveryUpdatedAt}
+              />
             </li>
           ))}
         </ul>

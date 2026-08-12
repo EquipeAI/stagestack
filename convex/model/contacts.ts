@@ -6,6 +6,12 @@ import { forbidden, notFound, requireOrgAdmin } from "../lib/functions";
 import { logAudit } from "./audit";
 import { assertText, normalizeEmail } from "./validation";
 import { emailShell, escapeHtml, sendLoggedEmail } from "./comms";
+import {
+  OUTREACH_AUDIENCE_MESSAGE,
+  OUTREACH_MAX,
+  OUTREACH_MIN,
+  canReceiveOutreach,
+} from "../shared/bulkOutreach";
 
 // Org contact directory (M0): current reusable profiles. Event snapshots are
 // copied from these when a contact joins an event (M2+); snapshots never
@@ -879,6 +885,9 @@ export async function outreachHistory(
     toEmail: message.toEmail,
     deliveryStatus: message.deliveryStatus,
     sentAt: message._creationTime,
+    ...(message.deliveryUpdatedAt === undefined
+      ? {}
+      : { deliveryUpdatedAt: message.deliveryUpdatedAt }),
   }));
 }
 
@@ -891,10 +900,13 @@ export async function sendBulkOutreach(
 ) {
   requireOrgAdmin(caller);
   const uniqueIds = [...new Set(contactIds)];
-  if (uniqueIds.length < 2 || uniqueIds.length > 25) {
+  // The range and the "no address on file" rule are stated once, in
+  // convex/shared/bulkOutreach.ts, so the batch bar can say what this call
+  // will do before it is made and reach the same numbers (W12).
+  if (uniqueIds.length < OUTREACH_MIN || uniqueIds.length > OUTREACH_MAX) {
     throw new ConvexError({
       code: "invalid_audience",
-      message: "Select between 2 and 25 contacts.",
+      message: OUTREACH_AUDIENCE_MESSAGE,
     });
   }
   const cleanSubject = assertText(subject, { label: "Subject", max: 200 });
@@ -912,7 +924,7 @@ export async function sendBulkOutreach(
   );
   for (const contact of contacts) {
     const contactId = contact._id;
-    if (contact.email === undefined) {
+    if (!canReceiveOutreach(contact)) {
       results.push({ contactId, status: "skipped_no_email", messageId: null });
       continue;
     }

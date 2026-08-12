@@ -308,6 +308,14 @@ export const dashboard = eventQuery({
       missingProfile: v.number(),
       overdue: v.number(),
     }),
+    // W8's "what is blocked" counts, derived in the SAME pass as the readiness
+    // rows above so the panel's headline can never disagree with its list.
+    blockers: v.object({
+      contentDrafts: v.number(),
+      unscheduled: v.number(),
+      scheduleConflicts: v.number(),
+      blockedSessions: v.number(),
+    }),
   }),
   handler: async (ctx, args) => {
     return await Readiness.dashboard(ctx, ctx.caller, args.now);
@@ -380,6 +388,7 @@ export const filesLibraryV2 = eventQuery({
       version: v.union(v.number(), v.null()),
       versionCount: v.union(v.number(), v.null()),
       uploadedByName: v.union(v.string(), v.null()),
+      uploadedByNote: v.union(v.string(), v.null()),
       uploadedAt: v.union(v.number(), v.null()),
       url: v.union(v.string(), v.null()),
       commentCount: v.number(),

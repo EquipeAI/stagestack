@@ -2490,3 +2490,259 @@ describe("speaker-tracking dashboard", () => {
     );
   });
 });
+
+// ── Uploader provenance (W5) ─────────────────────────────────────────────
+
+describe("files library uploader provenance", () => {
+  test("resolves a nameless account through the event's own snapshot instead of a generic label", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+    const { eventContactId, sessionId } = await inviteSpeaker(
+      alice,
+      eventSlug,
+      {
+        firstName: "Dana",
+        lastName: "Keynote",
+        email: "dana@example.com",
+      },
+      "Opening keynote",
+    );
+    // A second organizer whose identity provider gave us no human name. The
+    // event still knows exactly who they are, through their own snapshot.
+    const casey = await signIn(t, "casey", {
+      emailVerified: true,
+      name: undefined,
+    });
+    await grantEventRole(t, eventSlug, "casey", "organizer");
+    const caseyId = await userIdFor(t, "casey");
+
+    await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .filter((q) => q.eq(q.field("slug"), eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      await ctx.db.insert("eventContacts", {
+        eventId: event._id,
+        orgId: event.orgId,
+        firstName: "Casey",
+        lastName: "Organizer",
+        email: "casey@example.com",
+        userId: caseyId,
+      });
+      const requirementId = await ctx.db.insert("requirements", {
+        eventId: event._id,
+        title: "Slides",
+        scope: "participant",
+        evidence: "file",
+        reviewRequired: false,
+        dueAt: DUE,
+        active: true,
+      });
+      const instanceId = await ctx.db.insert("taskInstances", {
+        requirementId,
+        eventId: event._id,
+        sessionId,
+        eventContactId,
+        status: "complete",
+        dueAt: DUE,
+        updatedAt: 1,
+      });
+      const storageId = await ctx.storage.store(
+        new Blob(["slides"], { type: "application/pdf" }),
+      );
+      await ctx.db.insert("uploads", {
+        eventId: event._id,
+        taskInstanceId: instanceId,
+        storageId,
+        filename: "slides.pdf",
+        version: 1,
+        // Uploaded by the organizer, NOT by the speaker the task belongs to —
+        // this is the path that used to render "Event contributor".
+        uploadedBy: caseyId,
+      });
+    });
+
+    const rows = await alice.query(api.tasks.filesLibraryV2, { eventSlug });
+    const slides = rows.find((row) => row.filename === "slides.pdf");
+    expect(slides).toMatchObject({
+      uploadedByName: "Casey Organizer",
+      uploadedByNote: null,
+    });
+  });
+
+  test("an account the event holds two names for is reported as not attributable", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+    const { eventContactId, sessionId } = await inviteSpeaker(
+      alice,
+      eventSlug,
+      {
+        firstName: "Dana",
+        lastName: "Keynote",
+        email: "dana@example.com",
+      },
+      "Opening keynote",
+    );
+    const casey = await signIn(t, "casey", {
+      emailVerified: true,
+      name: undefined,
+    });
+    await grantEventRole(t, eventSlug, "casey", "organizer");
+    const caseyId = await userIdFor(t, "casey");
+    expect(casey).toBeDefined();
+
+    await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .filter((q) => q.eq(q.field("slug"), eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      // Two snapshots, two different names, same account: the event cannot
+      // say which one is theirs, and neither can we.
+      for (const [firstName, lastName] of [
+        ["Casey", "Organizer"],
+        ["C.", "Organiser"],
+      ]) {
+        await ctx.db.insert("eventContacts", {
+          eventId: event._id,
+          orgId: event.orgId,
+          firstName: firstName!,
+          lastName: lastName!,
+          email: "casey@example.com",
+          userId: caseyId,
+        });
+      }
+      const requirementId = await ctx.db.insert("requirements", {
+        eventId: event._id,
+        title: "Slides",
+        scope: "participant",
+        evidence: "file",
+        reviewRequired: false,
+        dueAt: DUE,
+        active: true,
+      });
+      const instanceId = await ctx.db.insert("taskInstances", {
+        requirementId,
+        eventId: event._id,
+        sessionId,
+        eventContactId,
+        status: "complete",
+        dueAt: DUE,
+        updatedAt: 1,
+      });
+      const storageId = await ctx.storage.store(
+        new Blob(["slides"], { type: "application/pdf" }),
+      );
+      await ctx.db.insert("uploads", {
+        eventId: event._id,
+        taskInstanceId: instanceId,
+        storageId,
+        filename: "slides.pdf",
+        version: 1,
+        uploadedBy: caseyId,
+      });
+    });
+
+    const rows = await alice.query(api.tasks.filesLibraryV2, { eventSlug });
+    const slides = rows.find((row) => row.filename === "slides.pdf");
+    expect(slides).toMatchObject({
+      uploadedByName: null,
+      uploadedByNote:
+        "Not attributable: the uploading account's record is missing, or this event holds more than one name for it.",
+    });
+  });
+
+  test("an account with no name anywhere is named as such, not as unattributable", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+    const { eventContactId, sessionId } = await inviteSpeaker(
+      alice,
+      eventSlug,
+      {
+        firstName: "Dana",
+        lastName: "Keynote",
+        email: "dana@example.com",
+      },
+      "Opening keynote",
+    );
+    await signIn(t, "casey", { emailVerified: true, name: undefined });
+    await grantEventRole(t, eventSlug, "casey", "organizer");
+    const caseyId = await userIdFor(t, "casey");
+
+    await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .filter((q) => q.eq(q.field("slug"), eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      const requirementId = await ctx.db.insert("requirements", {
+        eventId: event._id,
+        title: "Slides",
+        scope: "participant",
+        evidence: "file",
+        reviewRequired: false,
+        dueAt: DUE,
+        active: true,
+      });
+      const instanceId = await ctx.db.insert("taskInstances", {
+        requirementId,
+        eventId: event._id,
+        sessionId,
+        eventContactId,
+        status: "complete",
+        dueAt: DUE,
+        updatedAt: 1,
+      });
+      const storageId = await ctx.storage.store(
+        new Blob(["slides"], { type: "application/pdf" }),
+      );
+      await ctx.db.insert("uploads", {
+        eventId: event._id,
+        taskInstanceId: instanceId,
+        storageId,
+        filename: "slides.pdf",
+        version: 1,
+        uploadedBy: caseyId,
+      });
+    });
+
+    const rows = await alice.query(api.tasks.filesLibraryV2, { eventSlug });
+    const slides = rows.find((row) => row.filename === "slides.pdf");
+    expect(slides).toMatchObject({
+      uploadedByName: null,
+      uploadedByNote:
+        "Uploaded by an account that has not set a display name.",
+    });
+  });
+
+  test("a headshot with no provenance record says the uploader was not recorded", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+    const { eventContactId } = await inviteSpeaker(
+      alice,
+      eventSlug,
+      {
+        firstName: "Dana",
+        lastName: "Keynote",
+        email: "dana@example.com",
+      },
+      "Opening keynote",
+    );
+    await t.run(async (ctx) => {
+      const storageId = await ctx.storage.store(
+        new Blob(["legacy"], { type: "image/webp" }),
+      );
+      await ctx.db.patch("eventContacts", eventContactId, {
+        headshotId: storageId,
+      });
+    });
+
+    const [file] = await alice.query(api.tasks.filesLibraryV2, { eventSlug });
+    expect(file).toMatchObject({
+      kind: "headshot",
+      uploadedByName: null,
+      uploadedByNote: "The uploader was not recorded for this file.",
+    });
+  });
+});

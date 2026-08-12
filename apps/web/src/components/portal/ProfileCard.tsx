@@ -10,6 +10,7 @@ import { Avatar, Button, Callout, Card, Field, Input, Textarea } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
+import { FileButton } from '~/components/FileButton'
 import { isSupportedHeadshot, uploadHeadshot } from '~/lib/headshotUpload'
 import {
   ActionError,
@@ -92,7 +93,7 @@ export function ProfileCard({
   const beginHeadshotUpload = useMutation(api.portal.beginHeadshotUpload)
   const attachHeadshot = useMutation(api.portal.attachHeadshot)
   const discardHeadshot = useMutation(api.portal.discardHeadshotUpload)
-  const { pending, error, setError, run } = usePending()
+  const { pending, error, setError, run } = usePending({ announce: false })
 
   const draftKey = profileDraftServerKey(profile)
   const headshotKey = profileHeadshotServerKey(profile)
@@ -214,6 +215,8 @@ export function ProfileCard({
       footer={
         <ButtonRow>
           <span
+            // Dirty→saved is only signalled here, so it has to be spoken.
+            role="status"
             style={{
               font: 'var(--type-caption)',
               color: 'var(--text-tertiary)',
@@ -366,19 +369,16 @@ export function ProfileCard({
                 {uploading ? 'Uploading…' : 'Upload a photo'}
               </Button>
             ) : (
-              <Button as="label" size="sm" iconLeft="upload">
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    e.target.value = ''
-                    if (file !== undefined) void upload(file)
-                  }}
-                />
+              <FileButton
+                size="sm"
+                iconLeft="upload"
+                accept="image/jpeg,image/png,image/webp"
+                onFile={(file) => {
+                  void upload(file)
+                }}
+              >
                 {photo === undefined ? 'Upload a photo' : 'Replace photo'}
-              </Button>
+              </FileButton>
             )}
             {photo !== undefined && !readOnly ? (
               <Button

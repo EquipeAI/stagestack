@@ -4,6 +4,11 @@ import { useSuspenseQuery } from '@tanstack/react-query'
 import { api } from '@convex/_generated/api'
 import type * as React from 'react'
 import type { PublicProgram } from '@convex/model/publish'
+import type {
+  PublicSearch,
+  PublicSearchController,
+  PublicView,
+} from '~/lib/publicSearch'
 import { EmptyState, Logo, Tabs } from '~/ds'
 import { EventHero, PoweredBy } from '~/components/public/ProgramView'
 import { AgendaGrid } from '~/components/public/widgets/AgendaGrid'
@@ -12,6 +17,11 @@ import { SessionsCatalog } from '~/components/public/widgets/SessionsCatalog'
 import { SpeakerGallery } from '~/components/public/widgets/SpeakerGallery'
 import { SpeakersDirectory } from '~/components/public/widgets/SpeakersDirectory'
 import { siteOrigin } from '~/lib/origin'
+import {
+  applyPatch,
+  forView,
+  parsePublicSearch,
+} from '~/lib/publicSearch'
 
 // The public event page: /e/<slug>. Unauthenticated and SSR-first — it is the
 // shareable URL judges (and attendees) open, so the program is fetched in the
@@ -24,28 +34,8 @@ import { siteOrigin } from '~/lib/origin'
 // widgets are client-interactive but render full initial HTML from the
 // server-loaded program, so SSR keeps working.
 
-const VIEWS = [
-  'sessions',
-  'speakers',
-  'agenda',
-  'itinerary',
-  'gallery',
-] as const
-type ViewId = (typeof VIEWS)[number]
-
-type PublicSearch = { view?: ViewId }
-
-function parseSearch(input: Record<string, unknown>): PublicSearch {
-  const raw = input.view
-  return typeof raw === 'string' &&
-    (VIEWS as ReadonlyArray<string>).includes(raw) &&
-    raw !== 'sessions'
-    ? { view: raw as ViewId }
-    : {}
-}
-
 export const Route = createFileRoute('/e/$slug')({
-  validateSearch: parseSearch,
+  validateSearch: parsePublicSearch,
   loader: async ({ context, params }) => {
     const program = await context.queryClient.ensureQueryData(
       convexQuery(api.publish.publicProgram, { slug: params.slug }),
@@ -192,6 +182,24 @@ function PublicEventPage() {
   )
 }
 
+// The tab strip is the only thing naming the section between the hero's <h1>
+// and the widgets' <h3>s, and a tab is not a heading — so the level sequence
+// skipped h2 on this page. The widgets are shared with /embed/<slug>, which has
+// its own <h2> (ProgramView's SectionHeading), so the missing level is supplied
+// here rather than inside a widget. Clipped, not `display:none`: a hidden
+// heading is not in the accessibility tree at all.
+const CLIPPED: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clipPath: 'inset(50%)',
+  whiteSpace: 'nowrap',
+  border: 0,
+}
+
 // ── widget nav ────────────────────────────────────────────────────────────
 function ProgramWidgets({ program }: { program: PublicProgram }) {
   const search = Route.useSearch()
@@ -213,9 +221,25 @@ function ProgramWidgets({ program }: { program: PublicProgram }) {
   ]
 
   const requested = search.view ?? 'sessions'
-  const view: ViewId = tabs.some((t) => t.id === requested)
+  const view: PublicView = tabs.some((t) => t.id === requested)
     ? requested
     : 'sessions'
+
+  // Facets, search text and the expanded record are URL state (W5). Facet and
+  // expansion changes PUSH so Back undoes them one at a time; the free-text
+  // query REPLACES so typing does not bury the previous page under a history
+  // entry per keystroke.
+  const controller: PublicSearchController = {
+    value: search,
+    patch: (patch) => {
+      const next: PublicSearch = applyPatch(search, patch)
+      void navigate({
+        search: next,
+        replace: Object.keys(patch).length === 1 && patch.q !== undefined,
+        resetScroll: false,
+      })
+    },
+  }
 
   return (
     <div
@@ -241,18 +265,31 @@ function ProgramWidgets({ program }: { program: PublicProgram }) {
           value={view}
           onChange={(id) =>
             void navigate({
-              search: id === 'sessions' ? {} : { view: id as ViewId },
+              // A view switch drops the previous view's facets rather than
+              // carrying a stale ?room= into a widget that has no rooms.
+              search: forView(id === 'sessions' ? undefined : (id as PublicView)),
               replace: true,
               resetScroll: false,
             })
           }
         />
       </div>
-      {view === 'sessions' ? <SessionsCatalog program={program} /> : null}
-      {view === 'speakers' ? <SpeakersDirectory program={program} /> : null}
-      {view === 'agenda' ? <AgendaGrid program={program} /> : null}
-      {view === 'itinerary' ? <Itinerary program={program} /> : null}
-      {view === 'gallery' ? <SpeakerGallery program={program} /> : null}
+      <h2 style={CLIPPED}>{tabs.find((t) => t.id === view)?.label ?? 'Program'}</h2>
+      {view === 'sessions' ? (
+        <SessionsCatalog program={program} url={controller} />
+      ) : null}
+      {view === 'speakers' ? (
+        <SpeakersDirectory program={program} url={controller} />
+      ) : null}
+      {view === 'agenda' ? (
+        <AgendaGrid program={program} url={controller} />
+      ) : null}
+      {view === 'itinerary' ? (
+        <Itinerary program={program} url={controller} />
+      ) : null}
+      {view === 'gallery' ? (
+        <SpeakerGallery program={program} url={controller} />
+      ) : null}
     </div>
   )
 }

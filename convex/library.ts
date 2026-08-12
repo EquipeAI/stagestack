@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { internalMutation } from "./_generated/server";
 import { eventMutation, eventQuery } from "./lib/functions";
 import { vv } from "./lib/validators";
 import * as Library from "./model/library";
@@ -7,6 +8,7 @@ const vKind = v.union(
   v.literal("tracks"),
   v.literal("tags"),
   v.literal("rooms"),
+  v.literal("formats"),
   v.literal("customFields"),
 );
 
@@ -15,6 +17,7 @@ const vItemInput = v.object({
   description: v.optional(v.string()),
   color: v.optional(v.string()),
   capacity: v.optional(v.number()),
+  defaultDurationMinutes: v.optional(v.number()),
   kind: v.optional(
     v.union(
       v.literal("text"),
@@ -34,6 +37,7 @@ export const list = eventQuery({
     tracks: v.array(vv.doc("tracks")),
     tags: v.array(vv.doc("tags")),
     rooms: v.array(vv.doc("rooms")),
+    formats: v.array(vv.doc("formats")),
     customFields: v.array(vv.doc("customFields")),
   }),
   handler: async (ctx) => {
@@ -74,5 +78,23 @@ export const remove = eventMutation({
   handler: async (ctx, args) => {
     await Library.removeLibraryItem(ctx, ctx.caller, args.table, args.id);
     return null;
+  },
+});
+
+/**
+ * One-event migration of free-text `sessions.format` values into formats
+ * library rows (W2). INTERNAL and per-event on purpose: it is the rehearsable
+ * unit — run it against dev, read the counts, then run it per event on
+ * develop/prod. It is idempotent, so a re-run is always safe.
+ */
+export const backfillFormats = internalMutation({
+  args: { eventId: v.id("events") },
+  returns: v.object({
+    formatsCreated: v.number(),
+    sessionsLinked: v.number(),
+    unmatched: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    return await Library.backfillFormats(ctx, args.eventId);
   },
 });

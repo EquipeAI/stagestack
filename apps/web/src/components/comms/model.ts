@@ -69,21 +69,178 @@ export const AUDIENCE_META: Record<
   },
 }
 
+/**
+ * What a one-off send does to the reminder automation — which is nothing.
+ *
+ * Checked against the code, not assumed: `convex/comms.ts sendOneOff` never
+ * touches `lastRemindedAt`, so unlike `reminders.sendOutstandingNow` (which
+ * deliberately stamps the tasks it included) a one-off message leaves every
+ * cadence clock exactly where it was.
+ */
+export const ONE_OFF_CADENCE_COPY =
+  'A one-off message is not a reminder: it does not reset anyone’s reminder cadence, so scheduled reminders continue unchanged.'
+
+/**
+ * Who an audience send leaves out, and why. Empty when nobody is excluded.
+ *
+ * The over-cap case is NOT an exclusion, it is a refusal: `sendOneOff`
+ * (convex/model/comms.ts) throws `audience_too_large` on `resolved.truncated`
+ * rather than mailing the first MAX_AUDIENCE — so the copy must not imply a
+ * partial send. `overCapRefusal` states that separately.
+ */
+export function audienceExclusions(row: {
+  skipped: number
+  totalKnown: number
+  truncated: boolean
+  count: number
+}): Array<string> {
+  const reasons: Array<string> = []
+  if (row.skipped > 0) {
+    reasons.push(
+      `${row.skipped} ${row.skipped === 1 ? 'speaker has' : 'speakers have'} no reachable address — neither their own nor a primary manager’s.`,
+    )
+  }
+  return reasons
+}
+
+/** The refusal sentence for an over-cap audience, or null when it fits. */
+export function overCapRefusal(
+  row: { totalKnown: number; truncated: boolean },
+  cap: number,
+): string | null {
+  return row.truncated
+    ? `This send will be refused: the audience has ${row.totalKnown} reachable recipients and a single send reaches at most ${cap}. Narrow it down.`
+    : null
+}
+
+/** A selected speaker StageStack holds no address for is silently skipped by
+ * the backend (`sendOneOff`'s `contacts` branch increments `skipped`), so the
+ * confirmation has to say it before the result does. */
+export function missingAddressExclusion(count: number): string | null {
+  return count === 0
+    ? null
+    : `${count} selected ${count === 1 ? 'speaker has' : 'speakers have'} no email address on this event and will be skipped.`
+}
+
+/** One contact with no address is a hard stop: `contactRecipient` throws
+ * `invalid_email` rather than skipping. */
+export const NO_ADDRESS_BLOCKED =
+  'StageStack holds no email address for this speaker on this event. Add one on their profile first.'
+
 // ── Delivery ──────────────────────────────────────────────────────────────
 
-/** Resend's delivery lifecycle. These are not StageStack workflow states, so
- * the tone is stated rather than looked up from StatusPill's map. */
+/**
+ * Resend's delivery lifecycle. These are not StageStack workflow states, so
+ * the tone is stated rather than looked up from StatusPill's map.
+ *
+ * The lifecycle is Queued → Provider accepted → Delivered / Failed, and the
+ * labels say exactly where a row sits in it (W1). Two rules the review paid
+ * for: a row the provider accepted is NEVER labelled "Queued" — it is "Sent —
+ * delivery unconfirmed" until a delivery event arrives — and no label claims a
+ * delivery StageStack has not been told about.
+ */
+export const DELIVERY_STAGES = ['queued', 'accepted', 'closed'] as const
+export type DeliveryStage = (typeof DELIVERY_STAGES)[number]
+
+/** Human name for each lifecycle step, in order. */
+export const DELIVERY_STAGE_LABEL: Record<DeliveryStage, string> = {
+  queued: 'Queued',
+  accepted: 'Provider accepted',
+  closed: 'Delivered',
+}
+
 export const DELIVERY_STATUS: Record<
   DeliveryStatus,
-  { label: string; tone: PillTone }
+  {
+    label: string
+    tone: PillTone
+    /** How far along the lifecycle this row has actually got. */
+    stage: DeliveryStage
+    /** True when the run ended badly — the last step is a failure, not a
+     * clean delivery. */
+    failed: boolean
+    /** True when the recipient's server DID take the message. `complained`
+     * counts: it was delivered and then reported as spam, so counting it as
+     * "did not reach the recipient" would be its own small lie. */
+    reached: boolean
+    /** What the status means, in one sentence. */
+    detail: string
+  }
 > = {
-  queued: { label: 'Queued', tone: 'info' },
-  sent: { label: 'Sent', tone: 'info' },
-  delivered: { label: 'Delivered', tone: 'success' },
-  delivery_delayed: { label: 'Delayed', tone: 'attention' },
-  bounced: { label: 'Bounced', tone: 'blocked' },
-  complained: { label: 'Complained', tone: 'blocked' },
-  failed: { label: 'Failed', tone: 'blocked' },
+  queued: {
+    label: 'Queued',
+    tone: 'neutral',
+    stage: 'queued',
+    failed: false,
+    reached: false,
+    detail:
+      'Recorded by StageStack and waiting to be handed to the mail provider.',
+  },
+  sent: {
+    label: 'Sent — delivery unconfirmed',
+    tone: 'info',
+    stage: 'accepted',
+    failed: false,
+    reached: false,
+    detail:
+      'The mail provider accepted it. No delivery confirmation has arrived yet.',
+  },
+  delivered: {
+    label: 'Delivered',
+    tone: 'success',
+    stage: 'closed',
+    failed: false,
+    reached: true,
+    detail: 'The receiving mail server accepted it for the recipient.',
+  },
+  delivery_delayed: {
+    label: 'Delayed — provider still retrying',
+    tone: 'attention',
+    stage: 'accepted',
+    failed: false,
+    reached: false,
+    detail:
+      'The receiving server deferred it. The provider keeps retrying; it has neither been delivered nor given up on.',
+  },
+  bounced: {
+    label: 'Bounced — the address rejected it',
+    tone: 'blocked',
+    stage: 'closed',
+    failed: true,
+    reached: false,
+    detail:
+      'The receiving server refused it permanently. Check the address before re-sending.',
+  },
+  complained: {
+    label: 'Delivered, then marked as spam',
+    tone: 'blocked',
+    stage: 'closed',
+    failed: true,
+    reached: true,
+    detail:
+      'The recipient received it and then reported it as spam. Do not re-send to this address without asking first.',
+  },
+  failed: {
+    label: 'Failed — never sent',
+    tone: 'blocked',
+    stage: 'closed',
+    failed: true,
+    reached: false,
+    detail:
+      "The mail service refused this send, so it never left. Check the deployment's mail settings, then re-send it.",
+  },
+}
+
+/**
+ * Did this row definitively fail to reach the recipient?
+ *
+ * `complained` is the trap: it was DELIVERED and then reported as spam, so
+ * counting it here would tell the organizer their mail never arrived. `queued`,
+ * `sent` and `delivery_delayed` are unknown, not failures.
+ */
+export function didNotReach(status: DeliveryStatus): boolean {
+  const delivery = DELIVERY_STATUS[status]
+  return delivery.failed && !delivery.reached
 }
 
 // ── Templates ─────────────────────────────────────────────────────────────

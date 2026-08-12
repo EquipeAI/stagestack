@@ -1,8 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
-import type { ViewId } from '~/components/agenda/model'
+import type { AgendaSearch } from '~/components/agenda/search'
 import { AgendaBoard } from '~/components/agenda/AgendaBoard'
+import { parseAgendaSearch } from '~/components/agenda/search'
 import { Callout } from '~/ds'
 
 // The agenda builder (M6, challenge requirement #5). One `api.agenda.board`
@@ -11,26 +12,9 @@ import { Callout } from '~/ds'
 // query is organizer-only on the backend, so reviewers get the shared forbidden
 // treatment and never subscribe.
 
-const VIEWS: ReadonlyArray<ViewId> = ['list', 'day', 'week', 'track', 'room']
-const DAY_RE = /^\d{4}-\d{2}-\d{2}$/
-
-type AgendaSearch = { view: ViewId; day?: string }
-
-function parseSearch(input: Record<string, unknown>): AgendaSearch {
-  const rawView = input.view
-  const view =
-    typeof rawView === 'string' && (VIEWS as ReadonlyArray<string>).includes(rawView)
-      ? (rawView as ViewId)
-      : 'room'
-  const rawDay = input.day
-  const day =
-    typeof rawDay === 'string' && DAY_RE.test(rawDay) ? rawDay : undefined
-  return { view, day }
-}
-
 export const Route = createFileRoute('/app/e/$eventSlug/agenda')({
   component: Agenda,
-  validateSearch: parseSearch,
+  validateSearch: parseAgendaSearch,
 })
 
 function Agenda() {
@@ -67,11 +51,20 @@ function Agenda() {
       board={board}
       view={search.view}
       day={search.day}
+      room={search.room}
       onView={(view) => {
-        void navigate({ search: (prev: AgendaSearch) => ({ ...prev, view }), replace: true })
+        // A room/track scope belongs to the axis it was chosen on: keeping it
+        // across a view switch would silently hide most of the new grid.
+        void navigate({
+          search: (prev: AgendaSearch) => ({ ...prev, view, room: undefined }),
+          replace: true,
+        })
       }}
       onDay={(day) => {
         void navigate({ search: (prev: AgendaSearch) => ({ ...prev, day }), replace: true })
+      }}
+      onRoom={(room) => {
+        void navigate({ search: (prev: AgendaSearch) => ({ ...prev, room }), replace: true })
       }}
     />
   )

@@ -837,3 +837,162 @@ describe("sessions.release — track carry-over (eval regression)", () => {
     expect(session?.trackId).toBe(trackId);
   });
 });
+
+describe("sessions.release — format carry-over (W5)", () => {
+  /** The CFP form's format question is an ordinary answer, exactly like the
+   * track one: the accept path has to recognise it, not be handed it. */
+  async function acceptWithFormatAnswer(
+    t: TestT,
+    alice: TestUserT,
+    eventSlug: string,
+    proposalId: Id<"proposals">,
+    answer: string,
+  ) {
+    await t.run(async (ctx) => {
+      const proposal = await ctx.db.get("proposals", proposalId);
+      await ctx.db.patch("proposals", proposalId, {
+        // Field id as the default published form mints it.
+        answers: { ...proposal!.answers, "session-format-s1": answer },
+      });
+    });
+    await stage(alice, eventSlug, proposalId, "acceptQueue");
+    await alice.mutation(api.sessions.release, {
+      eventSlug,
+      proposalIds: [proposalId],
+    });
+    await drainScheduled(t);
+    return await t.run(async (ctx) =>
+      ctx.db
+        .query("sessions")
+        .collect()
+        .then((rows) => rows.find((row) => row.proposalId === proposalId)),
+    );
+  }
+
+  test("a format answer matching a library row links the session to that row", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalId } = await submittedProposal(t);
+    const formatId = (await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "formats",
+      // The eval asserts these labels verbatim, parenthetical included.
+      item: { name: "Workshop (120 min)" },
+    })) as Id<"formats">;
+
+    const session = await acceptWithFormatAnswer(
+      t,
+      alice,
+      eventSlug,
+      proposalId,
+      "Workshop (120 min)",
+    );
+
+    expect(session?.formatId).toBe(formatId);
+    expect(session?.format).toBe("Workshop (120 min)");
+  });
+
+  test("with no library row, the session still carries the answer verbatim", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalId } = await submittedProposal(t);
+
+    const session = await acceptWithFormatAnswer(
+      t,
+      alice,
+      eventSlug,
+      proposalId,
+      "Fireside chat",
+    );
+
+    expect(session?.format).toBe("Fireside chat");
+    expect(session?.formatId).toBeUndefined();
+  });
+
+  test("an answer to a DIFFERENT question is never promoted, even when it names a format", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalId } = await submittedProposal(t);
+    await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "formats",
+      item: { name: "Talk" },
+    });
+    // The track answer happens to equal a format name. Answer-scanning would
+    // steal it; identifying the QUESTION first cannot.
+    await t.run(async (ctx) => {
+      const proposal = await ctx.db.get("proposals", proposalId);
+      await ctx.db.patch("proposals", proposalId, {
+        answers: { ...proposal!.answers, track: "Talk" },
+      });
+    });
+
+    await stage(alice, eventSlug, proposalId, "acceptQueue");
+    await alice.mutation(api.sessions.release, {
+      eventSlug,
+      proposalIds: [proposalId],
+    });
+    await drainScheduled(t);
+
+    const session = await t.run(async (ctx) =>
+      ctx.db
+        .query("sessions")
+        .collect()
+        .then((rows) => rows.find((row) => row.proposalId === proposalId)),
+    );
+    expect(session?.format).toBeUndefined();
+    expect(session?.formatId).toBeUndefined();
+  });
+
+  test("a library holding the same name twice carries nothing rather than guessing", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalId } = await submittedProposal(t);
+    await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "formats",
+      item: { name: "Talk" },
+    });
+    // A second row with the identical name, inserted directly: the public
+    // library path may dedupe, but the matcher must not depend on that.
+    await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      await ctx.db.insert("formats", {
+        eventId: event!._id,
+        name: "Talk",
+        order: 99,
+      });
+    });
+
+    const session = await acceptWithFormatAnswer(
+      t,
+      alice,
+      eventSlug,
+      proposalId,
+      "Talk",
+    );
+
+    expect(session?.format).toBeUndefined();
+    expect(session?.formatId).toBeUndefined();
+  });
+
+  test("an answer that names no format at all carries nothing", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalId } = await submittedProposal(t);
+
+    await stage(alice, eventSlug, proposalId, "acceptQueue");
+    await alice.mutation(api.sessions.release, {
+      eventSlug,
+      proposalIds: [proposalId],
+    });
+    await drainScheduled(t);
+
+    const session = await t.run(async (ctx) =>
+      ctx.db
+        .query("sessions")
+        .collect()
+        .then((rows) => rows.find((row) => row.proposalId === proposalId)),
+    );
+    expect(session?.format).toBeUndefined();
+    expect(session?.formatId).toBeUndefined();
+  });
+});

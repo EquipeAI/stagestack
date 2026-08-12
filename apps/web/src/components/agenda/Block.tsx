@@ -8,6 +8,7 @@ import {
   releaseBadge,
   releaseState,
 } from './model'
+import { conflictSummary } from './ConflictList'
 import type { CSSProperties } from 'react'
 import type {
   BoardRoom,
@@ -29,6 +30,7 @@ export function BlockCard({
   secondary,
   fill,
   dragging,
+  clamped,
 }: {
   block: PlacedBlock
   zone: string
@@ -39,6 +41,10 @@ export function BlockCard({
   /** Stretch to the positioned wrapper's height (grid use). */
   fill?: boolean
   dragging?: boolean
+  /** The grid drew this block taller than its duration to keep it readable
+   * (TimeGrid's MIN_BLOCK_PX floor). Say so — the height is the only thing on
+   * the board that reads as a duration, so a silent clamp is a wrong length. */
+  clamped?: boolean
 }) {
   const isItem = block.kind === 'item'
   const blocker = hasBlocker(block.conflicts)
@@ -131,6 +137,26 @@ export function BlockCard({
         }}
       >
         {clockLabel(block.startsAt, zone)}–{clockLabel(block.endsAt, zone)}
+        {clamped === true ? (
+          <span
+            // role="img" with the note as its name: a bare <span aria-label>
+            // has no role, and assistive tech is free to ignore the label on
+            // one. The visible "10m" becomes the image's alternative text.
+            role="img"
+            data-clamped="true"
+            title={clampNote(block)}
+            aria-label={clampNote(block)}
+            style={{
+              marginLeft: 'var(--space-1)',
+              padding: 'var(--space-0) var(--space-1)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--surface-sunken)',
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            {`${durationMinutes(block)}m`}
+          </span>
+        ) : null}
       </span>
 
       <span
@@ -166,14 +192,31 @@ export function BlockCard({
   )
 }
 
+/** The block's real length in whole minutes. */
+function durationMinutes(block: PlacedBlock): number {
+  return Math.max(1, Math.round((block.endsAt - block.startsAt) / 60000))
+}
+
+/** Why this block is drawn taller than it is. Said out loud, because height is
+ * the only thing on the grid that reads as a duration. */
+function clampNote(block: PlacedBlock): string {
+  return `${durationMinutes(block)} minutes — drawn taller so it stays readable.`
+}
+
 function ConflictMark({ block }: { block: PlacedBlock }) {
   const blockers = blockerConflicts(block.conflicts)
   const isBlocker = blockers.length > 0
   const source = isBlocker ? blockers : block.conflicts
   const message = source[0]?.message ?? ''
+  // Blocker and warning used to differ by colour alone — same glyph, same
+  // count. The shape now differs too, and the whole reason is in the
+  // element's accessible name so it is not locked inside a hover tooltip.
+  // The tap-reachable copy lives in the block's dialog (ConflictList).
   return (
     <Tooltip label={message}>
       <span
+        role="img"
+        aria-label={conflictSummary(block.conflicts)}
         style={{
           display: 'inline-flex',
           alignItems: 'center',
@@ -181,7 +224,7 @@ function ConflictMark({ block }: { block: PlacedBlock }) {
           color: isBlocker ? 'var(--status-blocked-fg)' : 'var(--status-attention-fg)',
         }}
       >
-        <Icon name="triangle-alert" size={14} />
+        <Icon name={isBlocker ? 'circle-alert' : 'triangle-alert'} size={14} />
         {source.length > 1 ? (
           <span
             style={{

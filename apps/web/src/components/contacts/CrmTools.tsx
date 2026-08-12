@@ -3,6 +3,7 @@ import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Doc, Id } from '@convex/_generated/dataModel'
 import {
+  ActionResult,
   Button,
   Callout,
   Card,
@@ -12,6 +13,7 @@ import {
   Select,
   Textarea,
 } from '~/ds'
+import { FileButton } from '~/components/FileButton'
 import { pushToast } from '~/components/toast'
 import { usePending } from '~/lib/usePending'
 
@@ -47,26 +49,22 @@ const STAGES: Array<{ value: Stage; label: string }> = [
 export function CrmTools({
   orgSlug,
   contacts,
-  selected,
   search,
   tag,
   company,
   onSearch,
   onTag,
   onCompany,
-  onClearSelection,
   onOpenContact,
 }: {
   orgSlug: string
   contacts: Array<Contact>
-  selected: Array<Id<'contacts'>>
   search: string
   tag: string
   company: string
   onSearch: (value: string) => void
   onTag: (value: string) => void
   onCompany: (value: string) => void
-  onClearSelection: () => void
   onOpenContact: (contact: Contact) => void
 }) {
   const overview = useQuery(api.contacts.overview, { orgSlug })
@@ -75,7 +73,6 @@ export function CrmTools({
   const saveSegment = useMutation(api.contacts.saveSegment)
   const merge = useMutation(api.contacts.merge)
   const [importing, setImporting] = useState(false)
-  const [composing, setComposing] = useState(false)
   const [segmentName, setSegmentName] = useState('')
   const [mergePair, setMergePair] = useState<
     { primary: Contact; secondary: Contact } | undefined
@@ -224,13 +221,6 @@ export function CrmTools({
         <Button iconLeft="upload" onClick={() => setImporting(true)}>
           Import CSV
         </Button>
-        <Button
-          disabled={selected.length < 2}
-          iconLeft="mail"
-          onClick={() => setComposing(true)}
-        >
-          Email selected ({selected.length})
-        </Button>
       </div>
 
       {duplicates !== undefined && duplicates.pairs.length > 0 ? (
@@ -279,16 +269,6 @@ export function CrmTools({
         <CsvImportDialog
           orgSlug={orgSlug}
           onClose={() => setImporting(false)}
-        />
-      ) : null}
-      {composing ? (
-        <BulkOutreachDialog
-          orgSlug={orgSlug}
-          contacts={contacts.filter((contact) =>
-            selected.includes(contact._id),
-          )}
-          onClose={() => setComposing(false)}
-          onSent={onClearSelection}
         />
       ) : null}
       {mergePair ? (
@@ -630,10 +610,6 @@ function CsvImportDialog({
               void state.run(async () => {
                 const next = await importRows({ orgSlug, rows: parsed.rows })
                 setResult(next)
-                pushToast(
-                  'Import finished',
-                  `${next.imported} imported, ${next.skipped} skipped.`,
-                )
               })
             }
           >
@@ -644,20 +620,16 @@ function CsvImportDialog({
     >
       {state.error ? <Callout tone="blocked">{state.error}</Callout> : null}
       <Field label="CSV file" htmlFor="crm-csv-file">
-        <Button as="label" size="sm" iconLeft="upload">
-          <input
-            id="crm-csv-file"
-            type="file"
-            accept=".csv,text/csv"
-            style={{ display: 'none' }}
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              event.target.value = ''
-              if (file) void file.text().then(setSource)
-            }}
-          />
+        <FileButton
+          id="crm-csv-file"
+          size="sm"
+          accept=".csv,text/csv"
+          onFile={(file) => {
+            void file.text().then(setSource)
+          }}
+        >
           Choose CSV file
-        </Button>
+        </FileButton>
       </Field>
       <Field label="CSV contents" htmlFor="crm-csv-source">
         <Textarea
@@ -685,26 +657,36 @@ function CsvImportDialog({
         ))}
       </div>
       {result ? (
-        <Callout tone={result.skipped ? 'attention' : 'success'}>
-          {result.imported} imported, {result.skipped} skipped.{' '}
-          {result.errors
-            .map((error) => `Row ${error.rowNumber}: ${error.message}`)
-            .join(' ')}
-        </Callout>
+        <ActionResult
+          status={result.skipped ? 'partial' : 'success'}
+          title={`${result.imported} contact${result.imported === 1 ? '' : 's'} imported`}
+          details={[
+            `${parsed.rows.length} row${parsed.rows.length === 1 ? '' : 's'} submitted · ${result.imported} imported · ${result.skipped} skipped.`,
+            ...result.errors.map(
+              (error) => `Row ${error.rowNumber}: ${error.message}`,
+            ),
+          ]}
+        />
       ) : null}
     </Dialog>
   )
 }
 
-function BulkOutreachDialog({
+export function BulkOutreachDialog({
   orgSlug,
   contacts,
   onClose,
+  onResult,
   onSent,
 }: {
   orgSlug: string
   contacts: Array<Contact>
   onClose: () => void
+  onResult: (result: {
+    status: 'success' | 'partial'
+    title: string
+    lines: Array<string>
+  }) => void
   onSent: () => void
 }) {
   const send = useMutation(api.contacts.sendBulkOutreach)
@@ -748,10 +730,26 @@ function BulkOutreachDialog({
                   subject,
                   body,
                 })
-                pushToast(
-                  'Outreach complete',
-                  `${result.queued} queued, ${result.failed} failed, ${result.skipped} skipped.`,
-                )
+                // Every count comes from the mutation, which is where
+                // eligibility (an address on file) is decided.
+                onResult({
+                  status:
+                    result.failed + result.skipped === 0
+                      ? 'success'
+                      : 'partial',
+                  title: `${result.queued} email${result.queued === 1 ? '' : 's'} queued`,
+                  lines: [
+                    `${contacts.length} contact${contacts.length === 1 ? '' : 's'} selected · ${result.queued} queued.`,
+                    ...(result.failed > 0
+                      ? [`${result.failed} could not be sent.`]
+                      : []),
+                    ...(result.skipped > 0
+                      ? [
+                          `${result.skipped} skipped — no email address on file.`,
+                        ]
+                      : []),
+                  ],
+                })
                 onSent()
                 onClose()
               })

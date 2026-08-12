@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   Outlet,
   createFileRoute,
@@ -7,136 +7,58 @@ import {
 } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
-import { Badge, Callout, PageHeader, SidebarNav } from '~/ds'
+import type { Attention, NavItem, TabId } from '~/components/shell/nav'
+import {
+  Badge,
+  Button,
+  Callout,
+  NavDrawer,
+  PageHeader,
+  SidebarNav,
+} from '~/ds'
 import { PageBody } from '~/components/PageBody'
 import { errorCode, errorMessage } from '~/lib/errors'
 import { formatDateRange } from '~/lib/datetime'
 import { rememberLastEventSlug } from '~/lib/lastEvent'
+import { AttentionCounts } from '~/components/shell/AttentionCounts'
+import {
+  EventHeaderProvider,
+  useEventHeader,
+} from '~/components/shell/EventHeader'
+import {
+  DECISIONS_SEARCH,
+  NAV_GROUPS,
+  TAB_PATHS,
+  activeNavId,
+  attentionSummary,
+  countHint,
+  formatCount,
+  groupOf,
+  itemOf,
+} from '~/components/shell/nav'
+
+// The event shell. It owns three things and delegates the rest:
+//   · the navigation rail (desktop) and drawer (phone), both rendered from the
+//     one lifecycle grouping in components/shell/nav.ts;
+//   · one subscription to the cheap attention counts, feeding both;
+//   · one route-aware header, so a deeper route contributes a crumb and a
+//     title instead of stacking a second sticky header (W9 consumes this).
 
 export const Route = createFileRoute('/app/e/$eventSlug')({
   component: EventLayout,
   errorComponent: EventError,
 })
 
-// The single source of truth for the sidebar: it maps a tab to its route both
-// ways — pathname → active tab, and selected tab → navigation target.
-const TAB_PATHS = {
-  dashboard: '/app/e/$eventSlug/dashboard',
-  overview: '/app/e/$eventSlug',
-  cfp: '/app/e/$eventSlug/cfp',
-  comms: '/app/e/$eventSlug/comms',
-  proposals: '/app/e/$eventSlug/proposals',
-  reviews: '/app/e/$eventSlug/reviews',
-  sessions: '/app/e/$eventSlug/sessions',
-  speakers: '/app/e/$eventSlug/speakers',
-  agenda: '/app/e/$eventSlug/agenda',
-  import: '/app/e/$eventSlug/import',
-  publish: '/app/e/$eventSlug/publish',
-  settings: '/app/e/$eventSlug/settings',
-  tasks: '/app/e/$eventSlug/tasks',
-  team: '/app/e/$eventSlug/team',
-} as const
-
-type TabId = keyof typeof TAB_PATHS
-
-/** `requires` hides an entry from anyone without that role on this event. */
-type NavItem = {
-  id: TabId
-  label: string
-  icon: string
-  requires?: 'organizer'
-}
-
-// Later milestones append to this list — Agenda, Speakers — without touching
-// the shell.
-const NAV_GROUPS: Array<{ items: Array<NavItem> }> = [
-  {
-    items: [
-      // Speaker ops is the daily screen for an organizer, so it leads.
-      {
-        id: 'dashboard',
-        label: 'Dashboard',
-        icon: 'table-2',
-        requires: 'organizer',
-      },
-      { id: 'overview', label: 'Overview', icon: 'layout-grid' },
-      {
-        id: 'cfp',
-        label: 'Call for speakers',
-        icon: 'mic-vocal',
-        requires: 'organizer',
-      },
-      {
-        id: 'proposals',
-        label: 'Proposals',
-        icon: 'inbox',
-        requires: 'organizer',
-      },
-      // Reviewers are assigned proposals to score, so Reviews is theirs too.
-      { id: 'reviews', label: 'Reviews', icon: 'star' },
-      {
-        id: 'sessions',
-        label: 'Sessions',
-        icon: 'presentation',
-        requires: 'organizer',
-      },
-      {
-        id: 'speakers',
-        label: 'Speakers',
-        icon: 'user-round',
-        requires: 'organizer',
-      },
-      {
-        id: 'agenda',
-        label: 'Agenda',
-        icon: 'calendar-days',
-        requires: 'organizer',
-      },
-      {
-        id: 'tasks',
-        label: 'Speaker tasks',
-        icon: 'list-checks',
-        requires: 'organizer',
-      },
-      {
-        id: 'comms',
-        label: 'Communications',
-        icon: 'mail',
-        requires: 'organizer',
-      },
-      // Import writes records with the organizer's authority, so the entry is
-      // organizer-gated like the backend surface it fronts.
-      {
-        id: 'import',
-        label: 'Import',
-        icon: 'upload',
-        requires: 'organizer',
-      },
-      {
-        id: 'publish',
-        label: 'Publish',
-        icon: 'globe',
-        requires: 'organizer',
-      },
-      // A reviewer's shell is Overview + Reviews only: the sidebar must not
-      // advertise organizer surfaces even though the backend already scopes
-      // them (eval CFP-10: role-separated navigation).
-      {
-        id: 'settings',
-        label: 'Settings',
-        icon: 'settings',
-        requires: 'organizer',
-      },
-      { id: 'team', label: 'Team', icon: 'users', requires: 'organizer' },
-    ],
-  },
-]
-
 function EventLayout() {
   const { eventSlug } = Route.useParams()
   const data = useQuery(api.events.get, { eventSlug })
   const navigate = useNavigate()
   const pathname = useLocation({ select: (l) => l.pathname })
+  const status = useLocation({
+    // Only the one param the rail reads. Selecting the whole search object
+    // would re-render the shell on every table sort and keystroke.
+    select: (l) => (l.search as { status?: string } | undefined)?.status,
+  })
 
   // /app opens whatever event you were last in. Only record it once the event
   // actually loaded, so a stale or forbidden slug in the URL is not the thing
@@ -146,31 +68,65 @@ function EventLayout() {
     if (loaded) rememberLastEventSlug(eventSlug)
   }, [loaded, eventSlug])
 
-  const current = pathname.replace(/\/$/, '')
-  const activeId =
-    (Object.keys(TAB_PATHS) as Array<TabId>).find(
-      (id) => TAB_PATHS[id].replace('$eventSlug', eventSlug) === current,
-    ) ?? 'overview'
+  const [attention, setAttention] = useState<Attention | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
-  // Role-gated entries stay hidden until the role is known, so a reviewer
-  // never sees an organizer tab flash on load.
+  // Close on ANY route change, not only ones that came through go():
+  // browser Back/Forward and programmatic navigation must not leave the
+  // drawer floating over a page it no longer describes.
+  useEffect(() => {
+    setDrawerOpen(false)
+  }, [pathname])
+
+  // A stable callback: the probe reports through an effect, and an inline
+  // function here would make that effect fire on every render.
+  const onAttention = useCallback((value: Attention | null) => {
+    setAttention(value)
+  }, [])
+
+  const activeId = activeNavId(pathname, eventSlug, { status })
+
   const groups = NAV_GROUPS.map((group) => ({
-    ...group,
-    items: group.items.filter(
-      (item) => item.requires === undefined || data?.role === item.requires,
-    ),
-  }))
+    label: group.label,
+    // Role-gated entries stay hidden until the role is known, so a reviewer
+    // never sees an organizer tab flash on load.
+    items: group.items
+      .filter(
+        (item) => item.requires === undefined || data?.role === item.requires,
+      )
+      .map((item) => decorate(item, attention)),
+  })).filter((group) => group.items.length > 0)
 
-  const onSelect = (id: string) => {
+  const go = (id: string) => {
+    setDrawerOpen(false)
+    // Decisions is a saved view of Proposals, not a route: one navigation, to
+    // the proposals path, carrying the staged-queue filter its own
+    // validateSearch already accepts.
+    if (id === 'decisions') {
+      void navigate({
+        to: TAB_PATHS.proposals,
+        params: { eventSlug },
+        search: DECISIONS_SEARCH,
+      })
+      return
+    }
     const to = id in TAB_PATHS ? TAB_PATHS[id as TabId] : TAB_PATHS.overview
     void navigate({ to, params: { eventSlug } })
   }
 
+  const eventName = data === undefined ? 'Loading…' : data.event.name
+
   return (
     // Classes, not inline styles: the shell flips from "rail beside content"
-    // to "tab strip above content" at 860px, and a media query cannot reach a
-    // style attribute. See .app-shell in styles/app.css.
+    // to "menu button above content" at 860px, and a media query cannot reach
+    // a style attribute. See .app-shell in styles/app.css.
     <div className="app-shell">
+      <AttentionCounts
+        eventSlug={eventSlug}
+        enabled={data?.role === 'organizer'}
+        onData={onAttention}
+      />
+
       <div className="app-shell__nav">
         <SidebarNav
           header={
@@ -183,54 +139,145 @@ function EventLayout() {
                 whiteSpace: 'nowrap',
               }}
             >
-              {data === undefined ? 'Loading…' : data.event.name}
+              {eventName}
             </span>
           }
           groups={groups}
           activeId={activeId}
-          onSelect={onSelect}
+          onSelect={go}
         />
       </div>
+
       <div className="app-shell__main">
+        {/* Below 860px this bar replaces the rail entirely — see the note on
+            .app-shell__nav. It answers "where am I" without opening anything,
+            and the button's accessible name carries the attention total so the
+            drawer is worth opening (or not). */}
+        <div className="app-shell__bar">
+          <Button
+            iconLeft="menu"
+            size="sm"
+            aria-label={attentionSummary(attention)}
+            aria-expanded={drawerOpen}
+            // Set only while the drawer exists — it unmounts when closed, and
+            // aria-controls must not point at nothing.
+            aria-controls={drawerOpen ? 'event-nav-drawer' : undefined}
+            onClick={() => {
+              setDrawerOpen(true)
+            }}
+          >
+            Menu
+          </Button>
+          <span className="app-shell__where">
+            {groupOf(activeId) ?? 'Setup'} ·{' '}
+            <strong>{itemOf(activeId)?.label ?? 'Overview'}</strong>
+          </span>
+        </div>
+
+        <NavDrawer
+          open={drawerOpen}
+          id="event-nav-drawer"
+          title={eventName}
+          groups={groups}
+          activeId={activeId}
+          onSelect={go}
+          onClose={() => {
+            setDrawerOpen(false)
+          }}
+        />
+
         <PageBody>
           {data === undefined ? (
             <p style={{ color: 'var(--text-tertiary)' }}>Loading event…</p>
           ) : (
-            <>
-              <PageHeader
-                title={data.event.name}
-                breadcrumbs={[
-                  { label: 'My StageStack', href: '/app/home' },
-                  { label: data.org.name, href: `/app/org/${data.org.slug}` },
-                  { label: data.event.name },
-                ]}
-                description={formatDateRange(
-                  data.event.startsAt,
-                  data.event.endsAt,
-                  data.event.timezone,
-                )}
-                meta={
-                  <span style={{ marginLeft: 'var(--space-3)' }}>
-                    <Badge
-                      tone={data.role === 'organizer' ? 'info' : 'neutral'}
-                    >
-                      {data.role === 'organizer' ? 'Organizer' : 'Reviewer'}
-                    </Badge>
-                  </span>
-                }
+            <EventHeaderProvider>
+              <EventChrome
+                eventSlug={eventSlug}
+                event={data.event}
+                org={data.org}
+                role={data.role}
               />
-              {data.event.archivedAt !== undefined ? (
-                <Callout tone="attention" title="This event is archived">
-                  Archived events are read-only in spirit — nothing is deleted,
-                  and you can unarchive it from Overview.
-                </Callout>
-              ) : null}
-              <Outlet />
-            </>
+            </EventHeaderProvider>
           )}
         </PageBody>
       </div>
     </div>
+  )
+}
+
+/** A count is a badge only when it is worth being one — see `formatCount`. */
+function decorate(item: NavItem, attention: Attention | null) {
+  const value =
+    item.attention === undefined || attention === null
+      ? undefined
+      : attention.counts[item.attention]
+  const capped = attention?.capped === true
+  return {
+    id: item.id,
+    label: item.label,
+    icon: item.icon,
+    alias: item.alias,
+    count: formatCount(value, capped),
+    countHint: countHint(value, capped),
+  }
+}
+
+type EventData = {
+  eventSlug: string
+  event: {
+    name: string
+    startsAt: number
+    endsAt: number
+    timezone: string
+    archivedAt?: number
+  }
+  org: { name: string; slug: string }
+  role: string
+}
+
+/**
+ * The header and the outlet, inside the header provider — so a child route's
+ * `useEventHeaderSlot` is read by the same render that draws the header.
+ */
+function EventChrome({ eventSlug, event, org, role }: EventData) {
+  const slot = useEventHeader()
+  const deeper = slot !== null
+
+  return (
+    <>
+      <PageHeader
+        title={slot?.title ?? event.name}
+        breadcrumbs={[
+          { label: 'My StageStack', href: '/app/home' },
+          { label: org.name, href: `/app/org/${org.slug}` },
+          // The event stops being the last crumb once a route contributes its
+          // own, so it becomes the link back up to the event home.
+          deeper
+            ? { label: event.name, href: `/app/e/${eventSlug}` }
+            : { label: event.name },
+          ...(slot?.crumbs ?? []),
+        ]}
+        description={
+          slot?.description ??
+          formatDateRange(event.startsAt, event.endsAt, event.timezone)
+        }
+        actions={slot?.actions}
+        meta={
+          <span style={{ marginLeft: 'var(--space-3)' }}>
+            <Badge tone={role === 'organizer' ? 'info' : 'neutral'}>
+              {role === 'organizer' ? 'Organizer' : 'Reviewer'}
+            </Badge>
+          </span>
+        }
+      />
+      {event.archivedAt !== undefined ? (
+        <Callout tone="attention" title="This event is archived">
+          Archived events are read-only in spirit — nothing is deleted, and you
+          can unarchive it from Event details.
+        </Callout>
+      ) : null}
+      <Outlet />
+    </>
   )
 }
 

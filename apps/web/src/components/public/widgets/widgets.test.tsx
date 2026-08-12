@@ -103,10 +103,13 @@ describe('legacy speaker widgets', () => {
   })
 
   it('falls back to initials when a gallery headshot fails and still opens detail', () => {
-    render(<SpeakerGallery program={program()} />)
-    const image = screen.getByRole('img', { name: 'Ada Lovelace' })
+    const { container } = render(<SpeakerGallery program={program()} />)
+    // The headshot is decorative (`alt=""`) because the card already renders
+    // the name as text, so it has no accessible name to query by.
+    const image = container.querySelector('img')
+    if (image === null) throw new Error('expected a headshot image')
     fireEvent.error(image)
-    expect(screen.queryByRole('img', { name: 'Ada Lovelace' })).toBeNull()
+    expect(container.querySelector('img')).toBeNull()
     expect(screen.getByText('AL')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Ada Lovelace/ }))
     expect(screen.getByText('Computing pioneer.')).toBeTruthy()

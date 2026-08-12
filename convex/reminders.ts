@@ -2,7 +2,7 @@ import { ConvexError, v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { escapeHtml, sendLoggedEmail, siteUrl } from "./model/comms";
 import { renderTemplate } from "./model/templates";
@@ -10,6 +10,14 @@ import { routeParticipant, type AudienceRecipient } from "./model/audiences";
 import { takeAll } from "./model/validation";
 import { eventMutation, eventQuery, requireOrganizer } from "./lib/functions";
 import { logAudit } from "./model/audit";
+import {
+  POST_EVENT_GRACE_DAYS,
+  SAFETY_CADENCE_DAYS,
+  SWEEP_INTERVAL_HOURS,
+  SWEEP_MINUTE,
+  automationQuietAfter,
+  nextSweepAt,
+} from "./shared/reminderSchedule";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Scheduled reminders (M5). Hourly cron, driven by crons.ts.
@@ -47,12 +55,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * the product rubric. When no cadence is configured, one attempt per day is
  * the anti-spam floor. */
 const DUE_SOON_MS = 2 * DAY_MS;
-const DUE_REMINDER_CADENCE_DAYS = 1;
+const DUE_REMINDER_CADENCE_DAYS = SAFETY_CADENCE_DAYS;
 
-/** How long past `endsAt` the sweep keeps chasing. A week covers post-event
- * collection (slides, recordings); after that, silence — an event that never
- * gets archived must not be chased forever. */
-export const POST_EVENT_GRACE_DAYS = 7;
+/** How long past `endsAt` the sweep keeps chasing — defined in
+ * shared/reminderSchedule so the UI can state the same window, re-exported here
+ * because this is where the rule is enforced. */
+export { POST_EVENT_GRACE_DAYS };
 
 // Per-event read ceilings. Every one is enforced with `takeAll` (H5): a
 // truncated read here does not look like an error, it looks like a speaker who
@@ -141,7 +149,9 @@ type EventGraph = {
 };
 
 async function loadGraph(
-  ctx: MutationCtx,
+  // Read-only, so a QueryCtx is enough: the preview query builds the same graph
+  // the sweep and the manual send do.
+  ctx: QueryCtx,
   event: Doc<"events">,
 ): Promise<EventGraph> {
   const [participants, contacts, sessions] = await Promise.all([
@@ -557,7 +567,7 @@ async function runEventSweep(
  * the due-date safety automation. */
 function sweepEligible(event: Doc<"events">, now: number): boolean {
   if (event.archivedAt !== undefined) return false;
-  if (now > event.endsAt + POST_EVENT_GRACE_DAYS * DAY_MS) return false;
+  if (now > automationQuietAfter(event.endsAt)) return false;
   return true;
 }
 
@@ -760,6 +770,106 @@ export const sweepEvent = internalMutation({
   },
 });
 
+
+// ── The organizer's "send reminders now" audience ─────────────────────────
+
+type OutstandingSet = {
+  buckets: Map<string, Bucket>;
+  skippedContacts: Set<Id<"eventContacts">>;
+  /** True when a further distinct recipient would exceed the per-send cap —
+   * the send refuses outright rather than reaching an arbitrary subset. */
+  overCap: boolean;
+};
+
+/**
+ * Who a manual "send reminders now" would reach, and which tasks it would
+ * include. Read-only, and the single definition of that audience: both
+ * `sendOutstandingNow` and `outstandingReminderPreview` call it, so the
+ * confirmation an organizer reads and the mail that goes out can never
+ * describe different sets.
+ *
+ * Unlike the sweep this ignores cadence entirely — a manual send is the
+ * organizer overriding the cadence — but keeps every other rule: the
+ * requirement must be active with reminders enabled, the session planned, and
+ * the participant still chaseable.
+ */
+async function collectOutstanding(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+  graph: EventGraph,
+): Promise<OutstandingSet> {
+  const [requirements, instances] = await Promise.all([
+    takeAll(
+      ctx.db
+        .query("requirements")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      REQUIREMENT_SCAN,
+      "requirements",
+    ),
+    takeAll(
+      ctx.db
+        .query("taskInstances")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      INSTANCE_SCAN,
+      "tasks",
+    ),
+  ]);
+  const requirementById = new Map(requirements.map((row) => [row._id, row]));
+  const buckets = new Map<string, Bucket>();
+  const skippedContacts = new Set<Id<"eventContacts">>();
+  let overCap = false;
+
+  for (const instance of instances) {
+    if (!isActionable(instance.status)) continue;
+    const requirement = requirementById.get(instance.requirementId);
+    if (
+      requirement === undefined ||
+      !requirement.active ||
+      requirement.remindersDisabled === true
+    ) {
+      continue;
+    }
+    const session = graph.sessionById.get(instance.sessionId);
+    if (session === undefined || session.status !== "planned") continue;
+    const participant = instanceParticipant(graph, instance);
+    if (participant === undefined) continue;
+    const recipient = routeFor(
+      graph,
+      participant,
+      participant.state === "confirmed" ? "task" : "personal",
+    );
+    if (recipient === null) {
+      skippedContacts.add(participant.eventContactId);
+      continue;
+    }
+    let bucket = buckets.get(recipient.email);
+    if (bucket === undefined) {
+      if (buckets.size >= MAX_RECIPIENTS_PER_EVENT) {
+        overCap = true;
+        continue;
+      }
+      bucket = {
+        recipient,
+        taskInstanceIds: [],
+        taskLines: [],
+        participantIds: [],
+        participationLines: [],
+      };
+      buckets.set(recipient.email, bucket);
+    }
+    bucket.taskInstanceIds.push(instance._id);
+    const who = speakerLabel(graph, participant);
+    bucket.taskLines.push(
+      `<strong>${escapeHtml(requirement.title)}</strong>${
+        who ? ` for ${escapeHtml(who)}` : ""
+      } — ${escapeHtml(session.title)} (due ${escapeHtml(
+        due(instance.dueAt, event.timezone),
+      )})`,
+    );
+  }
+  return { buckets, skippedContacts, overCap };
+}
+
 /** Organizer-triggered reminder for the outstanding task set. It deliberately
  * excludes participation reminders and uses a distinct kind/sender so the log
  * never presents a manual action as automation. */
@@ -781,76 +891,17 @@ export const sendOutstandingNow = eventMutation({
     }
     const event = ctx.caller.event;
     const graph = await loadGraph(ctx, event);
-    const [requirements, instances] = await Promise.all([
-      takeAll(
-        ctx.db
-          .query("requirements")
-          .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
-        REQUIREMENT_SCAN,
-        "requirements",
-      ),
-      takeAll(
-        ctx.db
-          .query("taskInstances")
-          .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
-        INSTANCE_SCAN,
-        "tasks",
-      ),
-    ]);
-    const requirementById = new Map(requirements.map((row) => [row._id, row]));
-    const buckets = new Map<string, Bucket>();
-    const skippedContacts = new Set<Id<"eventContacts">>();
-
-    for (const instance of instances) {
-      if (!isActionable(instance.status)) continue;
-      const requirement = requirementById.get(instance.requirementId);
-      if (
-        requirement === undefined ||
-        !requirement.active ||
-        requirement.remindersDisabled === true
-      ) {
-        continue;
-      }
-      const session = graph.sessionById.get(instance.sessionId);
-      if (session === undefined || session.status !== "planned") continue;
-      const participant = instanceParticipant(graph, instance);
-      if (participant === undefined) continue;
-      const recipient = routeFor(
-        graph,
-        participant,
-        participant.state === "confirmed" ? "task" : "personal",
-      );
-      if (recipient === null) {
-        skippedContacts.add(participant.eventContactId);
-        continue;
-      }
-      let bucket = buckets.get(recipient.email);
-      if (bucket === undefined) {
-        if (buckets.size >= MAX_RECIPIENTS_PER_EVENT) {
-          throw new ConvexError({
-            code: "audience_too_large",
-            message: `This reminder would reach more than ${MAX_RECIPIENTS_PER_EVENT} recipients. Narrow the outstanding set first.`,
-          });
-        }
-        bucket = {
-          recipient,
-          taskInstanceIds: [],
-          taskLines: [],
-          participantIds: [],
-          participationLines: [],
-        };
-        buckets.set(recipient.email, bucket);
-      }
-      bucket.taskInstanceIds.push(instance._id);
-      const who = speakerLabel(graph, participant);
-      bucket.taskLines.push(
-        `<strong>${escapeHtml(requirement.title)}</strong>${
-          who ? ` for ${escapeHtml(who)}` : ""
-        } — ${escapeHtml(session.title)} (due ${escapeHtml(
-          due(instance.dueAt, event.timezone),
-        )})`,
-      );
+    const outstanding = await collectOutstanding(ctx, event, graph);
+    // The preview query and this send agree by construction: both read the same
+    // collector, so the confirmation cannot describe a different audience from
+    // the one that receives the mail.
+    if (outstanding.overCap) {
+      throw new ConvexError({
+        code: "audience_too_large",
+        message: `This reminder would reach more than ${MAX_RECIPIENTS_PER_EVENT} recipients. Narrow the outstanding set first.`,
+      });
     }
+    const { buckets, skippedContacts } = outstanding;
 
     const now = Date.now();
     let sent = 0;
@@ -912,26 +963,284 @@ export const sendOutstandingNow = eventMutation({
   },
 });
 
-/** Honest automation evidence for the task UI: this is the next hourly
- * evaluation, not a promise that an email will be due at that instant. */
+/**
+ * What a manual "send reminders now" would do, stated BEFORE it fires.
+ *
+ * Same collector as the mutation, so the numbers on the confirmation are the
+ * numbers that will be acted on. Subscribe it only while the confirmation is
+ * open (`useQuery(..., 'skip')` otherwise) — it reads the event graph, which is
+ * not a cost worth paying on every render of the tasks page.
+ */
+export const outstandingReminderPreview = eventQuery({
+  args: {},
+  returns: v.object({
+    /** Distinct addresses this send would reach. */
+    recipients: v.number(),
+    /** Outstanding tasks those messages would list. */
+    tasks: v.number(),
+    /** Speakers with an outstanding task and no reachable address — neither
+     * their own nor a primary manager's. They are excluded. */
+    unreachableSpeakers: v.number(),
+    /** True when the audience exceeds the cap, in which case the send is
+     * REFUSED outright rather than partially delivered. */
+    overCap: v.boolean(),
+    cap: v.number(),
+    /** Archived events refuse the send entirely. */
+    blocked: v.union(v.literal("archived"), v.null()),
+  }),
+  handler: async (ctx) => {
+    requireOrganizer(ctx.caller);
+    const event = ctx.caller.event;
+    if (event.archivedAt !== undefined) {
+      return {
+        recipients: 0,
+        tasks: 0,
+        unreachableSpeakers: 0,
+        overCap: false,
+        cap: MAX_RECIPIENTS_PER_EVENT,
+        blocked: "archived" as const,
+      };
+    }
+    const graph = await loadGraph(ctx, event);
+    const { buckets, skippedContacts, overCap } = await collectOutstanding(
+      ctx,
+      event,
+      graph,
+    );
+    let tasks = 0;
+    for (const bucket of buckets.values()) {
+      tasks += bucket.taskInstanceIds.length;
+    }
+    return {
+      recipients: buckets.size,
+      tasks,
+      unreachableSpeakers: skippedContacts.size,
+      overCap,
+      cap: MAX_RECIPIENTS_PER_EVENT,
+      blocked: null,
+    };
+  },
+});
+
+/** Honest automation evidence for the task UI: this is the next scheduled
+ * evaluation, not a promise that an email will be due at that instant.
+ *
+ * `nextEvaluationAt` is DERIVED from the cron schedule (shared/reminderSchedule
+ * is the single source both this and convex/crons.ts read), so it can no longer
+ * disagree with when the sweep actually runs. */
 export const automationStatus = eventQuery({
   args: { now: v.number() },
   returns: v.object({
     enabled: v.boolean(),
     cadenceDays: v.union(v.number(), v.null()),
     nextEvaluationAt: v.union(v.number(), v.null()),
+    /** Hours between sweeps — stated rather than assumed by the caller. */
+    evaluationIntervalHours: v.number(),
+    /** Minute past each UTC hour the sweep is anchored to. */
+    sweepMinuteUtc: v.number(),
+    /** Daily floor applied to due-soon/overdue work when no cadence is set. */
+    safetyCadenceDays: v.number(),
+    /** Why automation is off, when it is. `sweepEligible` has exactly these two
+     * off-switches, and the UI must be able to name the one that applies. */
+    disabledReason: v.union(
+      v.literal("archived"),
+      v.literal("postEvent"),
+      v.null(),
+    ),
+    /** The instant chasing stops for this event (null once archived, because
+     * archiving already stopped it earlier). */
+    quietAfter: v.union(v.number(), v.null()),
   }),
   handler: async (ctx, args) => {
     requireOrganizer(ctx.caller);
-    const cadenceDays = ctx.caller.event.reminderCadenceDays ?? null;
-    const enabled = ctx.caller.event.archivedAt === undefined;
-    const hour = 60 * 60 * 1000;
+    const event = ctx.caller.event;
+    const cadenceDays = event.reminderCadenceDays ?? null;
+    const quietAfter =
+      event.archivedAt === undefined ? automationQuietAfter(event.endsAt) : null;
+    // Exactly `sweepEligible`'s two conditions, in its order: an archived event
+    // is off whatever the date, and past the grace window the sweep skips the
+    // event without anyone archiving it. Reporting `enabled: true` there was
+    // the product predicting a run that provably never happens.
+    const disabledReason =
+      event.archivedAt !== undefined
+        ? ("archived" as const)
+        : args.now > (quietAfter ?? Number.POSITIVE_INFINITY)
+          ? ("postEvent" as const)
+          : null;
+    const enabled = disabledReason === null;
     return {
       enabled,
       cadenceDays,
-      nextEvaluationAt: enabled
-        ? Math.floor(args.now / hour) * hour + hour
-        : null,
+      nextEvaluationAt: enabled ? nextSweepAt(args.now) : null,
+      evaluationIntervalHours: SWEEP_INTERVAL_HOURS,
+      sweepMinuteUtc: SWEEP_MINUTE,
+      safetyCadenceDays: SAFETY_CADENCE_DAYS,
+      disabledReason,
+      quietAfter,
+    };
+  },
+});
+
+/** How far back the manual-send lookup scans this event's audit log. Bounded
+ * on purpose: the facts panel must not become an unbounded read. When the scan
+ * hits the cap without finding a manual send, the caller is told the lookup was
+ * truncated instead of being handed a confident "never". */
+const AUDIT_LOOKBACK = 300;
+
+/** `auditLog.meta` is `v.any()`. Read one number out of it defensively — an old
+ * row written before the counters existed must read as "sent nothing", never as
+ * an accidental send. */
+function auditSentCount(meta: unknown): number {
+  if (typeof meta !== "object" || meta === null) return 0;
+  const sent = (meta as Record<string, unknown>).sent;
+  return typeof sent === "number" ? sent : 0;
+}
+
+/**
+ * The reminder facts panel's single producer (W1): everything both the tasks
+ * page and the settings page state about reminder automation comes from here.
+ *
+ * Deliberately argument-free. `automationStatus` already carries the ticking
+ * `now`; this query does the scanning, so keeping it out of the per-minute
+ * re-subscribe means the scan re-runs when the DATA changes, not every minute.
+ *
+ * `nextEligibleAt` is the earliest instant at which some outstanding task's
+ * cadence window will have elapsed. It is not a promise of a send: the sweep
+ * additionally requires a reachable, still-chaseable recipient, which is a
+ * judgement made at send time against state this query does not resolve.
+ */
+export const reminderFacts = eventQuery({
+  args: {},
+  returns: v.object({
+    enabled: v.boolean(),
+    cadenceDays: v.union(v.number(), v.null()),
+    evaluationIntervalHours: v.number(),
+    sweepMinuteUtc: v.number(),
+    safetyCadenceDays: v.number(),
+    /** Last time the sweep dispatched THIS event (an evaluation, not a send). */
+    lastAutomaticAt: v.union(v.number(), v.null()),
+    /** Last organizer-triggered "send reminders now" that actually got a
+     * message accepted (`meta.sent > 0`). An attempt that reached nobody is
+     * NOT a send, and reporting it as one was the same class of lie this
+     * workstream exists to remove. */
+    lastManualAt: v.union(v.number(), v.null()),
+    /** Last manual attempt, accepted or not — so a run that sent nothing is
+     * visible rather than silently absent. */
+    lastManualAttemptAt: v.union(v.number(), v.null()),
+    /** True when the bounded audit scan ended without reaching the beginning —
+     * a null `lastManualAt` then means "none recently", not "none ever". */
+    manualLookupTruncated: v.boolean(),
+    /** Earliest moment an outstanding task's cadence window elapses. */
+    nextEligibleAt: v.union(v.number(), v.null()),
+    /** Outstanding, reminder-enabled tasks the automation is tracking. */
+    trackedTasks: v.number(),
+    /** The instant chasing stops for this event; null once archived. The
+     * caller compares it with its own ticking clock, which is why this query
+     * needs no `now` of its own. */
+    quietAfter: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx) => {
+    requireOrganizer(ctx.caller);
+    const event = ctx.caller.event;
+    const enabled = event.archivedAt === undefined;
+    const quietAfter = enabled ? automationQuietAfter(event.endsAt) : null;
+    const cadenceDays = event.reminderCadenceDays ?? null;
+
+    const dispatchState = await ctx.db
+      .query("reminderDispatchStates")
+      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
+      .unique();
+
+    const auditRows = await ctx.db
+      .query("auditLog")
+      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
+      .order("desc")
+      .take(AUDIT_LOOKBACK);
+    const manualRows = auditRows.filter(
+      (row) => row.action === "reminders.sendOutstandingNow",
+    );
+    // `logAudit` records `{ sent, failed, skipped, includedTasks }` for this
+    // action (see sendOutstandingNow), so an attempt that accepted nothing is
+    // distinguishable from a real send. `meta` is `v.any()`, so narrow it.
+    const acceptedRow = manualRows.find((row) => auditSentCount(row.meta) > 0);
+
+    const [requirements, instances, sessions] = await Promise.all([
+      takeAll(
+        ctx.db
+          .query("requirements")
+          .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+        REQUIREMENT_SCAN,
+        "requirements",
+      ),
+      takeAll(
+        ctx.db
+          .query("taskInstances")
+          .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+        INSTANCE_SCAN,
+        "tasks",
+      ),
+      takeAll(
+        ctx.db
+          .query("sessions")
+          .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+        SESSION_SCAN,
+        "sessions",
+      ),
+    ]);
+    const requirementById = new Map(requirements.map((r) => [r._id, r]));
+    const plannedSessions = new Set(
+      sessions.filter((s) => s.status === "planned").map((s) => s._id),
+    );
+
+    let trackedTasks = 0;
+    let nextEligibleAt: number | null = null;
+    for (const instance of instances) {
+      if (!isActionable(instance.status)) continue;
+      if (!plannedSessions.has(instance.sessionId)) continue;
+      const requirement = requirementById.get(instance.requirementId);
+      if (requirement === undefined || !requirement.active) continue;
+      if (requirement.remindersDisabled === true) continue;
+      const configured = requirement.reminderCadenceDays ?? cadenceDays ?? null;
+      let eligibleAt: number;
+      if (configured !== null && configured > 0) {
+        eligibleAt =
+          (instance.lastRemindedAt ?? instance._creationTime) +
+          configured * DAY_MS;
+      } else if (configured !== null) {
+        // A configured cadence of zero silences the requirement entirely.
+        continue;
+      } else {
+        // No cadence anywhere: only the due-date safety net applies, and it
+        // starts when the task enters the due-soon window.
+        const windowOpensAt = instance.dueAt - DUE_SOON_MS;
+        eligibleAt =
+          instance.lastRemindedAt === undefined
+            ? windowOpensAt
+            : Math.max(
+                windowOpensAt,
+                instance.lastRemindedAt + DUE_REMINDER_CADENCE_DAYS * DAY_MS,
+              );
+      }
+      trackedTasks += 1;
+      if (nextEligibleAt === null || eligibleAt < nextEligibleAt) {
+        nextEligibleAt = eligibleAt;
+      }
+    }
+
+    return {
+      enabled,
+      cadenceDays,
+      evaluationIntervalHours: SWEEP_INTERVAL_HOURS,
+      sweepMinuteUtc: SWEEP_MINUTE,
+      safetyCadenceDays: SAFETY_CADENCE_DAYS,
+      lastAutomaticAt: dispatchState?.lastRunAt ?? null,
+      lastManualAt: acceptedRow?._creationTime ?? null,
+      lastManualAttemptAt: manualRows[0]?._creationTime ?? null,
+      manualLookupTruncated:
+        acceptedRow === undefined && auditRows.length === AUDIT_LOOKBACK,
+      nextEligibleAt: enabled ? nextEligibleAt : null,
+      trackedTasks,
+      quietAfter,
     };
   },
 });

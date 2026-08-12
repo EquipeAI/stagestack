@@ -173,6 +173,9 @@ export const listRounds = eventQuery({
       anonymized: v.boolean(),
       reviewerCap: v.optional(v.number()),
       scorecard: vScorecard,
+      /** True while the launch flow is still building this round (W11): it
+       * shows on this list as a draft and governs nothing until launched. */
+      draft: v.boolean(),
       pool: v.array(
         v.object({
           userId: vv.id("users"),
@@ -188,7 +191,9 @@ export const listRounds = eventQuery({
 });
 
 export const createRound = eventMutation({
-  args: vRoundInput,
+  // `draft` is create-only: `updateRound` must never flip a live round back
+  // into a draft, and only `launchRound` clears the marker.
+  args: { ...vRoundInput, draft: v.optional(v.boolean()) },
   returns: vv.id("reviewRounds"),
   handler: async (ctx, args) => {
     return await Reviews.createRound(ctx, ctx.caller, args);
@@ -282,6 +287,120 @@ export const autoDistribute = eventMutation({
   },
 });
 
+// ── Organizer: guided launch (W11) ───────────────────────────────────────
+//
+// The preview and the launch are one planner: `launchPreview` reads it,
+// `launchRound` re-derives it and refuses a stale plan. Both are
+// organizer-only inside the model, so the reviewer-readable `eventQuery`
+// wrapper on the preview is not the gate — `requireOrganizer` is.
+
+const vLaunchPerReviewer = v.object({
+  userId: vv.id("users"),
+  name: v.string(),
+  assigned: v.number(),
+  total: v.number(),
+});
+
+export const launchPreview = eventQuery({
+  args: {
+    roundId: v.id("reviewRounds"),
+    proposalIds: v.optional(v.array(v.id("proposals"))),
+    perProposal: v.optional(v.number()),
+  },
+  returns: v.object({
+    fingerprint: v.string(),
+    roundId: vv.id("reviewRounds"),
+    roundName: v.string(),
+    anonymized: v.boolean(),
+    reviewerCap: v.union(v.number(), v.null()),
+    perProposal: v.number(),
+    poolSize: v.number(),
+    candidateCount: v.number(),
+    newAssignments: v.number(),
+    unplaced: v.number(),
+    alreadyCovered: v.number(),
+    decidedCount: v.number(),
+    perReviewer: v.array(vLaunchPerReviewer),
+    sentences: v.array(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    return await Reviews.previewLaunch(ctx, ctx.caller, args);
+  },
+});
+
+export const launchRound = eventMutation({
+  args: {
+    roundId: v.id("reviewRounds"),
+    proposalIds: v.optional(v.array(v.id("proposals"))),
+    perProposal: v.optional(v.number()),
+    /** From the previewed plan; a mismatch refuses the write. */
+    fingerprint: v.string(),
+  },
+  returns: v.object({
+    assigned: v.number(),
+    unplaced: v.number(),
+    perReviewer: v.array(vLaunchPerReviewer),
+    sentences: v.array(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    return await Reviews.launchRound(ctx, ctx.caller, args);
+  },
+});
+
+export const eligibleProposals = eventQuery({
+  args: { roundId: v.id("reviewRounds") },
+  returns: v.array(
+    v.object({
+      proposalId: vv.id("proposals"),
+      title: v.string(),
+      status: v.string(),
+      assigned: v.number(),
+      decisionReleased: v.boolean(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Reviews.eligibleProposals(ctx, ctx.caller, args.roundId);
+  },
+});
+
+/** Preview as reviewer: the reviewer projection, run by the server, shown to
+ * an organizer. Blinding is never re-derived on the client. */
+export const reviewerPreview = eventQuery({
+  args: {
+    roundId: v.id("reviewRounds"),
+    proposalId: v.optional(v.id("proposals")),
+  },
+  returns: v.union(
+    v.null(),
+    v.object({
+      roundId: vv.id("reviewRounds"),
+      roundName: v.string(),
+      anonymized: v.boolean(),
+      scorecard: vScorecard,
+      proposal: v.object({
+        _id: vv.id("proposals"),
+        title: v.string(),
+        answers: v.record(v.string(), vAnswerValue),
+        fields: v.array(
+          v.object({ id: v.string(), label: v.string(), kind: v.string() }),
+        ),
+        fileUrls: v.record(v.string(), v.union(v.string(), v.null())),
+        speakers: v.array(vReviewerSpeaker),
+      }),
+      hiddenFieldLabels: v.array(v.string()),
+      hiddenSpeakerCount: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Reviews.previewAsReviewer(
+      ctx,
+      ctx.caller,
+      args.roundId,
+      args.proposalId,
+    );
+  },
+});
+
 export const unassign = eventMutation({
   args: { reviewId: v.id("reviews") },
   returns: v.null(),
@@ -366,7 +485,10 @@ export const remind = eventMutation({
   returns: v.object({
     sent: v.number(),
     failed: v.number(),
+    /** Total skipped, kept for clients written before the reasons existed. */
     skipped: v.number(),
+    skippedNothingOutstanding: v.number(),
+    skippedNoAddress: v.number(),
   }),
   handler: async (ctx, args) => {
     return await Reviews.remindReviewers(ctx, ctx.caller, args.reviewerUserIds);

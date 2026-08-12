@@ -4,6 +4,7 @@ import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Id } from '@convex/_generated/dataModel'
 import { Card, EmptyState, PageHeader, Tabs } from '~/ds'
+import { parseReviewsSearch } from '~/components/reviews/search'
 import { ReviewQueue } from '~/components/reviews/ReviewQueue'
 import { ReviewPanel } from '~/components/reviews/ReviewPanel'
 import { ProposalReadout } from '~/components/reviews/ProposalReadout'
@@ -25,17 +26,54 @@ import {
 
 export const Route = createFileRoute('/app/e/$eventSlug/reviews')({
   component: Reviews,
+  // The tab is in the URL so the control center can link to Progress rather
+  // than to "Reviews, now find the tab".
+  validateSearch: parseReviewsSearch,
 })
 
 function Reviews() {
   const { eventSlug } = Route.useParams()
   const event = useQuery(api.events.get, { eventSlug })
-  const [tab, setTab] = useState('queue')
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const tab = search.tab ?? 'queue'
+  // Switching tabs unmounts the launch flow, which is a way to lose work (and
+  // to orphan a draft round) without being asked. The flow registers an
+  // interceptor here; when it takes the navigation over it runs `go` itself,
+  // once the organizer has answered.
+  const leaveGuard = useRef<((proceed: () => void) => boolean) | null>(null)
+  const setTab = (next: string) => {
+    const go = () => {
+      // `flow` is deliberately not carried across tabs.
+      void navigate({
+        search: next === 'queue' ? {} : { tab: next as 'plan' | 'progress' },
+        replace: true,
+      })
+    }
+    if (leaveGuard.current !== null && leaveGuard.current(go)) return
+    go()
+  }
   const isOrganizer = event !== undefined && event.role === 'organizer'
 
   const view =
     isOrganizer && tab === 'plan' ? (
-      <RoundsPanel eventSlug={eventSlug} timezone={event.event.timezone} />
+      <RoundsPanel
+        eventSlug={eventSlug}
+        timezone={event.event.timezone}
+        flow={search.flow}
+        onOpenFlow={(flow) => {
+          void navigate({
+            search: flow === undefined ? { tab: 'plan' } : { tab: 'plan', flow },
+            replace: true,
+          })
+        }}
+        onOpenProgress={() => {
+          void navigate({ search: { tab: 'progress' } })
+        }}
+        registerLeaveGuard={(guard) => {
+          leaveGuard.current = guard
+        }}
+      />
     ) : isOrganizer && tab === 'progress' ? (
       <ProgressPanel eventSlug={eventSlug} />
     ) : (

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { Toast } from '~/ds'
+import { announce } from '~/lib/announce'
 
 type ToastItem = {
   id: number
@@ -35,6 +36,12 @@ export function pushToast(title: string, description?: string, icon?: string) {
   const id = seq
   items = [...items, { id, title, description, icon }]
   emit()
+  // Spoken through the app's single live region rather than by the toast
+  // itself. The viewport mounts and unmounts with the list, so a live region
+  // living here would always be inserted WITH its message already inside —
+  // which is not reliably announced — and a second region would double up on
+  // the root one.
+  announce(description === undefined ? title : `${title}. ${description}`)
   if (typeof window !== 'undefined') {
     window.setTimeout(() => dismiss(id), 5000)
   }
@@ -64,13 +71,18 @@ export function ToastViewport() {
         flexDirection: 'column',
         gap: 'var(--space-2)',
       }}
-      // Announce asynchronously-arriving status text to screen readers.
-      role="status"
-      aria-live="polite"
+      // A container, NOT a live region: pushToast already announced through
+      // the root one, and a second would read every toast out twice.
+      role="group"
+      aria-label="Notifications"
     >
       {list.map((t) => (
         <Toast
           key={t.id}
+          // Same reason. `Toast` declares role="status" for standalone use;
+          // inside this viewport the announcement is already handled, so the
+          // role is dropped rather than nested inside another announcement.
+          role={undefined}
           title={t.title}
           description={t.description}
           icon={t.icon}

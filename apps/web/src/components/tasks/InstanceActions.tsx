@@ -4,9 +4,19 @@ import { api } from '@convex/_generated/api'
 import { TASK_STATUS_LABEL, isOverdue } from './model'
 import type { InstanceRow } from './model'
 import type { Id } from '@convex/_generated/dataModel'
-import { Button, Callout, Dialog, Field, Input, Textarea } from '~/ds'
+import type { MenuButtonItem } from '~/ds'
+import {
+  Button,
+  Callout,
+  Dialog,
+  Field,
+  Input,
+  MenuButton,
+  Textarea,
+} from '~/ds'
 import { TaskCommentThread } from '~/components/tasks/TaskCommentThread'
 import { UploadVersionList } from '~/components/tasks/UploadVersionList'
+import { FileButton } from '~/components/FileButton'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
@@ -54,6 +64,128 @@ export function InstanceActions({
     setError(null)
   }
 
+  // W12: a row shows at most TWO actions. The order below is operational
+  // priority — what an organizer working a queue reaches for first — and the
+  // first two AVAILABLE ones become buttons; the rest fall into the overflow
+  // menu rather than into a seventh column of the row.
+  const actions: Array<{
+    id: string
+    label: string
+    icon?: string
+    run: () => void
+  }> = [
+    ...(canApprove
+      ? [
+          {
+            id: 'approve',
+            label: 'Approve',
+            icon: 'circle-check',
+            run: () => {
+              void run(async () => {
+                await approve({ eventSlug, instanceId: instance.instanceId })
+                pushToast(
+                  'Task approved',
+                  `"${instance.requirementTitle}" is approved for ${instance.speakerName ?? instance.sessionTitle}.`,
+                  'circle-check',
+                )
+              })
+            },
+          },
+        ]
+      : []),
+    ...(canMarkProvided
+      ? [
+          {
+            id: 'markProvided',
+            label: 'Mark provided',
+            icon: 'check',
+            run: () => {
+              void run(async () => {
+                await markProvided({
+                  eventSlug,
+                  instanceId: instance.instanceId,
+                })
+                pushToast(
+                  'Marked as provided',
+                  `You completed "${instance.requirementTitle}" on their behalf — it stays owed by ${instance.speakerName ?? 'this session'}.`,
+                )
+              })
+            },
+          },
+        ]
+      : []),
+    ...(evidence === 'file'
+      ? [
+          {
+            id: 'uploads',
+            label:
+              instance.uploadCount === 0
+                ? 'Files'
+                : `Files (${instance.uploadCount})`,
+            icon: 'paperclip',
+            run: () => {
+              setOpen('uploads')
+            },
+          },
+        ]
+      : []),
+    ...(canRequestChanges
+      ? [
+          {
+            id: 'changes',
+            label: 'Request changes',
+            icon: 'refresh-cw',
+            run: () => {
+              setOpen('changes')
+            },
+          },
+        ]
+      : []),
+    ...(canReopen
+      ? [
+          {
+            id: 'reopen',
+            label: 'Reopen',
+            icon: 'refresh-cw',
+            run: () => {
+              void run(async () => {
+                await reopen({ eventSlug, instanceId: instance.instanceId })
+                pushToast(
+                  'Task reopened',
+                  `"${instance.requirementTitle}" is Outstanding again. Uploaded files are untouched.`,
+                )
+              })
+            },
+          },
+        ]
+      : []),
+    ...(canWaive
+      ? [
+          {
+            id: 'notApplicable',
+            label: 'Mark N/A',
+            run: () => {
+              setOpen('notApplicable')
+            },
+          },
+        ]
+      : []),
+    {
+      id: 'due',
+      label: 'Change the due date',
+      icon: 'calendar-days',
+      run: () => {
+        setOpen('due')
+      },
+    },
+  ]
+  const visible = actions.slice(0, 2)
+  const overflow: Array<MenuButtonItem> = actions.slice(2).map((action) => ({
+    id: action.id,
+    label: action.label,
+    onSelect: action.run,
+  }))
+
   return (
     <div
       style={{
@@ -67,126 +199,29 @@ export function InstanceActions({
         style={{
           display: 'flex',
           flexWrap: 'wrap',
-          gap: 'var(--space-2)',
+          gap: 'var(--space-1)',
           alignItems: 'center',
         }}
       >
-        {canApprove ? (
+        {visible.map((action) => (
           <Button
+            key={action.id}
             size="sm"
-            iconLeft="circle-check"
+            variant={action.id === 'approve' ? 'secondary' : 'ghost'}
+            iconLeft={action.icon}
             disabled={pending}
-            onClick={() => {
-              void run(async () => {
-                await approve({ eventSlug, instanceId: instance.instanceId })
-                pushToast(
-                  'Task approved',
-                  `"${instance.requirementTitle}" is approved for ${instance.speakerName ?? instance.sessionTitle}.`,
-                  'circle-check',
-                )
-              })
-            }}
+            onClick={action.run}
           >
-            Approve
+            {action.label}
           </Button>
-        ) : null}
-
-        {canMarkProvided ? (
-          <Button
-            size="sm"
-            iconLeft="check"
+        ))}
+        {overflow.length > 0 ? (
+          <MenuButton
+            label={`More actions for ${instance.requirementTitle}`}
             disabled={pending}
-            onClick={() => {
-              void run(async () => {
-                await markProvided({
-                  eventSlug,
-                  instanceId: instance.instanceId,
-                })
-                pushToast(
-                  'Marked as provided',
-                  `You completed "${instance.requirementTitle}" on their behalf — it stays owed by ${instance.speakerName ?? 'this session'}.`,
-                )
-              })
-            }}
-          >
-            Mark provided
-          </Button>
+            items={overflow}
+          />
         ) : null}
-
-        {canRequestChanges ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            iconLeft="refresh-cw"
-            disabled={pending}
-            onClick={() => {
-              setOpen('changes')
-            }}
-          >
-            Request changes
-          </Button>
-        ) : null}
-
-        {evidence === 'file' ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            iconLeft="paperclip"
-            disabled={pending}
-            onClick={() => {
-              setOpen('uploads')
-            }}
-          >
-            {instance.uploadCount === 0
-              ? 'Files'
-              : `Files (${instance.uploadCount})`}
-          </Button>
-        ) : null}
-
-        {canWaive ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={pending}
-            onClick={() => {
-              setOpen('notApplicable')
-            }}
-          >
-            Mark N/A
-          </Button>
-        ) : null}
-
-        {canReopen ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            iconLeft="refresh-cw"
-            disabled={pending}
-            onClick={() => {
-              void run(async () => {
-                await reopen({ eventSlug, instanceId: instance.instanceId })
-                pushToast(
-                  'Task reopened',
-                  `"${instance.requirementTitle}" is Outstanding again. Uploaded files are untouched.`,
-                )
-              })
-            }}
-          >
-            Reopen
-          </Button>
-        ) : null}
-
-        <Button
-          size="sm"
-          variant="ghost"
-          iconLeft="calendar-days"
-          disabled={pending}
-          onClick={() => {
-            setOpen('due')
-          }}
-        >
-          Due date
-        </Button>
       </div>
 
       {error !== null && open === null ? (
@@ -554,18 +589,13 @@ function UploadsDialog({
               Uploading…
             </Button>
           ) : (
-            <Button as="label" iconLeft="upload">
-              <input
-                type="file"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  const file = e.target.files?.[0]
-                  e.target.value = ''
-                  if (file !== undefined) void upload(file)
-                }}
-              />
+            <FileButton
+              onFile={(file) => {
+                void upload(file)
+              }}
+            >
               Upload on their behalf
-            </Button>
+            </FileButton>
           )}
           <Button variant="primary" disabled={uploading} onClick={onClose}>
             Close

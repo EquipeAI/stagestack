@@ -12,6 +12,7 @@ import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { formatDateTime } from '~/lib/datetime'
 import { pushToast } from '~/components/toast'
+import { FileButton } from '~/components/FileButton'
 import {
   ActionError,
   ButtonRow,
@@ -125,7 +126,7 @@ function TaskCard({
   const completeTask = useMutation(api.portal.completeTask)
   const generateUploadUrl = useMutation(api.portal.generateTaskUploadUrl)
   const uploadForTask = useMutation(api.portal.uploadForTask)
-  const { pending, error, setError, run } = usePending()
+  const { pending, error, setError, run } = usePending({ announce: false })
   const [uploading, setUploading] = useState(false)
 
   const state = PORTAL_TASK_STATUS[task.status]
@@ -275,18 +276,15 @@ function TaskCard({
                 {uploading ? 'Uploading…' : 'Working…'}
               </Button>
             ) : (
-              <Button as="label" variant="primary" iconLeft="upload">
-                <input
-                  type="file"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    e.target.value = ''
-                    if (file !== undefined) void upload(file)
-                  }}
-                />
+              <FileButton
+                variant="primary"
+                iconLeft="upload"
+                onFile={(file) => {
+                  void upload(file)
+                }}
+              >
                 {hasUploads ? 'Replace file' : 'Upload file'}
-              </Button>
+              </FileButton>
             )}
             <span
               style={{

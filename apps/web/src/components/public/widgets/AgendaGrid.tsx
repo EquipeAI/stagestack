@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { DateTime } from 'luxon'
 import {
   IconLine,
@@ -12,6 +12,8 @@ import {
   speakerAffiliation,
 } from './shared'
 import type { PublicProgram } from '@convex/model/publish'
+import type { PublicSearchController } from '~/lib/publicSearch'
+import { useSearchState } from '~/lib/publicSearch'
 import { Avatar, Badge, Dialog, Tabs, Tag } from '~/ds'
 import { DATE_LOCALE } from '~/lib/datetime'
 
@@ -382,6 +384,12 @@ function DayGrid({
                   <button
                     key={entry.sessionId}
                     type="button"
+                    // Room and time are encoded by column and vertical offset,
+                    // neither of which survives linearisation — so the block
+                    // has to say where and when it is out loud.
+                    aria-label={`${entry.title}, ${timeLabel}, ${
+                      room === GENERAL ? GENERAL_LABEL : room
+                    }`}
                     onClick={() => onOpen(entry)}
                     style={{
                       position: 'absolute',
@@ -558,9 +566,12 @@ function DayList({
 export function AgendaGrid({
   program,
   accent,
+  url,
 }: {
   program: PublicProgram
   accent?: string
+  /** Public page: the day and the open session are URL state (W5). */
+  url?: PublicSearchController
 }) {
   const zone = program.event.timezone
   const days = useMemo(
@@ -573,8 +584,8 @@ export function AgendaGrid({
         : [],
     [program, zone],
   )
-  const [activeKey, setActiveKey] = useState<string | null>(null)
-  const [selected, setSelected] = useState<SessionEntry | null>(null)
+  const [activeKey, setActiveKey] = useSearchState(url, 'day')
+  const [selectedId, setSelectedId] = useSearchState(url, 'session')
 
   if (!program.agendaPublished || days.length === 0) {
     return (
@@ -591,6 +602,20 @@ export function AgendaGrid({
   }
 
   const active = days.find((d) => d.key === activeKey) ?? days[0]
+  // The expanded session is addressed by its published id, so a shared link
+  // reopens the same talk even if the day tabs move underneath it.
+  const selected =
+    selectedId === null
+      ? null
+      : (days
+          .flatMap((d) => d.entries)
+          .find(
+            (entry): entry is SessionEntry =>
+              entry.kind === 'session' && entry.sessionId === selectedId,
+          ) ?? null)
+  const setSelected = (entry: SessionEntry | null) => {
+    setSelectedId(entry === null ? null : entry.sessionId)
+  }
   const hasRooms = active.entries.some(
     (e) => e.roomName !== undefined && e.roomName !== '',
   )

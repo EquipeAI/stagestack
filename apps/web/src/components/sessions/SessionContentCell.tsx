@@ -12,35 +12,36 @@ import {
   Textarea,
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
-import { formatDateTime } from '~/lib/datetime'
 import { pushToast } from '~/components/toast'
+import { FormatField } from '~/components/sessions/FormatField'
 
 // Session content management (W5: CNT-09/11/12): the organizer's editorial
 // controls over what the public program will print. Editing records a
-// revision, history restores one, and the Draft/Approved pill decides whether
-// the public program may show the session's content at all.
+// revision, and the Draft/Approved pill decides whether the public program may
+// show the session's content at all.
+//
+// W9 moved History out of here. It opened a dialog over the table showing one
+// session's whole revision list — a detail surface competing with the session
+// workspace, which now owns it as a tab. Approve and Edit stay: those are the
+// controls an organizer uses down a column of rows, which is what this table
+// is for.
 
 type SessionDoc = FunctionReturnType<
   typeof api.sessions.list
 >[number]['session']
-type RevisionRow = FunctionReturnType<typeof api.sessions.listRevisions>[number]
-
-type DialogKind = 'edit' | 'history'
 
 export function SessionContentCell({
   eventSlug,
   session,
-  timezone,
   archived,
 }: {
   eventSlug: string
   session: SessionDoc
-  timezone: string
   archived: boolean
 }) {
   const setContentStatus = useMutation(api.sessions.setContentStatus)
   const { pending, run } = usePending()
-  const [open, setOpen] = useState<DialogKind | null>(null)
+  const [editing, setEditing] = useState(false)
 
   // Sessions created before content approval existed carry no status; they
   // were never held back, so absence reads as Approved.
@@ -87,40 +88,18 @@ export function SessionContentCell({
         iconLeft="pencil"
         disabled={archived}
         onClick={() => {
-          setOpen('edit')
+          setEditing(true)
         }}
       >
         Edit
       </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        iconLeft="clock"
-        onClick={() => {
-          setOpen('history')
-        }}
-      >
-        History
-      </Button>
 
-      {open === 'edit' ? (
+      {editing ? (
         <EditContentDialog
           eventSlug={eventSlug}
           session={session}
           onClose={() => {
-            setOpen(null)
-          }}
-        />
-      ) : null}
-
-      {open === 'history' ? (
-        <RevisionHistoryDialog
-          eventSlug={eventSlug}
-          session={session}
-          timezone={timezone}
-          archived={archived}
-          onClose={() => {
-            setOpen(null)
+            setEditing(false)
           }}
         />
       ) : null}
@@ -140,21 +119,40 @@ function EditContentDialog({
   onClose: () => void
 }) {
   const updateContent = useMutation(api.sessions.updateContent)
+  const library = useQuery(api.library.list, { eventSlug })
   const { pending, error, setError, run } = usePending()
   const [title, setTitle] = useState(session.title)
   const [description, setDescription] = useState(session.description ?? '')
   const [format, setFormat] = useState(session.format ?? '')
+  const [minutes, setMinutes] = useState(
+    session.durationMinutes === undefined
+      ? ''
+      : String(session.durationMinutes),
+  )
 
   const save = () => {
     if (title.trim() === '') return setError('The session needs a title.')
+    const trimmedMinutes = minutes.trim()
+    let durationMinutes: number | null = null
+    if (trimmedMinutes !== '') {
+      const parsed = Number(trimmedMinutes)
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1440) {
+        return setError(
+          'A length must be a whole number of minutes between 1 and 1440.',
+        )
+      }
+      durationMinutes = parsed
+    }
     void run(async () => {
-      // Empty description/format is the backend's explicit "clear this field".
+      // Empty description/format is the backend's explicit "clear this field";
+      // a null length clears the override and falls back to the format's.
       await updateContent({
         eventSlug,
         sessionId: session._id,
         title: title.trim(),
         description: description.trim(),
         format: format.trim(),
+        durationMinutes,
       })
       pushToast(
         'Content saved',
@@ -221,264 +219,30 @@ function EditContentDialog({
           />
         </Field>
 
+        <FormatField
+          id="content-format"
+          value={format}
+          formats={library?.formats ?? []}
+          disabled={pending}
+          onChange={setFormat}
+        />
+
         <Field
-          label="Format"
-          htmlFor="content-format"
+          label="Length (minutes)"
+          htmlFor="content-minutes"
           optional
-          hint="Talk, Workshop, Panel — whatever your programme calls it."
+          hint="Overrides the format’s default length for this session only. Blank uses the format’s."
         >
           <Input
-            id="content-format"
-            value={format}
+            id="content-minutes"
+            type="number"
+            value={minutes}
             disabled={pending}
             onChange={(e) => {
-              setFormat(e.target.value)
+              setMinutes(e.target.value)
             }}
           />
         </Field>
-      </div>
-    </Dialog>
-  )
-}
-
-// ── Revision history (CNT-11) ────────────────────────────────────────────
-
-const CONTENT_FIELDS = ['title', 'description', 'format'] as const
-type ContentField = (typeof CONTENT_FIELDS)[number]
-
-const FIELD_LABEL: Record<ContentField, string> = {
-  title: 'Title',
-  description: 'Description',
-  format: 'Format',
-}
-
-function fieldValue(
-  fields: RevisionRow['before'],
-  field: ContentField,
-): string {
-  return fields[field] ?? ''
-}
-
-function changedFields(revision: RevisionRow): Array<ContentField> {
-  return CONTENT_FIELDS.filter(
-    (field) =>
-      fieldValue(revision.before, field) !== fieldValue(revision.after, field),
-  )
-}
-
-function clip(value: string): string {
-  if (value === '') return '(empty)'
-  return value.length > 80 ? `${value.slice(0, 80)}…` : value
-}
-
-function RevisionHistoryDialog({
-  eventSlug,
-  session,
-  timezone,
-  archived,
-  onClose,
-}: {
-  eventSlug: string
-  session: SessionDoc
-  timezone: string
-  archived: boolean
-  onClose: () => void
-}) {
-  const revisions = useQuery(api.sessions.listRevisions, {
-    eventSlug,
-    sessionId: session._id,
-  })
-  const restoreRevision = useMutation(api.sessions.restoreRevision)
-  const { pending, error, run } = usePending()
-  const [confirming, setConfirming] = useState<string | null>(null)
-  const [restored, setRestored] = useState<RevisionRow['before'] | null>(null)
-
-  const restore = (revision: RevisionRow) => {
-    void run(async () => {
-      await restoreRevision({ eventSlug, revisionId: revision.revisionId })
-      setRestored(revision.before)
-      pushToast(
-        'Version restored',
-        `"${session.title}" is back to how it was before ${formatDateTime(revision.editedAt, timezone)}. The restore itself is recorded as a new revision.`,
-        'circle-check',
-      )
-      setConfirming(null)
-    })
-  }
-
-  return (
-    <Dialog
-      open
-      width={640}
-      title="Content history"
-      description={`Every edit ever made to "${session.title}", newest first. Restoring brings back the content as it was before that edit.`}
-      onClose={pending ? undefined : onClose}
-      footer={
-        <Button variant="primary" disabled={pending} onClick={onClose}>
-          Close
-        </Button>
-      }
-    >
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 'var(--space-4)',
-        }}
-      >
-        {error === null ? null : <Callout tone="blocked">{error}</Callout>}
-        {restored === null ? null : (
-          <Callout tone="info">
-            <div
-              role="status"
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 'var(--space-1)',
-              }}
-            >
-              <strong>
-                Restored snapshot is now the current session content.
-              </strong>
-              <span>Title: {fieldValue(restored, 'title')}</span>
-              <span>
-                Description: {clip(fieldValue(restored, 'description'))}
-              </span>
-              <span>Format: {fieldValue(restored, 'format') || '(empty)'}</span>
-            </div>
-          </Callout>
-        )}
-
-        {revisions === undefined ? (
-          <p style={{ color: 'var(--text-tertiary)' }}>Loading history…</p>
-        ) : revisions.length === 0 ? (
-          <p style={{ color: 'var(--text-tertiary)' }}>
-            No edits yet — this is still the content as it was first created.
-          </p>
-        ) : (
-          <ul
-            style={{
-              listStyle: 'none',
-              margin: 'var(--space-0)',
-              padding: 'var(--space-0)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 'var(--space-4)',
-            }}
-          >
-            {revisions.map((revision) => (
-              <li
-                key={revision.revisionId}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 'var(--space-2)',
-                  paddingBottom: 'var(--space-3)',
-                  borderBottom: 'var(--space-px) solid var(--border-subtle)',
-                }}
-              >
-                <span
-                  style={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    alignItems: 'baseline',
-                    gap: 'var(--space-2)',
-                    font: 'var(--type-caption)',
-                    color: 'var(--text-tertiary)',
-                  }}
-                >
-                  <span
-                    style={{
-                      fontWeight: 'var(--weight-medium)',
-                      color: 'var(--text-secondary)',
-                    }}
-                  >
-                    {revision.editorName ?? revision.editorEmail ?? 'Someone'}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontVariantNumeric: 'tabular-nums',
-                    }}
-                  >
-                    {formatDateTime(revision.editedAt, timezone)}
-                  </span>
-                </span>
-
-                <div
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 'var(--space-1)',
-                  }}
-                >
-                  {changedFields(revision).map((field) => (
-                    <span
-                      key={field}
-                      style={{
-                        font: 'var(--type-caption)',
-                        color: 'var(--text-secondary)',
-                      }}
-                    >
-                      <span style={{ fontWeight: 'var(--weight-medium)' }}>
-                        {FIELD_LABEL[field]}:
-                      </span>{' '}
-                      <span style={{ color: 'var(--text-tertiary)' }}>
-                        {clip(fieldValue(revision.before, field))}
-                      </span>{' '}
-                      → {clip(fieldValue(revision.after, field))}
-                    </span>
-                  ))}
-                </div>
-
-                {archived ? null : confirming === revision.revisionId ? (
-                  <div
-                    style={{
-                      display: 'flex',
-                      gap: 'var(--space-2)',
-                      alignItems: 'center',
-                    }}
-                  >
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      disabled={pending}
-                      onClick={() => {
-                        restore(revision)
-                      }}
-                    >
-                      {pending ? 'Restoring…' : 'Yes, restore'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={pending}
-                      onClick={() => {
-                        setConfirming(null)
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                ) : (
-                  <div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      iconLeft="refresh-cw"
-                      disabled={pending}
-                      onClick={() => {
-                        setConfirming(revision.revisionId)
-                      }}
-                    >
-                      Restore this version
-                    </Button>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
       </div>
     </Dialog>
   )

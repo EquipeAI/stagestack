@@ -1413,7 +1413,13 @@ describe("reviews.rounds", () => {
       eventSlug,
       reviewerUserIds: [rita.id],
     });
-    expect(reminded).toEqual({ sent: 1, failed: 0, skipped: 0 });
+    expect(reminded).toEqual({
+      sent: 1,
+      failed: 0,
+      skipped: 0,
+      skippedNothingOutstanding: 0,
+      skippedNoAddress: 0,
+    });
     const reminder = await t.run(async (ctx) =>
       ctx.db
         .query("messages")
@@ -1430,7 +1436,13 @@ describe("reviews.rounds", () => {
         reviewerUserIds: [rita.id],
       });
     });
-    expect(refused).toEqual({ sent: 0, failed: 1, skipped: 0 });
+    expect(refused).toEqual({
+      sent: 0,
+      failed: 1,
+      skipped: 0,
+      skippedNothingOutstanding: 0,
+      skippedNoAddress: 0,
+    });
 
     const mine = await rita.as.query(api.reviews.myAssignments, { eventSlug });
     await rita.as.mutation(api.reviews.submit, {
@@ -1456,7 +1468,15 @@ describe("reviews.rounds", () => {
         eventSlug,
         reviewerUserIds: [rita.id],
       }),
-    ).toEqual({ sent: 0, failed: 0, skipped: 1 });
+      // W5: the skip is counted BY REASON — nothing outstanding, not a
+      // missing address — so the bulk bar can say which.
+    ).toEqual({
+      sent: 0,
+      failed: 0,
+      skipped: 1,
+      skippedNothingOutstanding: 1,
+      skippedNoAddress: 0,
+    });
   });
 
   test("legacy reviews read through the default round and keep their content", async () => {
@@ -1527,6 +1547,599 @@ describe("reviews.rounds", () => {
         proposalId: proposalIds[0],
       }),
       "event_too_large",
+    );
+  });
+});
+
+// ── Guided launch (W11) ──────────────────────────────────────────────────
+//
+// The flow's contract is that the organizer reads sentences about what will
+// happen and then that exact thing happens: one planner, previewed and
+// applied, refusing to apply a plan the world has moved out from under.
+
+const LAUNCH_SCORECARD = [
+  { id: "score", label: "Score", kind: "numeric" as const, required: true },
+];
+
+async function roundWithPool(
+  t: TestT,
+  alice: TestUserT,
+  eventSlug: string,
+  options: {
+    reviewers: Array<string>;
+    anonymized?: boolean;
+    reviewerCap?: number;
+  },
+): Promise<{
+  roundId: Id<"reviewRounds">;
+  reviewers: Array<{ as: TestUserT; id: Id<"users"> }>;
+}> {
+  const roundId = await alice.mutation(api.reviews.createRound, {
+    eventSlug,
+    name: "Launch Round",
+    anonymized: options.anonymized ?? false,
+    reviewerCap: options.reviewerCap,
+    scorecard: LAUNCH_SCORECARD,
+  });
+  const reviewers = [];
+  for (const key of options.reviewers) {
+    const reviewer = await reviewerFor(t, eventSlug, key);
+    await alice.mutation(api.reviews.addRoundReviewer, {
+      eventSlug,
+      roundId,
+      userId: reviewer.id,
+    });
+    reviewers.push(reviewer);
+  }
+  return { roundId, reviewers };
+}
+
+describe("reviews.launch (W11)", () => {
+  test("the preview's sentences describe exactly the assignments the launch writes", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 2);
+    const { roundId, reviewers } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+      anonymized: true,
+      reviewerCap: 2,
+    });
+
+    const preview = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+    });
+    expect(preview.newAssignments).toBe(2);
+    expect(preview.sentences).toContain(
+      "2 proposals will be assigned to rita.",
+    );
+    expect(preview.sentences).toContain(
+      "Reviewer identities are hidden: speaker names and every identity answer are removed from what reviewers see.",
+    );
+    expect(preview.sentences).toContain("Cap: 2 proposals per reviewer.");
+
+    const outcome = await alice.mutation(api.reviews.launchRound, {
+      eventSlug,
+      roundId,
+      fingerprint: preview.fingerprint,
+    });
+    expect(outcome.assigned).toBe(2);
+    expect(outcome.sentences[0]).toBe(
+      "2 assignments created across 2 selected proposals.",
+    );
+    expect(outcome.sentences).toContain(
+      "2 proposals assigned to rita — 2 in this round in total.",
+    );
+
+    // The rows agree with the sentence, and the reviewer's queue with both.
+    const mine = await reviewers[0].as.query(api.reviews.myAssignments, {
+      eventSlug,
+    });
+    expect(mine.map((row) => row.proposal._id).sort()).toEqual(
+      [...proposalIds].sort(),
+    );
+    expect(await auditActions(t)).toContain("review.launch");
+  });
+
+  test("released decisions are named in the summary and left untouched by the launch", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 2);
+    await releaseOppositeDecisions(alice, eventSlug, [
+      proposalIds[0],
+      proposalIds[1],
+    ]);
+    const { roundId } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+    });
+
+    const preview = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+    });
+    expect(preview.decidedCount).toBe(2);
+    expect(preview.sentences).toContain(
+      "Both already have released decisions; those decisions will not change.",
+    );
+    expect(preview.sentences).toContain(
+      "Speaker identities are visible to reviewers — this round is not blind.",
+    );
+    expect(preview.sentences).toContain(
+      "No per-reviewer cap: reviewers take as many proposals as the split gives them.",
+    );
+
+    await alice.mutation(api.reviews.launchRound, {
+      eventSlug,
+      roundId,
+      fingerprint: preview.fingerprint,
+    });
+    expect(await proposalStatuses(t, proposalIds)).toEqual([
+      "accepted",
+      "declined",
+    ]);
+  });
+
+  test("a cap that cannot be met is stated, not silently dropped", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventWithProposals(t, 2);
+    const { roundId } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+      reviewerCap: 1,
+    });
+
+    const preview = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+    });
+    expect(preview.newAssignments).toBe(1);
+    expect(preview.unplaced).toBe(1);
+    expect(preview.sentences).toContain(
+      "1 review slot cannot be filled — every eligible reviewer is already at the cap.",
+    );
+    const outcome = await alice.mutation(api.reviews.launchRound, {
+      eventSlug,
+      roundId,
+      fingerprint: preview.fingerprint,
+    });
+    expect(outcome.assigned).toBe(1);
+    expect(outcome.unplaced).toBe(1);
+  });
+
+  test("a plan the world moved under is refused rather than applied", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 2);
+    const { roundId, reviewers } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+    });
+
+    const preview = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+    });
+    // Another organizer assigns one of the same proposals by hand.
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      roundId,
+      proposalIds: [proposalIds[0]],
+      reviewerUserId: reviewers[0].id,
+    });
+
+    await expectRejectedWith(
+      alice.mutation(api.reviews.launchRound, {
+        eventSlug,
+        roundId,
+        fingerprint: preview.fingerprint,
+      }),
+      "plan_stale",
+    );
+    // Nothing beyond the manual assignment was written.
+    const board = await alice.query(api.reviews.reviewerProgress, {
+      eventSlug,
+    });
+    expect(board.find((row) => row.name === "rita")?.assigned).toBe(1);
+
+    // Re-previewing produces a plan that applies cleanly.
+    const fresh = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+    });
+    expect(fresh.fingerprint).not.toBe(preview.fingerprint);
+    expect(
+      (
+        await alice.mutation(api.reviews.launchRound, {
+          eventSlug,
+          roundId,
+          fingerprint: fresh.fingerprint,
+        })
+      ).assigned,
+    ).toBe(1);
+  });
+
+  test("the zero case explains itself instead of printing a zero", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventWithProposals(t, 2);
+    const { roundId } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+    });
+
+    const first = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+    });
+    await alice.mutation(api.reviews.launchRound, {
+      eventSlug,
+      roundId,
+      fingerprint: first.fingerprint,
+    });
+
+    const again = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+    });
+    expect(again.newAssignments).toBe(0);
+    expect(again.sentences[0]).toBe(
+      "No new assignments: both selected proposals are already assigned.",
+    );
+    const outcome = await alice.mutation(api.reviews.launchRound, {
+      eventSlug,
+      roundId,
+      fingerprint: again.fingerprint,
+    });
+    expect(outcome.assigned).toBe(0);
+    expect(outcome.sentences).toEqual([
+      "No new assignments: both selected proposals are already assigned.",
+    ]);
+  });
+
+  test("an empty pool is described, and refused at the write", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventWithProposals(t, 1);
+    const roundId = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Empty",
+      anonymized: false,
+      scorecard: LAUNCH_SCORECARD,
+    });
+    const preview = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+    });
+    expect(preview.sentences[0]).toBe(
+      "This round has no reviewers yet, so nothing will be assigned.",
+    );
+    await expectRejectedWith(
+      alice.mutation(api.reviews.launchRound, {
+        eventSlug,
+        roundId,
+        fingerprint: preview.fingerprint,
+      }),
+      "empty_pool",
+    );
+  });
+
+  test("preview as reviewer returns the reviewer query's own projection", async () => {
+    const t = setupTest();
+    const identityBioId = "speaker-bio-profile";
+    const proposalBioId = "speaker-bio-session";
+    const def = starterFormDef();
+    def.sections[0].fields.push({
+      id: identityBioId,
+      kind: "textarea",
+      label: "Speaker bio",
+      required: false,
+    });
+    def.sections[1].fields.push({
+      id: proposalBioId,
+      kind: "textarea",
+      label: "Session context",
+      required: false,
+    });
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1, {
+      form: def,
+      answers: {
+        [identityBioId]: "Identity profile answer for a named employer.",
+        [proposalBioId]: "Session-only context reviewers need.",
+      },
+    });
+    const { roundId, reviewers } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+      anonymized: true,
+    });
+    const preview = await alice.query(api.reviews.reviewerPreview, {
+      eventSlug,
+      roundId,
+    });
+    if (preview === null) throw new Error("expected a sample proposal");
+    expect(preview.anonymized).toBe(true);
+    expect(preview.hiddenFieldLabels).toContain("Speaker bio");
+    expect(preview.hiddenSpeakerCount).toBe(1);
+
+    // The organizer's preview and the reviewer's own view are the SAME
+    // projection — field for field, not merely similar.
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      roundId,
+      proposalIds,
+      reviewerUserId: reviewers[0].id,
+    });
+    const mine = await reviewers[0].as.query(api.reviews.myAssignments, {
+      eventSlug,
+    });
+    expect(preview.proposal).toEqual(mine[0].proposal);
+    const payload = JSON.stringify(preview.proposal);
+    expect(payload).not.toContain("Speaker0");
+    expect(payload).not.toContain("speaker0@example.com");
+    expect(payload).not.toContain("Identity profile answer");
+  });
+
+  test("a reviewer cannot reach any of the launch surfaces", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventWithProposals(t, 1);
+    const { roundId } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+    });
+    const rita = await signIn(t, "rita");
+
+    await expectRejectedWith(
+      rita.query(api.reviews.launchPreview, { eventSlug, roundId }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      rita.query(api.reviews.eligibleProposals, { eventSlug, roundId }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      rita.query(api.reviews.reviewerPreview, { eventSlug, roundId }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      rita.mutation(api.reviews.launchRound, {
+        eventSlug,
+        roundId,
+        fingerprint: "whatever",
+      }),
+      "forbidden",
+    );
+  });
+
+  test("the eligible set carries what the choice needs", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 2);
+    await releaseOppositeDecisions(alice, eventSlug, [
+      proposalIds[0],
+      proposalIds[1],
+    ]);
+    const { roundId, reviewers } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+    });
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      roundId,
+      proposalIds: [proposalIds[0]],
+      reviewerUserId: reviewers[0].id,
+    });
+
+    const eligible = await alice.query(api.reviews.eligibleProposals, {
+      eventSlug,
+      roundId,
+    });
+    expect(eligible).toHaveLength(2);
+    expect(
+      eligible.find((row) => row.proposalId === proposalIds[0]),
+    ).toMatchObject({ assigned: 1, decisionReleased: true });
+    expect(
+      eligible.find((row) => row.proposalId === proposalIds[1]),
+    ).toMatchObject({ assigned: 0, decisionReleased: true });
+  });
+
+  test("a narrowed selection only plans the proposals it names", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 3);
+    const { roundId } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+    });
+    const preview = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+      proposalIds: [proposalIds[0]],
+    });
+    expect(preview.candidateCount).toBe(1);
+    expect(preview.sentences).toContain("1 proposal will be assigned to rita.");
+    const outcome = await alice.mutation(api.reviews.launchRound, {
+      eventSlug,
+      roundId,
+      proposalIds: [proposalIds[0]],
+      fingerprint: preview.fingerprint,
+    });
+    expect(outcome.assigned).toBe(1);
+  });
+});
+
+// ── Draft rounds (W11 review) ────────────────────────────────────────────
+//
+// The launch flow materializes a round before the organizer has decided
+// anything. Until it launches, that round is a PLAN: it must not reach a
+// reviewer, must not accept assignments, and must not stand in as the round
+// legacy review rows and readiness counts read through. Absence of the marker
+// means launched, so every row written before the field existed is unchanged.
+
+describe("reviews draft rounds", () => {
+  test("a draft round reaches no reviewer and accepts no assignment until launch", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 2);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    const roundId = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Being built",
+      anonymized: true,
+      draft: true,
+      scorecard: LAUNCH_SCORECARD,
+    });
+    await alice.mutation(api.reviews.addRoundReviewer, {
+      eventSlug,
+      roundId,
+      userId: rita.id,
+    });
+
+    // Visible to the organizer's plan list, AS a draft.
+    const listed = await alice.query(api.reviews.listRounds, { eventSlug });
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ name: "Being built", draft: true });
+
+    // …and to nothing else.
+    expect(
+      await alice.query(api.reviews.reviewerProgress, { eventSlug }),
+    ).toEqual([]);
+    expect(
+      await rita.as.query(api.reviews.myAssignments, { eventSlug }),
+    ).toEqual([]);
+    await expectRejectedWith(
+      alice.mutation(api.reviews.autoDistribute, { eventSlug, roundId }),
+      "invalid_status",
+    );
+    await expectRejectedWith(
+      alice.mutation(api.reviews.assign, {
+        eventSlug,
+        roundId,
+        proposalIds,
+        reviewerUserId: rita.id,
+      }),
+      "invalid_status",
+    );
+
+    // Launching is what flips all of it.
+    const preview = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+    });
+    await alice.mutation(api.reviews.launchRound, {
+      eventSlug,
+      roundId,
+      fingerprint: preview.fingerprint,
+    });
+    const afterLaunch = await alice.query(api.reviews.listRounds, {
+      eventSlug,
+    });
+    expect(afterLaunch[0].draft).toBe(false);
+    expect(
+      (await rita.as.query(api.reviews.myAssignments, { eventSlug })).length,
+    ).toBe(2);
+    expect(
+      (await alice.query(api.reviews.reviewerProgress, { eventSlug })).find(
+        (row) => row.name === "rita",
+      )?.assigned,
+    ).toBe(2);
+  });
+
+  test("a draft round never stands in as the default round, in assignment or in readiness", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 1);
+    const rita = await reviewerFor(t, eventSlug, "rita");
+    // A draft round is created FIRST, and its window already closed.
+    const draftRoundId = await alice.mutation(api.reviews.createRound, {
+      eventSlug,
+      name: "Being built",
+      anonymized: false,
+      draft: true,
+      closesAt: Date.parse("2026-01-01"),
+      scorecard: LAUNCH_SCORECARD,
+    });
+    // An assignment naming no round must materialize/choose a LIVE round.
+    await alice.mutation(api.reviews.assign, {
+      eventSlug,
+      proposalIds,
+      reviewerUserId: rita.id,
+    });
+    const mine = await rita.as.query(api.reviews.myAssignments, { eventSlug });
+    expect(mine[0].round.roundId).not.toBe(draftRoundId);
+    expect(mine[0].round.name).toBe("Initial Review");
+
+    // …and the draft's closed window must not make anyone overdue.
+    const panel = await alice.query(api.readiness.attentionPanel, {
+      eventSlug,
+      now: Date.parse("2026-08-01"),
+    });
+    const reviews = panel.rows.find((row) => row.id === "reviews");
+    expect(reviews?.count).toBe(1);
+    expect(reviews?.sentence).toBe(
+      "1 assigned review has not been submitted.",
+    );
+  });
+
+  test("reviews per proposal is refused, not clamped, when it is not a whole number of at least 1", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventWithProposals(t, 1);
+    const { roundId } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+    });
+    for (const perProposal of [0, 1.5, Number.NaN]) {
+      await expectRejectedWith(
+        alice.mutation(api.reviews.autoDistribute, {
+          eventSlug,
+          roundId,
+          perProposal,
+        }),
+        "invalid_cap",
+      );
+      await expectRejectedWith(
+        alice.query(api.reviews.launchPreview, {
+          eventSlug,
+          roundId,
+          perProposal,
+        }),
+        "invalid_cap",
+      );
+    }
+  });
+
+  test("the same selection in a different order is the same plan and the same fingerprint", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, proposalIds } = await eventWithProposals(t, 3);
+    const { roundId } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita", "raj"],
+    });
+    const forward = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+      proposalIds,
+    });
+    const reversed = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+      proposalIds: [...proposalIds].reverse(),
+    });
+    expect(reversed.fingerprint).toBe(forward.fingerprint);
+    expect(reversed.sentences).toEqual(forward.sentences);
+    expect(reversed.perReviewer).toEqual(forward.perReviewer);
+  });
+
+  test("an edit that only changes the SUMMARY still refuses the stale plan", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventWithProposals(t, 2);
+    const { roundId } = await roundWithPool(t, alice, eventSlug, {
+      reviewers: ["rita"],
+    });
+    const preview = await alice.query(api.reviews.launchPreview, {
+      eventSlug,
+      roundId,
+    });
+    // The scorecard shapes no assignment — but it does shape what the
+    // organizer was told this round asks reviewers.
+    await alice.mutation(api.reviews.updateRound, {
+      eventSlug,
+      roundId,
+      name: "Launch Round",
+      anonymized: false,
+      scorecard: [
+        ...LAUNCH_SCORECARD,
+        { id: "comments", label: "Comments", kind: "text" as const },
+      ],
+    });
+    await expectRejectedWith(
+      alice.mutation(api.reviews.launchRound, {
+        eventSlug,
+        roundId,
+        fingerprint: preview.fingerprint,
+      }),
+      "plan_stale",
     );
   });
 });

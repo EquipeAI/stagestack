@@ -16,6 +16,8 @@ import {
 } from './shared'
 import type * as React from 'react'
 import type { PublicProgram, PublicSession } from '@convex/model/publish'
+import type { PublicSearchController } from '~/lib/publicSearch'
+import { useSearchState } from '~/lib/publicSearch'
 import { Avatar, Badge, Button, Icon, SearchInput, Tag } from '~/ds'
 
 // EMB-09..11 — attendee itinerary: chronological sessions with time-group
@@ -354,9 +356,11 @@ function TimeGroupedList({
 export function Itinerary({
   program,
   accent,
+  url,
 }: {
   program: PublicProgram
   accent?: string
+  url?: PublicSearchController
 }) {
   const zone = program.event.timezone
   const slug = program.event.slug
@@ -365,8 +369,13 @@ export function Itinerary({
     [program],
   )
 
-  const [query, setQuery] = useState('')
-  const [track, setTrack] = useState<string | null>(null)
+  // Search and the track facet are URL state (W5). "My schedule" is not: it
+  // reads starred sessions out of this browser's localStorage, so a link
+  // carrying it would promise the recipient a schedule they never starred.
+  const [queryValue, setQueryValue] = useSearchState(url, 'q')
+  const query = queryValue ?? ''
+  const setQuery = (next: string) => setQueryValue(next === '' ? null : next)
+  const [track, setTrack] = useSearchState(url, 'track')
   const [myOnly, setMyOnly] = useState(false)
   // localStorage is read after mount only, so the server and first client
   // render agree (SSR safety).
@@ -446,6 +455,7 @@ export function Itinerary({
       >
         <div style={{ flex: '1 1 16rem', maxWidth: '24rem' }}>
           <SearchInput
+            aria-label="Search sessions and speakers"
             placeholder="Search sessions and speakers"
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -482,6 +492,7 @@ export function Itinerary({
       />
       {visible.length === 0 ? (
         <p
+          role="status"
           style={{
             font: 'var(--type-body)',
             color: 'var(--text-tertiary)',

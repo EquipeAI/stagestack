@@ -12,6 +12,8 @@ import {
 import type * as React from 'react'
 import type { PublicProgram } from '@convex/model/publish'
 import type { SpeakerEntry } from './shared'
+import type { PublicSearchController } from '~/lib/publicSearch'
+import { useSearchState } from '~/lib/publicSearch'
 import { Dialog, SearchInput } from '~/ds'
 
 // EMB-12/13 — photo-forward speaker gallery: big square headshots with an
@@ -43,7 +45,9 @@ function Headshot({
     return (
       <img
         src={entry.speaker.headshotUrl}
-        alt={entry.speaker.name}
+        // The name is always rendered as text beside this, so a descriptive
+        // alt would be read twice; matches the initials fallback below.
+        alt=""
         loading="lazy"
         decoding="async"
         onError={() => setFailedSrc(entry.speaker.headshotUrl ?? null)}
@@ -213,14 +217,20 @@ function GalleryDetail({ entry, zone }: { entry: SpeakerEntry; zone: string }) {
 export function SpeakerGallery({
   program,
   accent,
+  url,
 }: {
   program: PublicProgram
   accent?: string
+  url?: PublicSearchController
 }) {
   const zone = program.event.timezone
   const entries = useMemo(() => speakerEntries(program), [program])
-  const [query, setQuery] = useState('')
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Search and the expanded speaker are URL state on the public page (W5),
+  // local state inside an embed iframe.
+  const [queryValue, setQueryValue] = useSearchState(url, 'q')
+  const query = queryValue ?? ''
+  const setQuery = (next: string) => setQueryValue(next === '' ? null : next)
+  const [selectedId, setSelectedId] = useSearchState(url, 'speaker')
 
   const filtered = entries.filter((e) => matchesQuery(query, [e.speaker.name]))
   const selected =
@@ -244,6 +254,7 @@ export function SpeakerGallery({
       >
         <div style={{ flex: '1 1 16rem', maxWidth: '24rem' }}>
           <SearchInput
+            aria-label="Search speakers by name"
             placeholder="Search speakers"
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -252,6 +263,7 @@ export function SpeakerGallery({
           />
         </div>
         <span
+          role="status"
           style={{ font: 'var(--type-mono)', color: 'var(--text-tertiary)' }}
         >
           {filtered.length} of {entries.length} speaker
@@ -260,6 +272,7 @@ export function SpeakerGallery({
       </div>
       {filtered.length === 0 ? (
         <p
+          role="status"
           style={{
             font: 'var(--type-body)',
             color: 'var(--text-tertiary)',

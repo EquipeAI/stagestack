@@ -7,7 +7,11 @@ import { logAudit } from "./audit";
 import { notifyOrganizers, sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
 import { assertEventActive, assertText, takeAll } from "./validation";
-import { eventUserDisplayName, storedPersonName } from "./userDisplay";
+import {
+  eventUserDisplayName,
+  resolveEventUserDisplayName,
+} from "./userDisplay";
+import type { DisplayNameResolution } from "./userDisplay";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Speaker ops: requirements & task instances (M4).
@@ -1599,6 +1603,9 @@ export type LibraryFileRow = {
   version: number | null;
   versionCount: number | null;
   uploadedByName: string | null;
+  /** Why `uploadedByName` is null, in the words the surface should show.
+   * Null whenever a name resolved. One producer: never re-worded in TSX. */
+  uploadedByNote: string | null;
   uploadedAt: number | null;
   url: string | null;
   commentCount: number;
@@ -1987,27 +1994,26 @@ export async function filesLibrary(
       );
     }
   }
-  const userEntries: Array<readonly [Id<"users">, Doc<"users"> | null]> = [];
+  // W5: a file whose uploader IS recorded must name that person. The generic
+  // "Event contributor" placeholder this used to emit was the worst of both
+  // worlds — it read like a resolved actor while naming nobody, and it fired
+  // whenever the account's own profile carried no name even though the event
+  // knew exactly who they were. Resolve through the SAME chain every other
+  // attribution surface uses (`eventUserDisplayName`: exact contact snapshot →
+  // auth profile → the event's own unambiguous snapshot), and when that chain
+  // genuinely resolves nothing, say so instead of inventing a label.
+  const stableUploaders = new Map<Id<"users">, DisplayNameResolution>();
   for (const userId of uploaderUserIds) {
-    userEntries.push([
+    const user = trackHydratedDocument(await ctx.db.get("users", userId));
+    stableUploaders.set(
       userId,
-      trackHydratedDocument(await ctx.db.get("users", userId)),
-    ]);
+      await resolveEventUserDisplayName(ctx, caller.event._id, user),
+    );
   }
-  const userById = new Map(userEntries);
-  const stableUploaderNames = new Map<Id<"users">, string>();
-  const stableUploaderName = (userId: Id<"users">): string => {
-    const hit = stableUploaderNames.get(userId);
-    if (hit !== undefined) return hit;
-    const profileName = storedPersonName(userById.get(userId) ?? null);
-    const name = profileName ?? "Event contributor";
-    stableUploaderNames.set(userId, name);
-    return name;
-  };
-  const uploaderName = (
+  const uploaderResolution = (
     userId: Id<"users">,
     eventContactId: Id<"eventContacts"> | undefined,
-  ): string => {
+  ): DisplayNameResolution => {
     const exact =
       eventContactId === undefined
         ? undefined
@@ -2016,9 +2022,36 @@ export async function filesLibrary(
       const exactName = `${exact.firstName} ${exact.lastName}`
         .trim()
         .replace(/\s+/g, " ");
-      if (exactName !== "") return exactName;
+      if (exactName !== "") return { name: exactName, reason: "resolved" };
     }
-    return stableUploaderName(userId);
+    return (
+      stableUploaders.get(userId) ?? { name: null, reason: "no_user" as const }
+    );
+  };
+  /**
+   * Honest copy for each distinct way a name can be missing — produced here so
+   * no route has to guess which kind of blank it is looking at, and so the
+   * three are never collapsed into one flattering sentence:
+   *   • no provenance row at all — nobody was ever recorded;
+   *   • the account exists and has set no display name;
+   *   • the account record is gone, or the event holds conflicting names for
+   *     it, so this upload cannot be attributed to a person at all.
+   */
+  const uploaderNote = (
+    resolution: DisplayNameResolution | null,
+  ): string | null => {
+    if (resolution === null) {
+      return "The uploader was not recorded for this file.";
+    }
+    switch (resolution.reason) {
+      case "resolved":
+        return null;
+      case "unnamed_account":
+        return "Uploaded by an account that has not set a display name.";
+      case "no_user":
+      case "ambiguous":
+        return "Not attributable: the uploading account's record is missing, or this event holds more than one name for it.";
+    }
   };
 
   // A provenance-less headshot may predate normalization or may be copied
@@ -2074,6 +2107,10 @@ export async function filesLibrary(
         instance.eventContactId === undefined
           ? null
           : (contactById.get(instance.eventContactId) ?? null);
+      const taskUploader = uploaderResolution(
+        latest.uploadedBy,
+        instance.eventContactId,
+      );
       return {
         fileId: `task:${instance._id}`,
         kind: "task",
@@ -2089,10 +2126,8 @@ export async function filesLibrary(
         filename: latest.filename,
         version: latest.version,
         versionCount,
-        uploadedByName: uploaderName(
-          latest.uploadedBy,
-          instance.eventContactId,
-        ),
+        uploadedByName: taskUploader.name,
+        uploadedByNote: uploaderNote(taskUploader),
         uploadedAt: latest._creationTime,
         url: urlByStorageId.get(latest.storageId) ?? null,
         commentCount: commentCount.get(instance._id) ?? 0,
@@ -2102,6 +2137,12 @@ export async function filesLibrary(
   const headshotRows: LibraryFileRow[] = headshotCandidates.map(
     ({ contact, storageId, versions, provenance, version }) => {
       const genericFilename = genericFilenameByStorageId.get(storageId) ?? null;
+      // No provenance row means nobody was recorded — a different fact from
+      // "recorded, but we cannot name them".
+      const headshotUploader =
+        provenance === undefined
+          ? null
+          : uploaderResolution(provenance.uploadedByUserId, contact._id);
       return {
         fileId: `headshot:${contact._id}`,
         kind: "headshot",
@@ -2117,10 +2158,8 @@ export async function filesLibrary(
             : headshotDownloadFilename(provenance.originalFilename),
         version: provenance === undefined || version === 0 ? null : version,
         versionCount: provenance === undefined ? null : versions.length,
-        uploadedByName:
-          provenance === undefined
-            ? null
-            : uploaderName(provenance.uploadedByUserId, contact._id),
+        uploadedByName: headshotUploader?.name ?? null,
+        uploadedByNote: uploaderNote(headshotUploader),
         uploadedAt: provenance?.attachedAt ?? null,
         url:
           provenance === undefined && genericFilename === null

@@ -6,6 +6,7 @@ import type { EventCaller } from "../lib/functions";
 import { requireOrganizer } from "../lib/functions";
 import { assertEventActive, takeAll } from "./validation";
 import { logAudit } from "./audit";
+import { formatLabel, formatsById } from "./library";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public program (M7). StageStack stays authoritative; the public page, read
@@ -109,7 +110,10 @@ export type PublicProgram = {
 const flagKey = (targetType: string, targetId: string) =>
   `${targetType}:${targetId}`;
 
-async function publicationFlags(
+/** The event's publication flags, keyed `targetType:targetId`. Exported for
+ * model/readiness.ts, which derives the publication VOCABULARY from the same
+ * rows this file publishes from — the two must never read different state. */
+export async function publicationFlags(
   ctx: QueryCtx,
   eventId: Id<"events">,
 ): Promise<Map<string, boolean>> {
@@ -126,7 +130,7 @@ async function publicationFlags(
   return map;
 }
 
-function isPublished(
+export function isPublished(
   flags: Map<string, boolean>,
   targetType: string,
   targetId: string,
@@ -143,11 +147,37 @@ function isPublished(
 export async function computeProgram(
   ctx: QueryCtx,
   event: Doc<"events">,
+  /**
+   * Answer for a HYPOTHETICAL flag state instead of the stored one (W10, the
+   * diff preview only — nothing that writes the blob passes this).
+   *
+   * The publish center's channel action is "publish this channel with
+   * everything currently eligible", and its confirmation has to say what that
+   * will do BEFORE it happens. Read from the stored flags the answer is always
+   * "nothing changes": the channel's master switch is off, or the new session's
+   * own toggle is, right up until the click. So the would-be projection assumes
+   * the action's own effects — the master switch on, and every per-entry flag
+   * on — and lets the REST of the gates (planned, content approved, slot
+   * released) decide what actually lands. Those gates are the eligibility rule,
+   * which is why `model/publishBulk.ts` can derive the same set from
+   * `whyNotPublic` and land on the same rows.
+   */
+  assume?: Partial<{
+    lineupPublished: boolean;
+    agendaPublished: boolean;
+    /** Treat every session/agenda-item publication flag as on. */
+    everyEligibleEntry: boolean;
+  }>,
 ): Promise<PublicProgram> {
   const eventId = event._id;
   const flags = await publicationFlags(ctx, eventId);
-  const lineupPublished = event.publicPageEnabled === true;
-  const agendaPublished = isPublished(flags, "agenda", "event", false);
+  const lineupPublished =
+    assume?.lineupPublished ?? event.publicPageEnabled === true;
+  const agendaPublished =
+    assume?.agendaPublished ?? isPublished(flags, "agenda", "event", false);
+  const entryPublished = (targetType: string, targetId: string): boolean =>
+    assume?.everyEligibleEntry === true ||
+    isPublished(flags, targetType, targetId, false);
 
   // ONE read per table, grouped in memory (the shape audiences.loadEventState
   // uses). Reading participants per session and contacts per participant made
@@ -201,6 +231,11 @@ export async function computeProgram(
     ]);
   const trackName = new Map(tracks.map((t) => [t._id, t.name]));
   const roomName = new Map(rooms.map((r) => [r._id, r.name]));
+  // The public blob carries the RENDERED format label — the library row's name
+  // when the session is linked, the free text otherwise — so every widget goes
+  // on reading one `format` string and a library rename reaches the public
+  // page without touching the sessions.
+  const formatById = await formatsById(ctx, eventId);
   const contactById = new Map(contacts.map((c) => [c._id, c]));
   // `by_eventId` and `by_sessionId` both order by `_creationTime` within their
   // prefix, so grouping the event-wide read preserves the per-session order the
@@ -245,7 +280,7 @@ export async function computeProgram(
     if (session.contentStatus === "draft") continue;
     // A session is in the public lineup only when explicitly published; its
     // per-session flag defaults to false so nothing leaks by accident.
-    const sessionPublic = isPublished(flags, "session", session._id, false);
+    const sessionPublic = entryPublished("session", session._id);
     if (!sessionPublic) continue;
 
     const sessionParticipants = participantsBySession.get(session._id) ?? [];
@@ -280,7 +315,7 @@ export async function computeProgram(
       sessionId: session._id,
       title: session.title,
       description: session.description,
-      format: session.format,
+      format: formatLabel(session, formatById),
       trackName:
         session.trackId === undefined
           ? undefined
@@ -308,7 +343,7 @@ export async function computeProgram(
 
   if (agendaPublished) {
     for (const item of agendaItems) {
-      if (!isPublished(flags, "agendaItem", item._id, false)) continue;
+      if (!entryPublished("agendaItem", item._id)) continue;
       agenda.push({
         kind: "item",
         itemId: item._id,
@@ -360,7 +395,7 @@ function programBytes(program: PublicProgram): number {
   return new TextEncoder().encode(JSON.stringify(program)).length;
 }
 
-function assertProgramFits(
+export function assertProgramFits(
   program: PublicProgram,
   existing?: PublicProgram,
 ): void {
@@ -517,7 +552,7 @@ export async function republishIfPublished(
   await rebuildProgram(ctx, eventId);
 }
 
-async function setFlag(
+export async function setFlag(
   ctx: MutationCtx,
   eventId: Id<"events">,
   targetType: string,
@@ -723,6 +758,261 @@ export async function publishState(
     acceptedSessions: planned.length,
     releasedSessions: planned.filter((s) => s.releasedSlot !== undefined)
       .length,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Diff preview (W10). "What will publishing change?"
+//
+// HISTORY DECISION: diff-only, no schema change. `publishedPrograms` stays ONE
+// row with one `version` per event, and any rebuild still rewrites both halves.
+// What the publish center needed was never a per-channel version LOG — it was
+// the answer to "what am I about to do", and that is derivable from the
+// combined blob: `program.lineup` and `program.agenda` are already separate
+// arrays, so a per-channel structural diff against the would-be projection
+// costs one extra recompute and no new storage. A per-channel version history
+// would need a second table, a second writer and a second thing to keep
+// consistent with the served bytes — for a question nobody on the console asked.
+//
+// The read pattern is `publishState`'s: load the served blob, recompute fresh,
+// compare. `publishState` reduces that to a boolean (`stale`); this reduces it
+// to a structure. Both recompute rather than trusting timestamps, because it is
+// the BYTES the public sees that matter.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Coarse buckets, one per thing an organizer would recognise on the public
+ * page. Anything the projection grows later lands in `details` rather than
+ * being silently dropped — a changed row must never be reported as unchanged. */
+export type ProgramChangeField =
+  | "title"
+  | "format"
+  | "track"
+  | "description"
+  | "speakers"
+  | "slot"
+  | "details";
+
+/** Which bucket each projection field belongs to. `speakers` covers the
+ * to-be-announced line because that IS the speaker line the public reads. */
+const CHANGE_FIELD: Record<string, ProgramChangeField> = {
+  title: "title",
+  format: "format",
+  trackName: "track",
+  description: "description",
+  speakers: "speakers",
+  toBeAnnounced: "speakers",
+  startsAt: "slot",
+  endsAt: "slot",
+  roomName: "slot",
+};
+
+const CHANGE_ORDER: ProgramChangeField[] = [
+  "title",
+  "format",
+  "track",
+  "description",
+  "speakers",
+  "slot",
+  "details",
+];
+
+export type DiffEntry = {
+  /** Session id or agenda-item id — the same opaque id the blob carries. */
+  id: string;
+  title: string;
+  /** Populated for `changed` only, in a stable order. */
+  changes: ProgramChangeField[];
+};
+
+export type ChannelDiff = {
+  added: DiffEntry[];
+  changed: DiffEntry[];
+  removed: DiffEntry[];
+  /** True when publishing this channel would change what the public SEES. */
+  empty: boolean;
+  /**
+   * True when the publish action would have no effect whatsoever — which is
+   * NOT the same as an empty diff.
+   *
+   * Turning on a channel that has nothing eligible yet changes no bytes and
+   * still does something real: the channel is on, and the next eligible session
+   * appears without a second decision. The mutation supports it, so the console
+   * must not disable it. Only "already on, and nothing to serve differently"
+   * is a genuine no-op.
+   */
+  doesNothing: boolean;
+  /** How many entries this channel serves right now. */
+  servedCount: number;
+  /** How many it would serve after publishing. */
+  wouldBeCount: number;
+  /** Composed here and printed verbatim — the console re-words nothing. */
+  sentence: string;
+  /** The other direction, for the unpublish confirmation. */
+  unpublishSentence: string;
+};
+
+export type ProgramDiff = {
+  /** Nothing has ever been published: every entry is an addition. */
+  neverPublished: boolean;
+  lineup: ChannelDiff;
+  agenda: ChannelDiff;
+};
+
+type DiffRow = { id: string; title: string; value: Record<string, unknown> };
+
+function lineupRows(program: PublicProgram): DiffRow[] {
+  return program.lineup.map((session) => ({
+    id: session.sessionId,
+    title: session.title,
+    value: session as unknown as Record<string, unknown>,
+  }));
+}
+
+function agendaRows(program: PublicProgram): DiffRow[] {
+  return program.agenda.map((entry) => ({
+    // Sessions and items share the agenda array; the kind keeps their ids in
+    // separate namespaces so an item can never look like a changed session.
+    id: entry.kind === "session" ? `session:${entry.sessionId}` : `item:${entry.itemId}`,
+    title: entry.title,
+    value: entry as unknown as Record<string, unknown>,
+  }));
+}
+
+function changedFields(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): ProgramChangeField[] {
+  const fields = new Set<ProgramChangeField>();
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    // Ids are the join key, not a change; `kind` is part of the key too.
+    if (key === "sessionId" || key === "itemId" || key === "kind") continue;
+    if (canonical(before[key]) === canonical(after[key])) continue;
+    fields.add(CHANGE_FIELD[key] ?? "details");
+  }
+  return CHANGE_ORDER.filter((field) => fields.has(field));
+}
+
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
+
+function diffChannel(
+  channel: "lineup" | "agenda",
+  served: DiffRow[],
+  wouldBe: DiffRow[],
+  /** Whether the channel's master switch is on right now. */
+  channelPublished: boolean,
+): ChannelDiff {
+  const servedById = new Map(served.map((row) => [row.id, row]));
+  const wouldById = new Map(wouldBe.map((row) => [row.id, row]));
+
+  const added: DiffEntry[] = [];
+  const changed: DiffEntry[] = [];
+  const removed: DiffEntry[] = [];
+
+  for (const row of wouldBe) {
+    const before = servedById.get(row.id);
+    if (before === undefined) {
+      added.push({ id: row.id, title: row.title, changes: [] });
+      continue;
+    }
+    const changes = changedFields(before.value, row.value);
+    if (changes.length > 0) {
+      changed.push({ id: row.id, title: row.title, changes });
+    }
+  }
+  for (const row of served) {
+    if (!wouldById.has(row.id)) {
+      removed.push({ id: row.id, title: row.title, changes: [] });
+    }
+  }
+
+  const noun = channel === "lineup" ? "session" : "entry";
+  const nouns = channel === "lineup" ? "sessions" : "entries";
+  const empty =
+    added.length === 0 && changed.length === 0 && removed.length === 0;
+  const fields = CHANGE_ORDER.filter((field) =>
+    changed.some((entry) => entry.changes.includes(field)),
+  );
+  const label = channel === "lineup" ? "the lineup" : "the schedule";
+  // An empty diff on a channel that is still OFF is not "nothing to do": the
+  // action turns the channel on. Say exactly that instead of "no changes",
+  // which would read as a reason not to press a button that does something.
+  const enableOnly =
+    channel === "lineup"
+      ? "Turns the public page on. Nothing is eligible to appear yet."
+      : "Publishes the schedule. Nothing is eligible to appear yet.";
+  const sentence = empty
+    ? channelPublished
+      ? "No changes to publish."
+      : enableOnly
+    : `Publishing ${label} adds ${added.length} ${plural(added.length, noun, nouns)}, ` +
+      `changes ${changed.length}${fields.length === 0 ? "" : ` (${fields.join(", ")})`}, ` +
+      `removes ${removed.length}.`;
+  const unpublishSentence =
+    served.length === 0
+      ? `Unpublishing ${label} removes nothing — it is not serving anything right now.`
+      : `Unpublishing ${label} removes ${served.length} ${plural(served.length, noun, nouns)} from the public page.`;
+
+  return {
+    added,
+    changed,
+    removed,
+    empty,
+    doesNothing: empty && channelPublished,
+    servedCount: served.length,
+    wouldBeCount: wouldBe.length,
+    sentence,
+    unpublishSentence,
+  };
+}
+
+/**
+ * Per-channel structural diff between what is served and what publishing would
+ * serve. Organizer-only: it reports, session by session, exactly what the
+ * public program is about to gain, lose and change.
+ *
+ * The would-be side forces BOTH channel gates on, because the question the
+ * console asks is "what would publishing this channel do", and with the gate
+ * off the projection is empty by construction. It does NOT bypass the 1MiB
+ * guard: no write happens here, and the guard still fires inside `publish`,
+ * where the refusal can roll a flag flip back.
+ */
+export async function programDiff(
+  ctx: QueryCtx,
+  caller: EventCaller,
+): Promise<ProgramDiff> {
+  requireOrganizer(caller);
+  const [published, flags, wouldBe] = await Promise.all([
+    ctx.db
+      .query("publishedPrograms")
+      .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+      .unique(),
+    publicationFlags(ctx, caller.event._id),
+    computeProgram(ctx, caller.event, {
+      lineupPublished: true,
+      agendaPublished: true,
+      everyEligibleEntry: true,
+    }),
+  ]);
+  const served: PublicProgram | null =
+    published === null ? null : (published.program as PublicProgram);
+  const servedLineup = served === null ? [] : lineupRows(served);
+  const servedAgenda = served === null ? [] : agendaRows(served);
+  return {
+    neverPublished: served === null,
+    lineup: diffChannel(
+      "lineup",
+      servedLineup,
+      lineupRows(wouldBe),
+      caller.event.publicPageEnabled === true,
+    ),
+    agenda: diffChannel(
+      "agenda",
+      servedAgenda,
+      agendaRows(wouldBe),
+      isPublished(flags, "agenda", "event", false),
+    ),
   };
 }
 

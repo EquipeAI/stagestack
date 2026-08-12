@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useMutation } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import {
@@ -13,52 +14,24 @@ import {
   releaseState,
   slotClock,
 } from './model'
+import { ConflictList } from './ConflictList'
 import type { ReactNode } from 'react'
 import type { BoardEvent, BoardRoom, BoardSession } from './model'
 import type { Id } from '@convex/_generated/dataModel'
-import {
-  Badge,
-  Button,
-  Callout,
-  Dialog,
-  Field,
-  Input,
-  StatusPill,
-} from '~/ds'
+import { Badge, Button, Callout, Dialog, StatusPill } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
 
-// The click-through for a session block (M6): its placement and release state,
-// its virtual/hybrid links with explicit audiences, and every speaker's
-// acknowledgement — with the organizer's on-behalf override. Editing placement
-// and releasing are handled by the board (one dialog at a time); this owns the
-// draft-only edits and the per-session cancel.
-
-const AUDIENCE: Array<{
-  key: 'attendee' | 'backstage' | 'host'
-  label: string
-  hint: string
-  placeholder: string
-}> = [
-  {
-    key: 'attendee',
-    label: 'Attendee — publishable',
-    hint: 'Shown on the public program once published.',
-    placeholder: 'https://example.com/watch',
-  },
-  {
-    key: 'backstage',
-    label: 'Backstage — confirmed speakers + managers',
-    hint: 'Reaches confirmed participants and their primary managers.',
-    placeholder: 'https://example.com/greenroom',
-  },
-  {
-    key: 'host',
-    label: 'Host — organizers only',
-    hint: 'Never leaves this screen.',
-    placeholder: 'https://example.com/host',
-  },
-]
+// The click-through for a session block (M6), REDUCED to a board quick-peek by
+// W9: placement and release state, the conflicts that block a release, and
+// every speaker's acknowledgement with the organizer's on-behalf override.
+//
+// Those are all BOARD operations — they are only decidable with the rest of the
+// day on screen, which is why they stayed. Everything that is a property of the
+// record rather than of the schedule (content, source proposal, tasks, files,
+// publication, history, and the audience-scoped virtual links that used to be
+// edited here) moved to the session's workspace, which this dialog links to.
+// There is no second full detail surface for a session any more.
 
 export function SessionDetailDialog({
   eventSlug,
@@ -77,20 +50,12 @@ export function SessionDetailDialog({
   onEditPlacement: (session: BoardSession) => void
   onRelease: (session: BoardSession) => void
 }) {
-  const setLinks = useMutation(api.agenda.setVirtualLinks)
   const setAck = useMutation(api.agenda.setAck)
   const cancelRelease = useMutation(api.agenda.cancelRelease)
   const { pending, error, run } = usePending()
   const zone = event.timezone
 
-  const links = session.virtualLinks ?? {}
-  const [attendee, setAttendee] = useState(links.attendee ?? '')
-  const [backstage, setBackstage] = useState(links.backstage ?? '')
-  const [host, setHost] = useState(links.host ?? '')
   const [confirmingCancel, setConfirmingCancel] = useState(false)
-
-  const linkValues = { attendee, backstage, host }
-  const setters = { attendee: setAttendee, backstage: setBackstage, host: setHost }
 
   const rel = releaseState(session)
   const relBadge = releaseBadge(rel)
@@ -101,21 +66,6 @@ export function SessionDetailDialog({
   const scheduled = session.startsAt !== undefined && session.endsAt !== undefined
   const blocker = hasBlocker(session.conflicts)
   const speakers = activeParticipants(session)
-
-  const saveLinks = () => {
-    void run(async () => {
-      await setLinks({
-        eventSlug,
-        sessionId: session.sessionId,
-        links: {
-          attendee: attendee.trim() === '' ? undefined : attendee.trim(),
-          backstage: backstage.trim() === '' ? undefined : backstage.trim(),
-          host: host.trim() === '' ? undefined : host.trim(),
-        },
-      })
-      pushToast('Links saved', 'Virtual links were updated for this session.', 'link')
-    })
-  }
 
   const override = (
     participantId: string,
@@ -180,9 +130,19 @@ export function SessionDetailDialog({
       description={session.format}
       onClose={pending ? undefined : onClose}
       footer={
-        <Button disabled={pending} onClick={onClose}>
-          Close
-        </Button>
+        <>
+          {/* The one hop out of the board and into the whole record. */}
+          <Link
+            to="/app/e/$eventSlug/sessions/$sessionId"
+            params={{ eventSlug, sessionId: session.sessionId }}
+            style={{ textDecoration: 'none' }}
+          >
+            <Button iconLeft="presentation">Open the session workspace</Button>
+          </Link>
+          <Button disabled={pending} onClick={onClose}>
+            Close
+          </Button>
+        </>
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
@@ -251,49 +211,9 @@ export function SessionDetailDialog({
         {/* Conflicts */}
         {session.conflicts.length > 0 ? (
           <Section title="Conflicts">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-              {session.conflicts.map((c, i) => (
-                <div
-                  key={`${c.kind}-${c.withId}-${i}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--space-2)',
-                  }}
-                >
-                  <Badge tone={c.level === 'blocker' ? 'blocked' : 'attention'} dot>
-                    {c.level === 'blocker' ? 'Blocker' : 'Warning'}
-                  </Badge>
-                  <span style={{ color: 'var(--text-secondary)' }}>{c.message}</span>
-                </div>
-              ))}
-            </div>
+            <ConflictList conflicts={session.conflicts} />
           </Section>
         ) : null}
-
-        {/* Virtual links */}
-        <Section title="Virtual links">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            {AUDIENCE.map((a) => (
-              <Field key={a.key} label={a.label} htmlFor={`link-${a.key}`} optional hint={a.hint}>
-                <Input
-                  id={`link-${a.key}`}
-                  type="url"
-                  value={linkValues[a.key]}
-                  placeholder={a.placeholder}
-                  onChange={(e) => {
-                    setters[a.key](e.target.value)
-                  }}
-                />
-              </Field>
-            ))}
-            <div>
-              <Button size="sm" variant="secondary" iconLeft="link" disabled={pending} onClick={saveLinks}>
-                {pending ? 'Saving…' : 'Save links'}
-              </Button>
-            </div>
-          </div>
-        </Section>
 
         {/* Speakers + acknowledgement */}
         <Section title="Speakers">

@@ -241,6 +241,18 @@ export default defineSchema({
     order: v.number(),
   }).index("by_eventId", ["eventId"]),
 
+  // Session formats (W2). The NAME is the verbatim organizer-facing label —
+  // "Workshop (120 min)" keeps its parenthetical, because the CFP form's
+  // conditional logic matches option strings exactly and the eval asserts
+  // those labels verbatim. `defaultDurationMinutes` is the parsed number, kept
+  // as a separate field precisely so nothing has to re-parse the label.
+  formats: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    defaultDurationMinutes: v.optional(v.number()),
+    order: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
   customFields: defineTable({
     eventId: v.id("events"),
     name: v.string(),
@@ -276,6 +288,24 @@ export default defineSchema({
       description: v.optional(v.string()),
       format: v.optional(v.string()),
     }),
+    /**
+     * Present only when this revision was written BY a restore (W3), so the
+     * history can render it as one event — "Restored the snapshot from …" —
+     * instead of as another anonymous edit. Optional, so every row written
+     * before W3 stays valid and no migration is needed; absence means
+     * "an ordinary edit".
+     *
+     * `restoredSnapshotAt` is denormalized on purpose: the grouping sentence
+     * must not need a second read per row, and it must survive even if the
+     * referenced revision ever becomes unreachable.
+     */
+    origin: v.optional(
+      v.object({
+        kind: v.literal("restore"),
+        restoredRevisionId: v.id("sessionRevisions"),
+        restoredSnapshotAt: v.number(),
+      }),
+    ),
   }).index("by_sessionId", ["sessionId"]),
 
   // Comment thread on a task instance's uploaded file(s) — speaker and
@@ -479,6 +509,16 @@ export default defineSchema({
     /** Per-reviewer assignment ceiling for auto-distribute; no cap when unset. */
     reviewerCap: v.optional(v.number()),
     scorecard: vScorecard,
+    /**
+     * Set while the launch flow is still building the round (W11).
+     *
+     * Polarity is deliberate: ABSENCE means launched, so every row written
+     * before this field existed keeps exactly today's behavior with no
+     * migration. A draft round is visible only on the organizer's plan list
+     * (as a draft) — it assigns nothing, reaches no reviewer, and counts
+     * toward no readiness number until `launchRound` clears the marker.
+     */
+    draft: v.optional(v.boolean()),
     updatedAt: v.number(),
   }).index("by_eventId", ["eventId"]),
 
@@ -672,7 +712,15 @@ export default defineSchema({
     eventId: v.id("events"),
     title: v.string(),
     description: v.optional(v.string()),
+    // Free-text format label. Kept as the DISPLAY FALLBACK forever: sessions
+    // that predate the formats library (or whose label never matched a row)
+    // still show what the organizer typed. When `formatId` is set this string
+    // is the library row's name, denormalized so revisions stay readable.
     format: v.optional(v.string()),
+    /** Link to the formats library — what carries the default duration. */
+    formatId: v.optional(v.id("formats")),
+    /** Per-session override of the format's default block length. */
+    durationMinutes: v.optional(v.number()),
     trackId: v.optional(v.id("tracks")),
     tagIds: v.optional(v.array(v.id("tags"))),
     proposalId: v.optional(v.id("proposals")),
@@ -944,6 +992,12 @@ export default defineSchema({
       v.literal("complained"),
       v.literal("failed"),
     ),
+    // The PROVIDER's own timestamp for the delivery event that last moved
+    // `deliveryStatus`, so the log can say when something was delivered rather
+    // than only when StageStack handed it over. Optional: rows written before
+    // this field existed (and rows still sitting at `queued`, which no provider
+    // event has touched) simply do not carry one — no backfill needed.
+    deliveryUpdatedAt: v.optional(v.number()),
     sentByUserId: v.optional(v.id("users")),
     context: v.optional(v.any()),
   })

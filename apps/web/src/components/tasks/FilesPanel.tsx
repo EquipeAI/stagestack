@@ -3,6 +3,7 @@ import { useConvex, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { FunctionReturnType } from 'convex/server'
 import {
+  ActionResult,
   Button,
   Card,
   Checkbox,
@@ -16,7 +17,6 @@ import { TaskCommentThread } from '~/components/tasks/TaskCommentThread'
 import { downloadBlob, slug } from '~/components/abstracts/exporters'
 import { formatDateTime } from '~/lib/datetime'
 import { countLabel } from '~/components/tasks/model'
-import { pushToast } from '~/components/toast'
 
 // The files library (CNT-13/CNT-14): every current deliverable across the
 // event in one table, with a bulk ZIP for the AV desk. The export is
@@ -50,6 +50,13 @@ export function FilesPanel({
   const [selected, setSelected] = useState<ReadonlySet<string> | null>(null)
   const [grouping, setGrouping] = useState<Grouping>('session')
   const [zipState, setZipState] = useState<ZipState>('idle')
+  // W5: the export's outcome stays on the page (counts, what was skipped, and
+  // a retry) instead of three toasts that expire in five seconds.
+  const [zipResult, setZipResult] = useState<{
+    status: 'success' | 'partial' | 'failed'
+    title: string
+    lines: Array<string>
+  } | null>(null)
   const [threadFor, setThreadFor] = useState<FileRow | null>(null)
 
   if (files === undefined) {
@@ -86,6 +93,8 @@ export function FilesPanel({
 
   const downloadZip = () => {
     setZipState('generating')
+    setZipResult(null)
+    const requested = selectedIds.size
     void (async () => {
       try {
         const bundle = await convex.query(api.tasks.exportBundleV2, {
@@ -95,33 +104,38 @@ export function FilesPanel({
         const { added, skipped } = await buildZip(bundle, grouping, eventSlug)
         if (added === 0) {
           setZipState('error')
-          pushToast(
-            'Nothing to download',
-            'None of the selected files could be fetched.',
-            'triangle-alert',
-          )
+          setZipResult({
+            status: 'failed',
+            title: 'Nothing was downloaded',
+            lines: [
+              `${countLabel(requested, 'file was', 'files were')} selected.`,
+              'None of them could be fetched, so no ZIP was written.',
+            ],
+          })
         } else {
           setZipState('ready')
-          pushToast(
-            'ZIP downloaded',
-            `${countLabel(added, 'file', 'files')} in ${eventSlug}-deliverables.zip.`,
-            'download',
-          )
-          if (skipped > 0) {
-            pushToast(
-              'Some files were skipped',
-              `${countLabel(skipped, 'file was', 'files were')} unavailable and left out of the ZIP.`,
-              'triangle-alert',
-            )
-          }
+          setZipResult({
+            status: skipped > 0 ? 'partial' : 'success',
+            title: `${countLabel(added, 'file', 'files')} downloaded`,
+            lines: [
+              `${countLabel(requested, 'file was', 'files were')} selected · ${added} written to ${eventSlug}-deliverables.zip.`,
+              ...(skipped > 0
+                ? [
+                    `${countLabel(skipped, 'file was', 'files were')} unavailable and left out of the ZIP.`,
+                  ]
+                : []),
+            ],
+          })
         }
       } catch {
         setZipState('error')
-        pushToast(
-          'Export failed',
-          'The file bundle could not be read. Try again.',
-          'triangle-alert',
-        )
+        setZipResult({
+          status: 'failed',
+          title: 'Export failed',
+          lines: [
+            'The file bundle could not be read, so nothing downloaded.',
+          ],
+        })
       }
     })()
   }
@@ -162,6 +176,7 @@ export function FilesPanel({
           >
             <Select
               size="sm"
+              aria-label="Group files by"
               value={grouping}
               options={GROUPING_OPTIONS}
               onChange={(e) => {
@@ -178,29 +193,28 @@ export function FilesPanel({
                 : `Download ZIP (${selectedIds.size})`}
             </Button>
             <span
-              role="status"
-              aria-live="polite"
               style={{
                 font: 'var(--type-caption)',
-                color:
-                  zipState === 'ready'
-                    ? 'var(--status-success-fg)'
-                    : zipState === 'error'
-                      ? 'var(--status-blocked-fg)'
-                      : 'var(--text-tertiary)',
+                color: 'var(--text-tertiary)',
               }}
             >
               {zipState === 'generating'
                 ? 'Generating selected latest versions…'
-                : zipState === 'ready'
-                  ? 'Ready — download started.'
-                  : zipState === 'error'
-                    ? 'ZIP was not downloaded.'
-                    : 'Selected rows export their latest version.'}
+                : 'Selected rows export their latest version.'}
             </span>
           </div>
         }
       />
+
+      {zipResult === null ? null : (
+        <ActionResult
+          status={zipResult.status}
+          title={zipResult.title}
+          details={zipResult.lines}
+          onRetry={zipResult.status === 'success' ? undefined : downloadZip}
+          onDismiss={() => setZipResult(null)}
+        />
+      )}
 
       <Card padded={false}>
         <DataTable
@@ -211,9 +225,18 @@ export function FilesPanel({
             {
               key: 'select',
               width: '2.5rem',
-              header: <Checkbox checked={allSelected} onChange={toggleAll} />,
+              header: (
+                <Checkbox
+                  aria-label="Select every file"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                />
+              ),
               cell: (row: FileRow) => (
                 <Checkbox
+                  // Named by the file it belongs to: the column header is a
+                  // checkbox, so a row box read on its own says nothing.
+                  aria-label={`Select ${row.filename}`}
                   checked={selectedIds.has(row.fileId)}
                   onChange={() => {
                     toggleOne(row.fileId)
@@ -287,7 +310,14 @@ export function FilesPanel({
             {
               key: 'uploadedByName',
               header: 'Uploader',
-              cell: (row: FileRow) => row.uploadedByName ?? 'Unknown',
+              // The backend is the one producer of both the name and the
+              // sentence explaining a missing one — never re-worded here.
+              cell: (row: FileRow) =>
+                row.uploadedByName ?? (
+                  <span style={{ color: 'var(--text-tertiary)' }}>
+                    {row.uploadedByNote ?? 'Not recorded'}
+                  </span>
+                ),
             },
             {
               key: 'uploadedAt',
@@ -342,6 +372,13 @@ export function FilesPanel({
                     size="sm"
                     variant="ghost"
                     iconLeft="mail"
+                    // The visible text is a bare count, which reads as a
+                    // number with no subject once out of the column.
+                    aria-label={
+                      row.commentCount === 0
+                        ? `Comment on ${row.filename}`
+                        : `${countLabel(row.commentCount, 'comment', 'comments')} on ${row.filename}`
+                    }
                     onClick={() => {
                       setThreadFor(row)
                     }}

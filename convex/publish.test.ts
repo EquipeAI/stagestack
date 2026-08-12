@@ -1271,3 +1271,57 @@ describe("publish — freshness (W4)", () => {
     );
   });
 });
+
+// ── Format labels in the public blob (W2) ────────────────────────────────
+
+describe("publish — format labels", () => {
+  test("the blob carries the library's name when linked and the free text otherwise", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, sessionId } = await seedProgram(t);
+    const eventId = await eventIdOf(t, eventSlug);
+
+    // A second session that never matched the library, so it keeps free text.
+    const legacyId = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("sessions", {
+        eventId,
+        title: "Hallway track",
+        source: "direct",
+        status: "planned",
+        format: "Unstructured chat",
+      });
+      await ctx.db.patch("sessions", sessionId, { format: "Workshop (120 min)" });
+      return id;
+    });
+    await t.mutation(internal.library.backfillFormats, { eventId });
+
+    await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
+    for (const id of [sessionId, legacyId]) {
+      await alice.mutation(api.publish.setSession, {
+        eventSlug,
+        sessionId: id,
+        published: true,
+      });
+    }
+    const program = await servedProgram(t, eventSlug);
+    const byTitle = new Map(program?.lineup.map((s) => [s.title, s.format]));
+    // Verbatim, parenthetical and all.
+    expect(byTitle.get("Agents in Production")).toBe("Workshop (120 min)");
+    expect(byTitle.get("Hallway track")).toBe("Unstructured chat");
+
+    // Renaming the library row moves the public label without touching the
+    // session — the blob renders the row, the free text is only a fallback.
+    const lib = await alice.query(api.library.list, { eventSlug });
+    const workshop = lib.formats.find((f) => f.name === "Workshop (120 min)");
+    await alice.mutation(api.library.update, {
+      eventSlug,
+      table: "formats",
+      id: workshop?._id ?? "",
+      patch: { name: "Deep-dive workshop (120 min)" },
+    });
+    await t.mutation(internal.publish.rebuild, { eventId });
+    const renamed = await servedProgram(t, eventSlug);
+    expect(
+      renamed?.lineup.find((s) => s.title === "Agents in Production")?.format,
+    ).toBe("Deep-dive workshop (120 min)");
+  });
+});

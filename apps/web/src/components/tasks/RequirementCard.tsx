@@ -59,7 +59,12 @@ export function RequirementCard({
       subtitle={requirement.description}
       actions={
         <Switch
+          // The visible text says the state; the accessible name has to say
+          // WHICH requirement, because a screen reader reaching this switch has
+          // no card title in earshot. The visible word stays inside the name
+          // (WCAG 2.5.3 Label in Name).
           label={requirement.active ? 'Active' : 'Inactive'}
+          aria-label={`${requirement.active ? 'Active' : 'Inactive'} — ${requirement.title}`}
           checked={requirement.active}
           disabled={pending}
           onChange={(e) => {
@@ -328,7 +333,11 @@ function EditRequirementDialog({
           />
         </Field>
         <Switch
+          // Named by its subject, not only by its state: this edit form is
+          // reached from a list of requirements and the card title is not in
+          // earshot. The visible words stay inside the name (WCAG 2.5.3).
           label="Require organizer review"
+          aria-label={`Require organizer review — ${requirement.title}`}
           checked={reviewRequired}
           disabled={pending}
           onChange={(e) => {
@@ -359,6 +368,7 @@ function EditRequirementDialog({
         </Field>
         <Switch
           label="Reminders off"
+          aria-label={`Reminders off — ${requirement.title}`}
           checked={remindersDisabled}
           disabled={pending}
           onChange={(e) => {
