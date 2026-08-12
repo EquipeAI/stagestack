@@ -13,6 +13,7 @@ import {
   Select,
   Textarea,
 } from '~/ds'
+import { FileButton } from '~/components/FileButton'
 import { pushToast } from '~/components/toast'
 import { usePending } from '~/lib/usePending'
 
@@ -657,20 +658,16 @@ function CsvImportDialog({
     >
       {state.error ? <Callout tone="blocked">{state.error}</Callout> : null}
       <Field label="CSV file" htmlFor="crm-csv-file">
-        <Button as="label" size="sm" iconLeft="upload">
-          <input
-            id="crm-csv-file"
-            type="file"
-            accept=".csv,text/csv"
-            style={{ display: 'none' }}
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              event.target.value = ''
-              if (file) void file.text().then(setSource)
-            }}
-          />
+        <FileButton
+          id="crm-csv-file"
+          size="sm"
+          accept=".csv,text/csv"
+          onFile={(file) => {
+            void file.text().then(setSource)
+          }}
+        >
           Choose CSV file
-        </Button>
+        </FileButton>
       </Field>
       <Field label="CSV contents" htmlFor="crm-csv-source">
         <Textarea

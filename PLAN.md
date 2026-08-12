@@ -390,37 +390,72 @@ Each is small, each was individually named in the review.
 
 Scheduled as its own pass, before the organizer UX is called mature.
 
-- [ ] **Audit first, fix second**: axe + manual keyboard pass over dashboard,
-      proposals, reviews, sessions, speakers, agenda, tasks, comms, publish,
-      settings, portal, and the public widgets. Record findings in
-      `docs/reference/` so the fixes are checkable.
-- [ ] Every `Switch` named by its own requirement/setting (the review found at
-      least one bare `Active` switch) — `ds/components/forms/Switch.jsx` should
-      make an unnamed switch hard to write.
-- [ ] Modal focus trapped and returned to the invoking control
-      (`ds/components/feedback/Dialog.jsx`).
-- [ ] Toasts and async state changes announced via a live region.
-- [ ] Every status carries text or shape as well as colour (`StatusPill`,
-      `Badge`, `ReadinessMeter`).
-- [ ] Targets meet WCAG 2.2 24×24 or the spacing exception — audit icon buttons
-      and date controls first (`ds/components/core/IconButton.jsx`;
-      `app.css:298` already has a `pointer: coarse` block to extend).
-- [ ] Tables, filters, dialogs, and agenda placement fully keyboard-operable.
-      Two of these are already done and the audit's job is to confirm, not
-      rebuild: `DataTable` rows are focusable and Enter/Space-activated
-      (`ds/components/layout/DataTable.jsx`), and the agenda has real keyboard
-      placement with screen-reader instructions
-      (`components/agenda/keyboardDrag.ts`). The open ground is menus, popovers,
-      and date controls.
-- [ ] **Tooltips are hover-only** (`feedback.css` `.ss-tooltip:hover`,
-      `:focus-within`), so any information carried solely by a tooltip is
-      unreachable on touch. Census done during plan review: only two Tooltip
-      sites exist in the app. The one real gap is **agenda-item conflict
-      messages** (`Block.tsx:175` ConflictMark — session conflicts have a
-      tap-reachable duplicate in `SessionDetailDialog.tsx:252`; agenda items
-      have none, `AgendaItemDialog` renders no conflicts). This item is one
-      fix, not a sweep.
-- [ ] 200% zoom and 375px width hide no navigation or action.
+- [x] **Audit first, fix second**: recorded in
+      [docs/reference/a11y-audit-2026-08.md](docs/reference/a11y-audit-2026-08.md)
+      — 76 findings, 57 fixed, 19 deferred with reasons, per surface with
+      file:line and WCAG criterion. **Scope correction, stated at the top of
+      the doc**: this pass is a STATIC code audit. axe, a manual keyboard pass
+      and a screen-reader pass over the running app are NOT done and are not
+      claimed; they belong to the final verification step.
+- [x] Every `Switch` named by its own requirement/setting. The DS now makes an
+      unnamed switch a **type error** (`Switch.d.ts` requires one of `label` /
+      `aria-label` / `aria-labelledby`) with a dev-time `console.error` as the
+      runtime backstop for JS call sites and labels that are only blank at
+      runtime. Four bare switches found (three in the publish console, one on
+      the embed row) plus two named by their own STATE rather than their
+      subject (the review's `Active` requirement switch, and the CFP builder's
+      per-question `Required`, and the requirement edit form's "Require
+      organizer review" and "Reminders off").
+- [x] Modal focus. Corrected during the audit: `Dialog.jsx` **already** trapped
+      Tab both ways, moved focus in on open, returned it to the opener, and
+      closed on Escape with `stopPropagation` for nesting — it was confirmed,
+      not rebuilt. The one real defect: the focusable-element filter treated
+      "reports no geometry" as "is not focusable", so a dialog whose layout had
+      not happened yet silently lost its whole trap. Bottom-sheet mode is the
+      same element and is asserted as such.
+- [x] Toasts and async state changes announced. The toast viewport returned
+      `null` when empty, so its live region was inserted WITH the message
+      already inside — not reliably announced, for every toast in the product.
+      Fixed, and `lib/announce.ts` is now the app's one PAIR of live regions —
+      mounted at the document ROOT, because `/invite` runs mutations through
+      `usePending` and has no toasts. `usePending` feeds them, with an
+      `{ announce: false }` opt-out applied at the 15 of 84 call sites (traced
+      individually) whose failure is already spoken by an `ActionResult`, a
+      `Field` error or the portal's `role="alert"`. Toasts announce through the
+      shared region and are no longer live regions themselves, so no sentence
+      is read twice. `ActionResult`'s existing `aria-live` was verified, not
+      duplicated.
+- [x] Status carries more than colour. `StatusPill`/`Badge`/`ReadinessMeter`
+      audited and found already correct (the dot never appears without its
+      text). The real colour-only states were elsewhere: agenda blocker vs
+      warning, the reviewer queue's draft dot, the settings colour swatches,
+      the task filter chips, and the active nav entry below 860px.
+- [x] Targets. **The plan's pointer was wrong**: `app.css:298` is a
+      `touch-action` fix, not a target-size block — the coarse-pointer sizing
+      lives in `ds/tokens/base.css:39-71` and already reached 44px. The gap was
+      the FINE pointer: `.ss-switch`, `.ss-check`, `.ss-toast__action`,
+      `.ss-tag__x` and `.ss-crumbs a` were all under 24px with a mouse. Fixed
+      in a new `ds/tokens/a11y.css` imported last (it has to beat component
+      rules by source order). Per-control verdicts are in the audit doc. Also
+      fixed there: the focus ring measured ~1.33:1 against a white card on
+      every button in the product.
+- [x] Keyboard operability. `DataTable` rows and agenda placement **confirmed**
+      as the plan said. The open ground turned up one hard failure — there was
+      no keyboard path to ANY file picker in the app (seven sites, all
+      `<Button as="label">` around a `display:none` input), now one shared
+      `FileButton` — plus the Popover trigger's missing `aria-expanded` and its
+      Tab-out, the event switcher menu's absent focus management and arrow
+      keys, and an unqualified 1-9 shortcut in the reviewer panel.
+- [x] **Tooltips**: one fix, as scoped. `AgendaItemDialog` gained a Conflicts
+      section, so an agenda item's clash is tap-reachable for the first time;
+      both dialogs now render one `ConflictList` over the sentences
+      `convex/model/agenda.ts` already produces. The mark on the block also
+      carries the reason in its accessible name and differs by shape, not only
+      colour. Tooltip itself was not redesigned.
+- [x] 200% zoom and 375px width. Static check: no navigation entry and no
+      action is hidden at any width. Two `display:none` rules below 860px are
+      **flagged, not fixed** — `.ss-sidebar__head` and `.ss-sidebar__group` —
+      because they are W7's mobile-drawer work by the plan's own division.
 
 ---
 

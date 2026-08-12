@@ -17,6 +17,7 @@ import {
   Select,
   Textarea,
 } from '~/ds'
+import { FileButton } from '~/components/FileButton'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
@@ -260,19 +261,15 @@ export function SpeakerProfileDialog({
                 {uploading ? 'Uploading…' : 'Upload a photo'}
               </Button>
             ) : (
-              <Button as="label" size="sm" iconLeft="upload">
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    e.target.value = ''
-                    if (file !== undefined) void upload(file)
-                  }}
-                />
+              <FileButton
+                size="sm"
+                accept="image/jpeg,image/png,image/webp"
+                onFile={(file) => {
+                  void upload(file)
+                }}
+              >
                 {photo === undefined ? 'Upload a photo' : 'Replace photo'}
-              </Button>
+              </FileButton>
             )}
           </div>
           {localPhoto !== null ? (

@@ -155,6 +155,9 @@ export function TaskCommentThread({
 
       <Textarea
         id={`task-comment-${instanceId}`}
+        // No visible label: the "Comments" span above heads the whole thread,
+        // not this box, and a second label under it would read as a repeat.
+        aria-label="Comment"
         rows={2}
         value={body}
         disabled={pending}

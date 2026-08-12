@@ -299,6 +299,7 @@ function UploadView({
         <Textarea
           value={description}
           rows={2}
+          aria-label="What this file is"
           placeholder="Optional: tell the agent what this file is. e.g. “Talk submissions from our Google Form — one row per talk, columns C/D are the speaker.”"
           onChange={(e) => setDescription(e.target.value)}
         />
@@ -325,7 +326,9 @@ function PlanView({
 }) {
   const job = useQuery(api.imports.getJob, { eventSlug, jobId })
   const confirm = useMutation(api.imports.confirm)
-  const { pending, error, run } = usePending()
+  // Silent here: this run()'s catch feeds the ActionResult below, which
+  // announces the refusal itself.
+  const { pending, error, run } = usePending({ announce: false })
   const [excluded, setExcluded] = useState<ReadonlySet<string>>(new Set())
   // W5: a refused import is a persistent result with a retry — it used to be a
   // toast that took the reason with it when it faded.
@@ -408,6 +411,7 @@ function PlanView({
                     checked={!excluded.has(r.id)}
                     onChange={() => toggle(r.id)}
                     name={`include-${r.id}`}
+                    aria-label={`Import ${recordTitle(r)}`}
                   />
                   <div
                     style={{

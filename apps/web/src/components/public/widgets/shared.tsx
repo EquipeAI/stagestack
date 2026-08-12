@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { DateTime } from 'luxon'
 import type * as React from 'react'
 import type {
@@ -345,10 +345,16 @@ export function FilterChips({
   onChange: (next: string | null) => void
   accent?: string
 }) {
+  // Ahead of the empty-options bail-out so the hook order stays stable.
+  const labelId = useId()
   if (options.length === 0) return null
   const color = accentOr(accent)
   return (
     <div
+      // Without the group the chips read as an unrelated run of toggles: the
+      // "TRACK"/"FORMAT"/"ROOM" caption is purely visual otherwise.
+      role="group"
+      aria-labelledby={labelId}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -357,6 +363,7 @@ export function FilterChips({
       }}
     >
       <span
+        id={labelId}
         style={{
           font: 'var(--type-eyebrow)',
           letterSpacing: 'var(--tracking-caps)',

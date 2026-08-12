@@ -28,23 +28,23 @@
       "warn",
       {
         "selector": "Literal[value=/#[0-9a-fA-F]{3,8}\\b/]",
-        "message": "Raw hex color — use a design-system color token via var()."
+        "message": "Raw hex color \u2014 use a design-system color token via var()."
       },
       {
         "selector": "Literal[value=/\\b\\d+px\\b/]",
-        "message": "Raw px value — use a design-system spacing token via var()."
+        "message": "Raw px value \u2014 use a design-system spacing token via var()."
       },
       {
         "selector": "Literal[value=/font-family\\s*:\\s*(?!['\\\"]?(?:Geist|Geist Mono|Instrument Sans))/i]",
         "message": "Font not provided by the design system. Available: Geist, Geist Mono, Instrument Sans."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Avatar'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|src|size|key|ref|className|style|children)$/]",
-        "message": "<Avatar> doesn't accept that prop. Declared props: name, src, size."
+        "selector": "JSXOpeningElement[name.name='Avatar'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|src|size|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Avatar> doesn't accept that prop. Declared props: name, src, size, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Badge'] > JSXAttribute > JSXIdentifier[name!=/^(?:tone|size|dot|key|ref|className|style|children)$/]",
-        "message": "<Badge> doesn't accept that prop. Declared props: tone, size, dot."
+        "selector": "JSXOpeningElement[name.name='Badge'] > JSXAttribute > JSXIdentifier[name!=/^(?:tone|size|dot|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Badge> doesn't accept that prop. Declared props: tone, size, dot, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='Badge'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:neutral|info|success|attention|blocked|brand|agent)$/]",
@@ -55,12 +55,12 @@
         "message": "<Badge> size must be one of 'sm' | 'lg'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Breadcrumb'] > JSXAttribute > JSXIdentifier[name!=/^(?:items|key|ref|className|style|children)$/]",
-        "message": "<Breadcrumb> doesn't accept that prop. Declared props: items."
+        "selector": "JSXOpeningElement[name.name='Breadcrumb'] > JSXAttribute > JSXIdentifier[name!=/^(?:items|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Breadcrumb> doesn't accept that prop. Declared props: items, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Button'] > JSXAttribute > JSXIdentifier[name!=/^(?:variant|size|iconLeft|iconRight|fullWidth|as|onClick|type|disabled|id|name|value|key|ref|className|style|children)$/]",
-        "message": "<Button> doesn't accept that prop. Declared props: variant, size, iconLeft, iconRight, fullWidth, as, onClick, type, disabled, id, name, value."
+        "selector": "JSXOpeningElement[name.name='Button'] > JSXAttribute > JSXIdentifier[name!=/^(?:variant|size|iconLeft|iconRight|fullWidth|as|onClick|type|disabled|id|name|value|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Button> doesn't accept that prop. Declared props: variant, size, iconLeft, iconRight, fullWidth, as, onClick, type, disabled, id, name, value, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='Button'] > JSXAttribute[name.name='variant'] > Literal[value!=/^(?:primary|brand|secondary|ghost|danger)$/]",
@@ -71,116 +71,116 @@
         "message": "<Button> size must be one of 'sm' | 'md' | 'lg'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Callout'] > JSXAttribute > JSXIdentifier[name!=/^(?:tone|title|icon|actions|key|ref|className|style|children)$/]",
-        "message": "<Callout> doesn't accept that prop. Declared props: tone, title, icon, actions."
+        "selector": "JSXOpeningElement[name.name='Callout'] > JSXAttribute > JSXIdentifier[name!=/^(?:tone|title|icon|actions|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Callout> doesn't accept that prop. Declared props: tone, title, icon, actions, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='Callout'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:neutral|info|success|attention|blocked|agent)$/]",
         "message": "<Callout> tone must be one of 'neutral' | 'info' | 'success' | 'attention' | 'blocked' | 'agent'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Card'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|subtitle|actions|footer|variant|padded|key|ref|className|style|children)$/]",
-        "message": "<Card> doesn't accept that prop. Declared props: title, subtitle, actions, footer, variant, padded."
+        "selector": "JSXOpeningElement[name.name='Card'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|subtitle|actions|footer|variant|padded|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Card> doesn't accept that prop. Declared props: title, subtitle, actions, footer, variant, padded, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='Card'] > JSXAttribute[name.name='variant'] > Literal[value!=/^(?:default|flat|raised|interactive)$/]",
         "message": "<Card> variant must be one of 'default' | 'flat' | 'raised' | 'interactive'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Checkbox'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|description|onChange|disabled|name|checked|defaultChecked|required|id|key|ref|className|style|children)$/]",
-        "message": "<Checkbox> doesn't accept that prop. Declared props: label, description, onChange, disabled, name, checked, defaultChecked, required, id."
+        "selector": "JSXOpeningElement[name.name='Checkbox'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|description|onChange|disabled|name|checked|defaultChecked|required|id|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Checkbox> doesn't accept that prop. Declared props: label, description, onChange, disabled, name, checked, defaultChecked, required, id, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='DataTableColumn'] > JSXAttribute > JSXIdentifier[name!=/^(?:key|header|width|align|cell|key|ref|className|style|children)$/]",
-        "message": "<DataTableColumn> doesn't accept that prop. Declared props: key, header, width, align, cell."
+        "selector": "JSXOpeningElement[name.name='DataTableColumn'] > JSXAttribute > JSXIdentifier[name!=/^(?:key|header|width|align|cell|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<DataTableColumn> doesn't accept that prop. Declared props: key, header, width, align, cell, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='DataTableColumn'] > JSXAttribute[name.name='align'] > Literal[value!=/^(?:left|right|center)$/]",
         "message": "<DataTableColumn> align must be one of 'left' | 'right' | 'center'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='DescriptionList'] > JSXAttribute > JSXIdentifier[name!=/^(?:items|stacked|key|ref|className|style|children)$/]",
-        "message": "<DescriptionList> doesn't accept that prop. Declared props: items, stacked."
+        "selector": "JSXOpeningElement[name.name='DescriptionList'] > JSXAttribute > JSXIdentifier[name!=/^(?:items|stacked|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<DescriptionList> doesn't accept that prop. Declared props: items, stacked, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Dialog'] > JSXAttribute > JSXIdentifier[name!=/^(?:open|title|description|width|onClose|footer|key|ref|className|style|children)$/]",
-        "message": "<Dialog> doesn't accept that prop. Declared props: open, title, description, width, onClose, footer."
+        "selector": "JSXOpeningElement[name.name='Dialog'] > JSXAttribute > JSXIdentifier[name!=/^(?:open|title|description|width|onClose|footer|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Dialog> doesn't accept that prop. Declared props: open, title, description, width, onClose, footer, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='EmptyState'] > JSXAttribute > JSXIdentifier[name!=/^(?:icon|title|description|action|key|ref|className|style|children)$/]",
-        "message": "<EmptyState> doesn't accept that prop. Declared props: icon, title, description, action."
+        "selector": "JSXOpeningElement[name.name='EmptyState'] > JSXAttribute > JSXIdentifier[name!=/^(?:icon|title|description|action|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<EmptyState> doesn't accept that prop. Declared props: icon, title, description, action, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Field'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|htmlFor|required|optional|hint|error|key|ref|className|style|children)$/]",
-        "message": "<Field> doesn't accept that prop. Declared props: label, htmlFor, required, optional, hint, error."
+        "selector": "JSXOpeningElement[name.name='Field'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|htmlFor|required|optional|hint|error|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Field> doesn't accept that prop. Declared props: label, htmlFor, required, optional, hint, error, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Icon'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|size|strokeWidth|key|ref|className|style|children)$/]",
-        "message": "<Icon> doesn't accept that prop. Declared props: name, size, strokeWidth."
+        "selector": "JSXOpeningElement[name.name='Icon'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|size|strokeWidth|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Icon> doesn't accept that prop. Declared props: name, size, strokeWidth, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='IconButton'] > JSXAttribute > JSXIdentifier[name!=/^(?:icon|label|size|bordered|onClick|type|disabled|id|key|ref|className|style|children)$/]",
-        "message": "<IconButton> doesn't accept that prop. Declared props: icon, label, size, bordered, onClick, type, disabled, id."
+        "selector": "JSXOpeningElement[name.name='IconButton'] > JSXAttribute > JSXIdentifier[name!=/^(?:icon|label|size|bordered|onClick|type|disabled|id|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<IconButton> doesn't accept that prop. Declared props: icon, label, size, bordered, onClick, type, disabled, id, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='IconButton'] > JSXAttribute[name.name='size'] > Literal[value!=/^(?:sm|md|lg)$/]",
         "message": "<IconButton> size must be one of 'sm' | 'md' | 'lg'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Input'] > JSXAttribute > JSXIdentifier[name!=/^(?:size|icon|suffix|invalid|onChange|onFocus|onBlur|onKeyDown|type|disabled|name|value|defaultValue|placeholder|required|autoComplete|autoFocus|id|key|ref|className|style|children)$/]",
-        "message": "<Input> doesn't accept that prop. Declared props: size, icon, suffix, invalid, onChange, onFocus, onBlur, onKeyDown, type, disabled, name, value, defaultValue, placeholder, required, autoComplete, autoFocus, id."
+        "selector": "JSXOpeningElement[name.name='Input'] > JSXAttribute > JSXIdentifier[name!=/^(?:size|icon|suffix|invalid|onChange|onFocus|onBlur|onKeyDown|type|disabled|name|value|defaultValue|placeholder|required|autoComplete|autoFocus|id|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Input> doesn't accept that prop. Declared props: size, icon, suffix, invalid, onChange, onFocus, onBlur, onKeyDown, type, disabled, name, value, defaultValue, placeholder, required, autoComplete, autoFocus, id, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='Input'] > JSXAttribute[name.name='size'] > Literal[value!=/^(?:sm|md|lg)$/]",
         "message": "<Input> size must be one of 'sm' | 'md' | 'lg'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Logo'] > JSXAttribute > JSXIdentifier[name!=/^(?:size|wordmark|tone|key|ref|className|style|children)$/]",
-        "message": "<Logo> doesn't accept that prop. Declared props: size, wordmark, tone."
+        "selector": "JSXOpeningElement[name.name='Logo'] > JSXAttribute > JSXIdentifier[name!=/^(?:size|wordmark|tone|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Logo> doesn't accept that prop. Declared props: size, wordmark, tone, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='Logo'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:default|inverse)$/]",
         "message": "<Logo> tone must be one of 'default' | 'inverse'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='PageHeader'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|description|breadcrumbs|meta|actions|key|ref|className|style|children)$/]",
-        "message": "<PageHeader> doesn't accept that prop. Declared props: title, description, breadcrumbs, meta, actions."
+        "selector": "JSXOpeningElement[name.name='PageHeader'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|description|breadcrumbs|meta|actions|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<PageHeader> doesn't accept that prop. Declared props: title, description, breadcrumbs, meta, actions, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='RadioGroup'] > JSXAttribute > JSXIdentifier[name!=/^(?:name|options|value|onChange|row|className|id|tabIndex|role|aria-invalid|aria-describedby|aria-labelledby|key|ref|className|style|children)$/]",
         "message": "<RadioGroup> doesn't accept that prop. Declared props: name, options, value, onChange, row, className, id, tabIndex, role, aria-invalid, aria-describedby, aria-labelledby."
       },
       {
-        "selector": "JSXOpeningElement[name.name='ReadinessSegment'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|tone|label|key|ref|className|style|children)$/]",
-        "message": "<ReadinessSegment> doesn't accept that prop. Declared props: value, tone, label."
+        "selector": "JSXOpeningElement[name.name='ReadinessSegment'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|tone|label|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<ReadinessSegment> doesn't accept that prop. Declared props: value, tone, label, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='ReadinessSegment'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:ready|attention|blocked|neutral)$/]",
         "message": "<ReadinessSegment> tone must be one of 'ready' | 'attention' | 'blocked' | 'neutral'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='SearchInput'] > JSXAttribute > JSXIdentifier[name!=/^(?:shortcut|size|onChange|onFocus|onBlur|onKeyDown|disabled|name|value|defaultValue|placeholder|id|key|ref|className|style|children)$/]",
-        "message": "<SearchInput> doesn't accept that prop. Declared props: shortcut, size, onChange, onFocus, onBlur, onKeyDown, disabled, name, value, defaultValue, placeholder, id."
+        "selector": "JSXOpeningElement[name.name='SearchInput'] > JSXAttribute > JSXIdentifier[name!=/^(?:shortcut|size|onChange|onFocus|onBlur|onKeyDown|disabled|name|value|defaultValue|placeholder|id|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<SearchInput> doesn't accept that prop. Declared props: shortcut, size, onChange, onFocus, onBlur, onKeyDown, disabled, name, value, defaultValue, placeholder, id, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='SearchInput'] > JSXAttribute[name.name='size'] > Literal[value!=/^(?:sm|md|lg)$/]",
         "message": "<SearchInput> size must be one of 'sm' | 'md' | 'lg'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Select'] > JSXAttribute > JSXIdentifier[name!=/^(?:options|size|onChange|disabled|name|value|defaultValue|id|key|ref|className|style|children)$/]",
-        "message": "<Select> doesn't accept that prop. Declared props: options, size, onChange, disabled, name, value, defaultValue, id."
+        "selector": "JSXOpeningElement[name.name='Select'] > JSXAttribute > JSXIdentifier[name!=/^(?:options|size|onChange|disabled|name|value|defaultValue|id|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Select> doesn't accept that prop. Declared props: options, size, onChange, disabled, name, value, defaultValue, id, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='Select'] > JSXAttribute[name.name='size'] > Literal[value!=/^(?:sm|md|lg)$/]",
         "message": "<Select> size must be one of 'sm' | 'md' | 'lg'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='SidebarNavItem'] > JSXAttribute > JSXIdentifier[name!=/^(?:id|label|icon|count|key|ref|className|style|children)$/]",
-        "message": "<SidebarNavItem> doesn't accept that prop. Declared props: id, label, icon, count."
+        "selector": "JSXOpeningElement[name.name='SidebarNavItem'] > JSXAttribute > JSXIdentifier[name!=/^(?:id|label|icon|count|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<SidebarNavItem> doesn't accept that prop. Declared props: id, label, icon, count, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='StatusPill'] > JSXAttribute > JSXIdentifier[name!=/^(?:status|size|tone|key|ref|className|style|children)$/]",
-        "message": "<StatusPill> doesn't accept that prop. Declared props: status, size, tone."
+        "selector": "JSXOpeningElement[name.name='StatusPill'] > JSXAttribute > JSXIdentifier[name!=/^(?:status|size|tone|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<StatusPill> doesn't accept that prop. Declared props: status, size, tone, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='StatusPill'] > JSXAttribute[name.name='size'] > Literal[value!=/^(?:sm|lg)$/]",
@@ -191,32 +191,32 @@
         "message": "<StatusPill> tone must be one of 'neutral' | 'info' | 'success' | 'attention' | 'blocked' | 'brand' | 'agent'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Switch'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|onChange|disabled|name|checked|defaultChecked|id|key|ref|className|style|children)$/]",
-        "message": "<Switch> doesn't accept that prop. Declared props: label, onChange, disabled, name, checked, defaultChecked, id."
+        "selector": "JSXOpeningElement[name.name='Switch'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|onChange|disabled|name|checked|defaultChecked|id|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Switch> doesn't accept that prop. Declared props: label, onChange, disabled, name, checked, defaultChecked, id, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='TabItem'] > JSXAttribute > JSXIdentifier[name!=/^(?:id|label|icon|count|key|ref|className|style|children)$/]",
-        "message": "<TabItem> doesn't accept that prop. Declared props: id, label, icon, count."
+        "selector": "JSXOpeningElement[name.name='TabItem'] > JSXAttribute > JSXIdentifier[name!=/^(?:id|label|icon|count|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<TabItem> doesn't accept that prop. Declared props: id, label, icon, count, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Tag'] > JSXAttribute > JSXIdentifier[name!=/^(?:color|onRemove|key|ref|className|style|children)$/]",
-        "message": "<Tag> doesn't accept that prop. Declared props: color, onRemove."
+        "selector": "JSXOpeningElement[name.name='Tag'] > JSXAttribute > JSXIdentifier[name!=/^(?:color|onRemove|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Tag> doesn't accept that prop. Declared props: color, onRemove, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Textarea'] > JSXAttribute > JSXIdentifier[name!=/^(?:invalid|onChange|onFocus|onBlur|disabled|name|value|defaultValue|placeholder|rows|required|id|key|ref|className|style|children)$/]",
-        "message": "<Textarea> doesn't accept that prop. Declared props: invalid, onChange, onFocus, onBlur, disabled, name, value, defaultValue, placeholder, rows, required, id."
+        "selector": "JSXOpeningElement[name.name='Textarea'] > JSXAttribute > JSXIdentifier[name!=/^(?:invalid|onChange|onFocus|onBlur|disabled|name|value|defaultValue|placeholder|rows|required|id|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Textarea> doesn't accept that prop. Declared props: invalid, onChange, onFocus, onBlur, disabled, name, value, defaultValue, placeholder, rows, required, id, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Toast'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|description|icon|actionLabel|onAction|key|ref|className|style|children)$/]",
-        "message": "<Toast> doesn't accept that prop. Declared props: title, description, icon, actionLabel, onAction."
+        "selector": "JSXOpeningElement[name.name='Toast'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|description|icon|actionLabel|onAction|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Toast> doesn't accept that prop. Declared props: title, description, icon, actionLabel, onAction, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Toolbar'] > JSXAttribute > JSXIdentifier[name!=/^(?:left|right|sunken|key|ref|className|style|children)$/]",
-        "message": "<Toolbar> doesn't accept that prop. Declared props: left, right, sunken."
+        "selector": "JSXOpeningElement[name.name='Toolbar'] > JSXAttribute > JSXIdentifier[name!=/^(?:left|right|sunken|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Toolbar> doesn't accept that prop. Declared props: left, right, sunken, plus ARIA attributes and role."
       },
       {
-        "selector": "JSXOpeningElement[name.name='Tooltip'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|key|ref|className|style|children)$/]",
-        "message": "<Tooltip> doesn't accept that prop. Declared props: label."
+        "selector": "JSXOpeningElement[name.name='Tooltip'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<Tooltip> doesn't accept that prop. Declared props: label, plus ARIA attributes and role."
       }
     ]
   },

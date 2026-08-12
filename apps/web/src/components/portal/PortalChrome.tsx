@@ -184,7 +184,13 @@ export function PreviewLock({ children }: { children: React.ReactNode }) {
 /** The message the backend wrote, shown where the action was attempted. */
 export function ActionError({ error }: { error: string | null }) {
   if (error === null) return null
-  return <Callout tone="blocked">{error}</Callout>
+  // Mounted only on failure, so `alert` (assertive) is right: the user has to
+  // hear why the action did not take before trying it again.
+  return (
+    <Callout tone="blocked" role="alert">
+      {error}
+    </Callout>
+  )
 }
 
 /** Two-up on a desktop, stacked on a phone. */

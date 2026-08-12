@@ -519,8 +519,11 @@ function SectionCard({
             {index + 1}
           </span>
           <div style={{ flex: '1 1 16rem' }}>
+            {/* Every section renders the same two placeholders, so the label
+                carries the section number shown to the left of the row. */}
             <Input
               value={section.title}
+              aria-label={`Section ${index + 1} title`}
               placeholder="Section title"
               onChange={(e) => ctl.updateSection(index, { title: e.target.value })}
             />
@@ -542,6 +545,7 @@ function SectionCard({
 
         <Input
           value={section.description ?? ''}
+          aria-label={`Section ${index + 1} description`}
           placeholder="Description (optional)"
           onChange={(e) => ctl.updateSection(index, { description: e.target.value })}
         />
@@ -582,6 +586,7 @@ function SectionCard({
         >
           <Select
             size="sm"
+            aria-label="Question type to add"
             value={kindToAdd}
             options={KIND_OPTIONS}
             onChange={(e) => setKindToAdd(e.target.value as FieldKind)}
@@ -678,6 +683,10 @@ function FieldRow({
         ) : null}
         <Switch
           label="Required"
+          // Every question in the builder renders a switch labelled "Required";
+          // without the question's own name they are indistinguishable to a
+          // screen reader walking the list.
+          aria-label={`Required — ${field.label.trim() === '' ? 'Untitled question' : field.label}`}
           checked={field.required}
           disabled={locked}
           onChange={(e) => patch({ required: e.target.checked })}

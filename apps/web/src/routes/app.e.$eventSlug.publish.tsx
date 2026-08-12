@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
@@ -142,8 +142,10 @@ function MastersCard({
 }) {
   const setLineup = useMutation(api.publish.setLineup)
   const setAgenda = useMutation(api.publish.setAgenda)
-  const lineup = usePending()
-  const agenda = usePending()
+  // Silent here on purpose: the catch inside each run() writes the failure
+  // into the ActionResult below, which is a polite live region already.
+  const lineup = usePending({ announce: false })
+  const agenda = usePending({ announce: false })
   // W5: publishing is not a low-risk confirmation — it is the moment the
   // outside world sees (or stops seeing) the program. The outcome stays on the
   // card, with what it exposed and a retry when it did not land.
@@ -297,6 +299,10 @@ function MasterRow({
   error: string | null
   onToggle: (next: boolean) => void
 }) {
+  // The switch is named by the channel it publishes, not by its own state:
+  // pointing at the title that is already on screen keeps one producer for the
+  // name and avoids a second, drifting copy of it.
+  const titleId = useId()
   return (
     <div
       style={{
@@ -323,6 +329,7 @@ function MasterRow({
           }}
         >
           <span
+            id={titleId}
             style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}
           >
             {title}
@@ -349,6 +356,7 @@ function MasterRow({
         ) : null}
       </div>
       <Switch
+        aria-labelledby={titleId}
         checked={published}
         disabled={pending}
         onChange={(e) => onToggle(e.target.checked)}
@@ -683,6 +691,7 @@ function EmbedListRow({
           Delete
         </Button>
         <Switch
+          aria-label={`Embed enabled: ${embed.name}`}
           checked={embed.enabled}
           disabled={toggle.pending}
           onChange={(e) =>
@@ -773,6 +782,7 @@ function NewEmbedDialog({
 }) {
   const createEmbed = useMutation(api.embeds.create)
   const { pending, error, run } = usePending()
+  const uid = useId()
   const [name, setName] = useState('')
   const [widget, setWidget] = useState<EmbedWidgetId>('sessions')
   const [trackName, setTrackName] = useState('')
@@ -830,15 +840,17 @@ function NewEmbedDialog({
           gap: 'var(--space-4)',
         }}
       >
-        <Field label="Name" required>
+        <Field label="Name" htmlFor={`${uid}-name`} required>
           <Input
+            id={`${uid}-name`}
             value={name}
             placeholder="Homepage speaker wall"
             onChange={(e) => setName(e.target.value)}
           />
         </Field>
-        <Field label="Widget" required>
+        <Field label="Widget" htmlFor={`${uid}-widget`} required>
           <Select
+            id={`${uid}-widget`}
             value={widget}
             options={(Object.keys(WIDGET_LABELS) as Array<EmbedWidgetId>).map(
               (id) => ({ value: id, label: WIDGET_LABELS[id] }),
@@ -848,11 +860,13 @@ function NewEmbedDialog({
         </Field>
         <Field
           label="Track filter"
+          htmlFor={`${uid}-track`}
           optional
           hint="Only sessions on this track appear in the embed."
         >
           {trackOptions.length > 0 ? (
             <Select
+              id={`${uid}-track`}
               value={trackName}
               options={[
                 { value: '', label: 'All tracks' },
@@ -862,6 +876,7 @@ function NewEmbedDialog({
             />
           ) : (
             <Input
+              id={`${uid}-track`}
               value={trackName}
               placeholder="Track name (as published)"
               onChange={(e) => setTrackName(e.target.value)}
@@ -870,7 +885,11 @@ function NewEmbedDialog({
         </Field>
         <BrandColorField value={brandColor} onChange={setBrandColor} />
         <Field label="Hide fields" optional>
+          {/* A checkbox list is not labelable, so `htmlFor` would name
+              nothing; role="group" is what makes Field point the label at it
+              with aria-labelledby instead. */}
           <div
+            role="group"
             style={{
               display: 'flex',
               flexDirection: 'column',
@@ -1022,6 +1041,7 @@ function SessionRow({
         ) : null}
       </div>
       <Switch
+        aria-label={`Release to the public page: ${session.title}`}
         checked={published}
         disabled={pending}
         onChange={(e) =>
@@ -1142,6 +1162,7 @@ function AgendaItemRow({
         ) : null}
       </div>
       <Switch
+        aria-label={`Show on the public agenda: ${item.title}`}
         checked={published}
         disabled={pending}
         onChange={(e) =>

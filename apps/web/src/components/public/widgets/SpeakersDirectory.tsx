@@ -225,6 +225,7 @@ export function SpeakersDirectory({
       >
         <div style={{ flex: '1 1 16rem', maxWidth: '24rem' }}>
           <SearchInput
+            aria-label="Search speakers by name"
             placeholder="Search speakers"
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -233,6 +234,7 @@ export function SpeakersDirectory({
           />
         </div>
         <span
+          role="status"
           style={{ font: 'var(--type-mono)', color: 'var(--text-tertiary)' }}
         >
           {filtered.length} of {entries.length} speaker
@@ -241,6 +243,7 @@ export function SpeakersDirectory({
       </div>
       {filtered.length === 0 ? (
         <p
+          role="status"
           style={{
             font: 'var(--type-body)',
             color: 'var(--text-tertiary)',

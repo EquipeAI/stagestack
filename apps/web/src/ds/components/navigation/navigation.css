@@ -67,11 +67,14 @@
   /* The desktop active marker is a bar on the left edge of the rail, which
      means nothing in a horizontal strip. */
   .ss-navitem[data-active=true]::before{display:none}
+  /* Amber alone would make "where am I" a colour-only signal in the strip
+     (WCAG 1.4.1). Neighbours carry a transparent border, so a drawn one is a
+     second, non-colour difference — the presence of an outline, not its hue. */
   .ss-navitem[data-active=true]{
     background:var(--surface-brand);
     color:var(--gray-900);
     box-shadow:none;
-    border-color:transparent;
+    border-color:var(--gray-900);
   }
 }
 

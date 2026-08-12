@@ -455,6 +455,7 @@ export function Itinerary({
       >
         <div style={{ flex: '1 1 16rem', maxWidth: '24rem' }}>
           <SearchInput
+            aria-label="Search sessions and speakers"
             placeholder="Search sessions and speakers"
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -491,6 +492,7 @@ export function Itinerary({
       />
       {visible.length === 0 ? (
         <p
+          role="status"
           style={{
             font: 'var(--type-body)',
             color: 'var(--text-tertiary)',

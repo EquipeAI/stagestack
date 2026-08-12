@@ -36,7 +36,7 @@ export function ManagedSessionCard({
   readOnly: boolean
 }) {
   const updateSession = useMutation(api.portal.updateSessionContent)
-  const { pending, error, setError, run } = usePending()
+  const { pending, error, setError, run } = usePending({ announce: false })
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(item.title)
   const [description, setDescription] = useState(item.description ?? '')
@@ -295,7 +295,7 @@ function ParticipantRow({
   readOnly: boolean
 }) {
   const confirm = useMutation(api.portal.confirmParticipation)
-  const { pending, error, run } = usePending()
+  const { pending, error, run } = usePending({ announce: false })
 
   const decide = (to: 'confirmed' | 'declined') => {
     void run(async () => {

@@ -147,10 +147,23 @@ export function ReviewPanel({
   const latest = useRef({ applyAnswer, doCommit, readOnly, soloNumeric })
   latest.current = { applyAnswer, doCommit, readOnly, soloNumeric }
 
+  // WCAG 2.1.4 Character Key Shortcuts: an unqualified 1-9 shortcut bound to
+  // the window is a trap for anyone driving the page by voice, where a stray
+  // recognised digit silently scores a proposal. There is no remap and no off
+  // switch here, so the criterion is met the third way — the shortcut is live
+  // only while focus is inside this panel. The panel takes focus when a
+  // proposal opens (below), so the shortcut still works the moment you arrive.
+  const panelRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    panelRef.current?.focus({ preventScroll: true })
+  }, [assignment.proposal._id])
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const now = latest.current
       if (now.readOnly) return
+      if (panelRef.current?.contains(document.activeElement) !== true) return
       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
         event.preventDefault()
         now.doCommit()
@@ -200,10 +213,15 @@ export function ReviewPanel({
       actions={<StatusPill status={REVIEW_STATUS_LABEL[assignment.status]} />}
     >
       <div
+        ref={panelRef}
+        tabIndex={-1}
         style={{
           display: 'flex',
           flexDirection: 'column',
           gap: 'var(--space-5)',
+          // The panel is a focus target for the shortcut scoping above, not a
+          // control; it must not draw a focus ring for that.
+          outline: 'none',
         }}
       >
         {conflicted ? (
@@ -277,9 +295,11 @@ export function ReviewPanel({
               <Field
                 key={field.id}
                 label={field.label}
+                htmlFor={`review-${field.id}`}
                 required={field.required}
               >
                 <Select
+                  id={`review-${field.id}`}
                   value={typeof value === 'string' ? value : ''}
                   disabled={readOnly}
                   onChange={(e) => {

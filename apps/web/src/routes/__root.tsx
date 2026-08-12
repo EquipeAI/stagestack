@@ -13,6 +13,7 @@ import * as React from 'react'
 import type { ConvexQueryClient } from '@convex-dev/react-query'
 import type { ConvexReactClient } from 'convex/react'
 import type { QueryClient } from '@tanstack/react-query'
+import { LiveRegion } from '~/components/LiveRegion'
 import { RouteNotFound } from '~/components/RouteBoundary'
 import { useKeyboardInset } from '~/lib/useKeyboardInset'
 import { preconnectOrigins } from '~/lib/preconnect'
@@ -236,6 +237,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       <body>
         {children}
         {/* Inside <body> so it renders nothing outside the document tree. */}
+        {/* Mounted at the root, not beside the toasts: every route runs
+            mutations through usePending, and /invite has no toast viewport. */}
+        <LiveRegion />
         <ClerkAuthCacheReset />
         <Scripts />
       </body>

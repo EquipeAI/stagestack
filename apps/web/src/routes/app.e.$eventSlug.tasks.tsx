@@ -369,6 +369,9 @@ function InstancesPanel({
                 key={chip.id}
                 size="sm"
                 variant={filter === chip.id ? 'secondary' : 'ghost'}
+                // Which chip is active is otherwise carried by the variant's
+                // styling alone, which a screen reader never sees.
+                aria-pressed={filter === chip.id}
                 disabled={counts[chip.id] === 0 && chip.id !== 'all'}
                 onClick={() => {
                   setFilter(chip.id)

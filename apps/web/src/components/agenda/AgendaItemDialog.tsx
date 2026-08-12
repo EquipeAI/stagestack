@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import { DEFAULT_DURATION_MS } from './model'
+import { ConflictList } from './ConflictList'
 import type { BoardAgendaItem, BoardEvent, BoardRoom } from './model'
 import type { Id } from '@convex/_generated/dataModel'
 import {
@@ -212,6 +213,26 @@ export function AgendaItemDialog({
             }}
           />
         </Field>
+        {/* On the board an item's clash is a coloured mark with the reason in a
+            hover tooltip, which a touch device never opens — and unlike a
+            session this block had nowhere else to read it. The sentences are
+            the server's, printed verbatim. */}
+        {item !== undefined && item.conflicts.length > 0 ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 'var(--space-2)',
+            }}
+          >
+            <span
+              style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}
+            >
+              Conflicts
+            </span>
+            <ConflictList conflicts={item.conflicts} />
+          </div>
+        ) : null}
       </div>
     </Dialog>
   )

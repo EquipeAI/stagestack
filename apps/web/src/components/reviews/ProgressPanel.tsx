@@ -219,6 +219,7 @@ function RoundGroup({
             cell: (row: ProgressRow) => (
               <Checkbox
                 name={`select-${row.userId}`}
+                aria-label={`Select ${row.name ?? row.email ?? 'unknown reviewer'}`}
                 checked={selected.has(row.userId)}
                 onChange={() => onToggle(row.userId)}
               />
@@ -293,7 +294,7 @@ function AutoDistribute({
   roundId: Id<'reviewRounds'>
 }) {
   const autoDistribute = useMutation(api.reviews.autoDistribute)
-  const { pending, error, setError, run } = usePending()
+  const { pending, error, setError, run } = usePending({ announce: false })
   const [perProposal, setPerProposal] = useState('1')
   // A bulk assignment leaves a persistent result: "unplaced 2" has to still be
   // readable while the organizer works out who to add to the pool (W5).

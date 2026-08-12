@@ -40,7 +40,7 @@ export function SpeakingCard({
   const confirm = useMutation(api.portal.confirmParticipation)
   const withdraw = useMutation(api.portal.withdrawParticipation)
   const acknowledge = useMutation(api.portal.acknowledgeSlot)
-  const { pending, error, run } = usePending()
+  const { pending, error, run } = usePending({ announce: false })
   const [intent, setIntent] = useState<'confirmed' | 'declined' | null>(null)
   const [withdrawing, setWithdrawing] = useState(false)
 

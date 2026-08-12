@@ -303,6 +303,7 @@ function Abstracts({
           >
             <SearchInput
               value={q}
+              aria-label="Search proposals"
               placeholder="Search titles, submitters, answers"
               onChange={(e) => setQ(e.target.value)}
             />

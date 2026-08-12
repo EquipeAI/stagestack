@@ -352,7 +352,7 @@ function PoolEditor({
 }) {
   const addReviewer = useMutation(api.reviews.addRoundReviewer)
   const removeReviewer = useMutation(api.reviews.removeRoundReviewer)
-  const { pending, error, run } = usePending()
+  const { pending, error, run } = usePending({ announce: false })
 
   const inPool = new Set<string>(round.pool.map((member) => member.userId))
   const addable = members.filter((member) => !inPool.has(member.userId))

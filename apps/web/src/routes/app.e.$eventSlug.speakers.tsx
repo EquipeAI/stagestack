@@ -110,6 +110,7 @@ function Speakers() {
             }}
           >
             <SearchInput
+              aria-label="Search speakers"
               placeholder="Search name, email, company…"
               value={search}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => {

@@ -7,6 +7,7 @@ import type { Id } from '@convex/_generated/dataModel'
 import { Button, Callout, Dialog, Field, Input, Textarea } from '~/ds'
 import { TaskCommentThread } from '~/components/tasks/TaskCommentThread'
 import { UploadVersionList } from '~/components/tasks/UploadVersionList'
+import { FileButton } from '~/components/FileButton'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { pushToast } from '~/components/toast'
@@ -554,18 +555,13 @@ function UploadsDialog({
               Uploading…
             </Button>
           ) : (
-            <Button as="label" iconLeft="upload">
-              <input
-                type="file"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  const file = e.target.files?.[0]
-                  e.target.value = ''
-                  if (file !== undefined) void upload(file)
-                }}
-              />
+            <FileButton
+              onFile={(file) => {
+                void upload(file)
+              }}
+            >
               Upload on their behalf
-            </Button>
+            </FileButton>
           )}
           <Button variant="primary" disabled={uploading} onClick={onClose}>
             Close

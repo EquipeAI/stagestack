@@ -182,6 +182,24 @@ function PublicEventPage() {
   )
 }
 
+// The tab strip is the only thing naming the section between the hero's <h1>
+// and the widgets' <h3>s, and a tab is not a heading — so the level sequence
+// skipped h2 on this page. The widgets are shared with /embed/<slug>, which has
+// its own <h2> (ProgramView's SectionHeading), so the missing level is supplied
+// here rather than inside a widget. Clipped, not `display:none`: a hidden
+// heading is not in the accessibility tree at all.
+const CLIPPED: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clipPath: 'inset(50%)',
+  whiteSpace: 'nowrap',
+  border: 0,
+}
+
 // ── widget nav ────────────────────────────────────────────────────────────
 function ProgramWidgets({ program }: { program: PublicProgram }) {
   const search = Route.useSearch()
@@ -256,6 +274,7 @@ function ProgramWidgets({ program }: { program: PublicProgram }) {
           }
         />
       </div>
+      <h2 style={CLIPPED}>{tabs.find((t) => t.id === view)?.label ?? 'Program'}</h2>
       {view === 'sessions' ? (
         <SessionsCatalog program={program} url={controller} />
       ) : null}

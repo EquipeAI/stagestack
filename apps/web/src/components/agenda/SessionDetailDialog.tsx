@@ -13,6 +13,7 @@ import {
   releaseState,
   slotClock,
 } from './model'
+import { ConflictList } from './ConflictList'
 import type { ReactNode } from 'react'
 import type { BoardEvent, BoardRoom, BoardSession } from './model'
 import type { Id } from '@convex/_generated/dataModel'
@@ -251,23 +252,7 @@ export function SessionDetailDialog({
         {/* Conflicts */}
         {session.conflicts.length > 0 ? (
           <Section title="Conflicts">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-              {session.conflicts.map((c, i) => (
-                <div
-                  key={`${c.kind}-${c.withId}-${i}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--space-2)',
-                  }}
-                >
-                  <Badge tone={c.level === 'blocker' ? 'blocked' : 'attention'} dot>
-                    {c.level === 'blocker' ? 'Blocker' : 'Warning'}
-                  </Badge>
-                  <span style={{ color: 'var(--text-secondary)' }}>{c.message}</span>
-                </div>
-              ))}
-            </div>
+            <ConflictList conflicts={session.conflicts} />
           </Section>
         ) : null}
 

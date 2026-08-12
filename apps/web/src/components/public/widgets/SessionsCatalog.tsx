@@ -209,6 +209,7 @@ export function SessionsCatalog({
       >
         <div style={{ flex: '1 1 16rem', maxWidth: '24rem' }}>
           <SearchInput
+            aria-label="Search sessions and speakers"
             placeholder="Search sessions and speakers"
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -217,6 +218,7 @@ export function SessionsCatalog({
           />
         </div>
         <span
+          role="status"
           style={{ font: 'var(--type-mono)', color: 'var(--text-tertiary)' }}
         >
           {filtered.length} of {sessions.length} session
@@ -272,6 +274,7 @@ export function SessionsCatalog({
       </div>
       {filtered.length === 0 ? (
         <p
+          role="status"
           style={{
             font: 'var(--type-body)',
             color: 'var(--text-tertiary)',

@@ -11,6 +11,7 @@ import {
   Card,
   Dialog,
   Field,
+  Icon,
   IconButton,
   Input,
   Select,
@@ -37,14 +38,16 @@ export const Route = createFileRoute('/app/e/$eventSlug/settings')({
 })
 
 /** Swatches are design-system colour tokens, so tracks stay on-palette. */
+// Each swatch is named, not described by its CSS variable: `aria-label={`Use
+// colour ${color}`}` used to announce "Use colour var(--amber-400)".
 const PALETTE = [
-  'var(--amber-400)',
-  'var(--jade-500)',
-  'var(--beam-500)',
-  'var(--iris-500)',
-  'var(--rust-500)',
-  'var(--ember-500)',
-  'var(--gray-500)',
+  { color: 'var(--amber-400)', name: 'Amber' },
+  { color: 'var(--jade-500)', name: 'Jade' },
+  { color: 'var(--beam-500)', name: 'Blue' },
+  { color: 'var(--iris-500)', name: 'Violet' },
+  { color: 'var(--rust-500)', name: 'Red' },
+  { color: 'var(--ember-500)', name: 'Orange' },
+  { color: 'var(--gray-500)', name: 'Grey' },
 ]
 
 function Settings() {
@@ -823,33 +826,51 @@ function List({ children }: { children: React.ReactNode }) {
 }
 
 function Swatches({
+  label,
   value,
   onChange,
 }: {
+  /** What these swatches colour — a track, a tag — so the group is named. */
+  label: string
   value: string
   onChange: (color: string) => void
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-      {PALETTE.map((color) => (
-        <button
-          key={color}
-          type="button"
-          aria-label={`Use colour ${color}`}
-          onClick={() => onChange(value === color ? '' : color)}
-          style={{
-            width: 'var(--space-6)',
-            height: 'var(--space-6)',
-            borderRadius: 'var(--radius-pill)',
-            background: color,
-            cursor: 'pointer',
-            border:
-              value === color
+    <div
+      role="group"
+      aria-label={label}
+      style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}
+    >
+      {PALETTE.map((swatch) => {
+        const selected = value === swatch.color
+        return (
+          <button
+            key={swatch.color}
+            type="button"
+            aria-label={swatch.name}
+            // Selection was a thicker, darker border and nothing else — a
+            // colour-only state on a control whose whole content is colour.
+            aria-pressed={selected}
+            onClick={() => onChange(selected ? '' : swatch.color)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 'var(--space-6)',
+              height: 'var(--space-6)',
+              borderRadius: 'var(--radius-pill)',
+              background: swatch.color,
+              color: 'var(--gray-0)',
+              cursor: 'pointer',
+              border: selected
                 ? 'var(--space-half) solid var(--gray-900)'
                 : 'var(--space-px) solid var(--border-default)',
-          }}
-        />
-      ))}
+            }}
+          >
+            {selected ? <Icon name="check" size={12} /> : null}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -951,7 +972,7 @@ function TracksSection({
           </Field>
         </div>
         <Field label="Colour" optional hint="Shown on agenda blocks and tags.">
-          <Swatches value={color} onChange={setColor} />
+          <Swatches label="Track colour" value={color} onChange={setColor} />
         </Field>
         <div>
           <Button iconLeft="plus" onClick={addItem} disabled={lib.pending}>
@@ -1031,7 +1052,7 @@ function TagsSection({
           />
         </Field>
         <Field label="Colour" optional>
-          <Swatches value={color} onChange={setColor} />
+          <Swatches label="Tag colour" value={color} onChange={setColor} />
         </Field>
         <div>
           <Button iconLeft="plus" onClick={addItem} disabled={lib.pending}>

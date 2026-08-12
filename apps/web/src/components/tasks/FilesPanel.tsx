@@ -176,6 +176,7 @@ export function FilesPanel({
           >
             <Select
               size="sm"
+              aria-label="Group files by"
               value={grouping}
               options={GROUPING_OPTIONS}
               onChange={(e) => {
@@ -224,9 +225,18 @@ export function FilesPanel({
             {
               key: 'select',
               width: '2.5rem',
-              header: <Checkbox checked={allSelected} onChange={toggleAll} />,
+              header: (
+                <Checkbox
+                  aria-label="Select every file"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                />
+              ),
               cell: (row: FileRow) => (
                 <Checkbox
+                  // Named by the file it belongs to: the column header is a
+                  // checkbox, so a row box read on its own says nothing.
+                  aria-label={`Select ${row.filename}`}
                   checked={selectedIds.has(row.fileId)}
                   onChange={() => {
                     toggleOne(row.fileId)
@@ -362,6 +372,13 @@ export function FilesPanel({
                     size="sm"
                     variant="ghost"
                     iconLeft="mail"
+                    // The visible text is a bare count, which reads as a
+                    // number with no subject once out of the column.
+                    aria-label={
+                      row.commentCount === 0
+                        ? `Comment on ${row.filename}`
+                        : `${countLabel(row.commentCount, 'comment', 'comments')} on ${row.filename}`
+                    }
                     onClick={() => {
                       setThreadFor(row)
                     }}

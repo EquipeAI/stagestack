@@ -64,8 +64,11 @@ export function ConditionEditor({
       <span style={{ color: 'var(--text-secondary)', font: 'var(--type-caption)' }}>
         Show this {noun} only when
       </span>
+      {/* The three controls only make sense as parts of the sentence above,
+          which no label element can span — each is named on its own. */}
       <Select
         size="sm"
+        aria-label="Condition question"
         value={value.fieldId}
         options={candidates.map((f) => ({
           value: f.id,
@@ -75,6 +78,7 @@ export function ConditionEditor({
       />
       <Select
         size="sm"
+        aria-label="Condition operator"
         value={value.op}
         options={OP_OPTIONS}
         onChange={(e) =>
@@ -84,6 +88,7 @@ export function ConditionEditor({
       {options !== undefined && options.length > 0 ? (
         <Select
           size="sm"
+          aria-label="Condition value"
           value={value.value}
           options={[{ value: '', label: 'Choose an answer…' }, ...options]}
           onChange={(e) => onChange({ ...value, value: e.target.value })}
@@ -91,6 +96,7 @@ export function ConditionEditor({
       ) : (
         <Input
           size="sm"
+          aria-label="Condition value"
           value={value.value}
           placeholder="answer"
           onChange={(e) => onChange({ ...value, value: e.target.value })}

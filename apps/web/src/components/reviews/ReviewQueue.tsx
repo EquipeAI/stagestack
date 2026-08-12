@@ -160,11 +160,21 @@ function QueueItem({
   )
 }
 
-/** Done reads as a check; everything else as its state's dot. */
+/**
+ * Done reads as a check; everything else as its state's dot.
+ *
+ * Two accessibility rules shape this. `aria-label` on a role-less `<span>` is
+ * prohibited and most screen readers drop it, so each mark declares
+ * `role="img"` — and the inner `Icon` is `aria-hidden`, which would otherwise
+ * leave an empty element. And draft vs awaiting-review used to differ only by
+ * the dot's colour: a draft is now a ring and an untouched assignment a filled
+ * dot, so the difference survives without colour (WCAG 1.4.1).
+ */
 function StatusMark({ assignment }: { assignment: Assignment }) {
   if (assignment.status === 'conflict') {
     return (
       <span
+        role="img"
         aria-label={REVIEW_STATUS_LABEL[assignment.status]}
         style={{ color: 'var(--status-attention-fg)', display: 'flex' }}
       >
@@ -175,6 +185,7 @@ function StatusMark({ assignment }: { assignment: Assignment }) {
   if (!isUnfinished(assignment)) {
     return (
       <span
+        role="img"
         aria-label={REVIEW_STATUS_LABEL[assignment.status]}
         style={{ color: 'var(--status-success-fg)', display: 'flex' }}
       >
@@ -182,18 +193,20 @@ function StatusMark({ assignment }: { assignment: Assignment }) {
       </span>
     )
   }
+  const draft = assignment.status === 'draft'
   return (
     <span
+      role="img"
       aria-label={REVIEW_STATUS_LABEL[assignment.status]}
       style={{
         flex: 'none',
         width: 'var(--space-2)',
         height: 'var(--space-2)',
         borderRadius: 'var(--radius-full)',
-        background:
-          assignment.status === 'draft'
-            ? 'var(--status-attention-dot)'
-            : 'var(--status-info-dot)',
+        background: draft ? 'transparent' : 'var(--status-info-dot)',
+        boxShadow: draft
+          ? 'inset 0 0 0 var(--space-px) var(--status-attention-dot)'
+          : undefined,
       }}
     />
   )

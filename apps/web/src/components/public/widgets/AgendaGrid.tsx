@@ -384,6 +384,12 @@ function DayGrid({
                   <button
                     key={entry.sessionId}
                     type="button"
+                    // Room and time are encoded by column and vertical offset,
+                    // neither of which survives linearisation — so the block
+                    // has to say where and when it is out loud.
+                    aria-label={`${entry.title}, ${timeLabel}, ${
+                      room === GENERAL ? GENERAL_LABEL : room
+                    }`}
                     onClick={() => onOpen(entry)}
                     style={{
                       position: 'absolute',

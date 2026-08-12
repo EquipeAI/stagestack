@@ -15,13 +15,39 @@ const FOCUSABLE = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
+// Hidden in a way that can be established WITHOUT measuring: the `hidden`
+// attribute, an aria-hidden ancestor inside the surface, `display:none` /
+// `visibility:hidden` set inline or by a stylesheet. The FOCUSABLE selector
+// has already excluded `[disabled]`, `type=hidden` and `tabindex="-1"`.
+// jsdom implements every check used here.
+function hiddenWithoutGeometry(el, surface) {
+  for (let node = el; node && node !== surface; node = node.parentElement) {
+    if (node.hidden === true) return true;
+    if (node.getAttribute && node.getAttribute("aria-hidden") === "true") return true;
+    const style = node.ownerDocument.defaultView.getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") return true;
+  }
+  return false;
+}
+
 function visibleFocusables(surface) {
-  return Array.prototype.filter.call(
-    surface.querySelectorAll(FOCUSABLE),
-    function (el) {
-      return el.getClientRects().length > 0;
-    },
-  );
+  const all = Array.prototype.slice.call(surface.querySelectorAll(FOCUSABLE));
+  // Skip collapsed sections and `display:none` branches so Tab does not stop on
+  // something nobody can see.
+  const visible = all.filter(function (el) {
+    return el.getClientRects().length > 0;
+  });
+  if (visible.length > 0) return visible;
+  // …but "nothing has geometry" is not the same answer as "nothing is
+  // focusable". It is what a layout that has not happened yet reports — and
+  // what jsdom reports always — and taking it at face value silently drops the
+  // focus trap for the whole dialog. When NO candidate measures, the
+  // measurement is the thing that is broken, so fall back to the checks that
+  // do not need one rather than to the raw list: a genuinely hidden control
+  // must not become a Tab stop just because the page has not laid out.
+  return all.filter(function (el) {
+    return !hiddenWithoutGeometry(el, surface);
+  });
 }
 
 // How many dialogs currently want the page behind them frozen. Nested dialogs

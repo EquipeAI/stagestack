@@ -8,6 +8,7 @@ import {
   releaseBadge,
   releaseState,
 } from './model'
+import { conflictSummary } from './ConflictList'
 import type { CSSProperties } from 'react'
 import type {
   BoardRoom,
@@ -171,9 +172,15 @@ function ConflictMark({ block }: { block: PlacedBlock }) {
   const isBlocker = blockers.length > 0
   const source = isBlocker ? blockers : block.conflicts
   const message = source[0]?.message ?? ''
+  // Blocker and warning used to differ by colour alone — same glyph, same
+  // count. The shape now differs too, and the whole reason is in the
+  // element's accessible name so it is not locked inside a hover tooltip.
+  // The tap-reachable copy lives in the block's dialog (ConflictList).
   return (
     <Tooltip label={message}>
       <span
+        role="img"
+        aria-label={conflictSummary(block.conflicts)}
         style={{
           display: 'inline-flex',
           alignItems: 'center',
@@ -181,7 +188,7 @@ function ConflictMark({ block }: { block: PlacedBlock }) {
           color: isBlocker ? 'var(--status-blocked-fg)' : 'var(--status-attention-fg)',
         }}
       >
-        <Icon name="triangle-alert" size={14} />
+        <Icon name={isBlocker ? 'circle-alert' : 'triangle-alert'} size={14} />
         {source.length > 1 ? (
           <span
             style={{

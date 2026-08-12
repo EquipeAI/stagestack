@@ -395,7 +395,11 @@ function MySpeaking() {
 function useCreateOrg() {
   const createOrg = useMutation(api.orgs.create)
   const navigate = useNavigate()
-  const { pending, error, run } = usePending()
+  // Both mounts of this hook render the failure into an element that already
+  // announces — a Field error in onboarding, and the Callout below, which is
+  // given role="alert" for exactly that reason. Announcing here too would say
+  // it twice.
+  const { pending, error, run } = usePending({ announce: false })
 
   const submit = (name: string) =>
     run(async () => {
@@ -479,7 +483,13 @@ function NewOrgDialog({ onClose }: { onClose: () => void }) {
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        {error !== null ? <Callout tone="blocked">{error}</Callout> : null}
+        {/* Callout carries no implicit role; this is the only thing that
+            speaks the failure in this dialog. */}
+        {error !== null ? (
+          <Callout tone="blocked" role="alert">
+            {error}
+          </Callout>
+        ) : null}
         <Field label="Organization name" htmlFor="new-org-name">
           <Input
             id="new-org-name"

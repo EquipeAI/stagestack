@@ -17,6 +17,12 @@ export function SidebarNav({ header, groups = [], activeId, onSelect, footer, cl
                     key={it.id}
                     className="ss-navitem"
                     data-active={activeId === it.id}
+                    // `data-active` is a styling hook and nothing more. The
+                    // current entry is marked by an amber background alone
+                    // below 860px (the left edge bar is hidden there), so
+                    // without this the only signal of where you are is colour
+                    // — and there is none at all for a screen reader.
+                    aria-current={activeId === it.id ? "page" : undefined}
                     onClick={function () { if (onSelect) onSelect(it.id); }}
                   >
                     {it.icon ? <Icon name={it.icon} size={15} /> : null}

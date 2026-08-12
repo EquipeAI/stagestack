@@ -8,11 +8,11 @@
    can't express). Scoped under .mkt-*. */
 @import './marketing.css';
 
-@layer base {
-  .using-mouse * {
-    outline: none !important;
-  }
-}
+/* A `.using-mouse * { outline: none !important }` rule used to live here. It
+   was dead — nothing in the app ever set that class — and it was a landmine:
+   the day anything put it on <html>, every focus indicator in the product
+   would disappear (WCAG 2.4.7). `:focus-visible`, which the DS uses, already
+   does the job it was written for. */
 
 /* ── Event shell ──────────────────────────────────────────────────────────
    Desktop: a sticky 236px nav rail beside a scrolling page.
@@ -405,3 +405,29 @@
   font: var(--type-caption);
   color: var(--text-tertiary);
 }
+
+/* ── File chooser ─────────────────────────────────────────────────────────
+   `FileButton` keeps the real `<input type="file">` in the tab order and only
+   hides it visually, because a `display:none` input is not focusable and the
+   `<label>` around it never was — between them there used to be no keyboard
+   path to "Choose a file" at all. Clipping rather than hiding is what keeps
+   the native control operable. */
+.file-button__input {
+  position: absolute;
+  width: var(--space-px);
+  height: var(--space-px);
+  padding: var(--space-0);
+  margin: calc(var(--space-px) * -1);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+/* The focus ring has to move to the thing that is actually on screen: the
+   input owns focus, the label owns the pixels. */
+.file-button:focus-within {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+/* Disabled styling comes from the DS's own `.ss-btn[aria-disabled=true]`
+   rule; FileButton sets that attribute rather than restating the treatment. */

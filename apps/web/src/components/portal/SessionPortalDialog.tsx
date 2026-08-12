@@ -121,7 +121,7 @@ function ParticipantControls({
 }) {
   const setState = useMutation(api.sessions.setParticipationState)
   const invitePortal = useMutation(api.sessions.invitePortal)
-  const { pending, error, run } = usePending()
+  const { pending, error, run } = usePending({ announce: false })
   const name = personName(participant) || 'Unnamed contact'
   const withdrawn = participant.state === 'withdrawn'
 
@@ -243,7 +243,7 @@ function ManagerHandoff({
 }) {
   const startHandoff = useMutation(api.sessions.startManagerHandoff)
   const revokeHandoff = useMutation(api.sessions.revokeHandoff)
-  const { pending, error, setError, run } = usePending()
+  const { pending, error, setError, run } = usePending({ announce: false })
   const [email, setEmail] = useState('')
   const [sent, setSent] = useState<{
     handoffId: Id<'managerHandoffs'>

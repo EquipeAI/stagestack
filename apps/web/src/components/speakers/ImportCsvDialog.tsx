@@ -13,6 +13,7 @@ import {
   Select,
   Textarea,
 } from '~/ds'
+import { FileButton } from '~/components/FileButton'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 
@@ -238,6 +239,7 @@ export function ImportCsvDialog({
 
         <Field
           label="CSV file"
+          htmlFor="speaker-csv-file"
           hint={
             filename === null
               ? 'Only the mapped columns are imported.'
@@ -250,19 +252,17 @@ export function ImportCsvDialog({
                 {parsing ? 'Reading…' : 'Choose a file'}
               </Button>
             ) : (
-              <Button as="label" size="sm" iconLeft="file-text">
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    e.target.value = ''
-                    if (file !== undefined) void parse(file)
-                  }}
-                />
+              <FileButton
+                id="speaker-csv-file"
+                size="sm"
+                iconLeft="file-text"
+                accept=".csv,text/csv"
+                onFile={(file) => {
+                  void parse(file)
+                }}
+              >
                 {filename === null ? 'Choose a file' : 'Choose another file'}
-              </Button>
+              </FileButton>
             )}
           </div>
         </Field>
