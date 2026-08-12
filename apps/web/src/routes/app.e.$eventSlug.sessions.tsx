@@ -203,7 +203,6 @@ function Sessions() {
                   <SessionContentCell
                     eventSlug={eventSlug}
                     session={row.session}
-                    timezone={event.event.timezone}
                     archived={archived}
                   />
                 ),

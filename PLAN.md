@@ -240,7 +240,7 @@ The single biggest remaining trust issue in the review.
 
 ## W3 — Snapshots, not inverse edits
 
-- [ ] **Reframe the history model.** `sessionRevisions` (`convex/schema.ts:262`)
+- [x] **Reframe the history model.** `sessionRevisions` (`convex/schema.ts:262`)
       stores `before` and `after` per edit as **full snapshots** (no chain
       replay needed), so a snapshot list is already derivable: **Current**, then
       one entry per edit labelled "Before edit on 11 Aug at 13:42". Scope: these
@@ -249,16 +249,16 @@ The single biggest remaining trust issue in the review.
       snapshot UI must not imply they are. Build that projection in `convex/model/sessions.ts`
       (near `listRevisions`, ~line 1145) and stop presenting rows as actions
       whose direction the organizer must infer.
-- [ ] **Restore previews the diff first.** Action becomes "Restore this
+- [x] **Restore previews the diff first.** Action becomes "Restore this
       snapshot" → field-level preview (`Title: X → Y`, `Format: Talk → empty`,
       `Description: unchanged`) → confirm. Note the existing sharp edge in the
       preview: absent fields restore as **cleared**, not as kept-current
       (`convex/model/sessions.ts:1180`) — that is defensible, but it must be
       shown, not discovered.
-- [ ] **Undo the restore.** The restore already writes its own revision
+- [x] **Undo the restore.** The restore already writes its own revision
       (`restoreRevision`, ~line 1169); expose that as a one-click Undo in the
       persistent result (W5) rather than expecting a second manual restore.
-- [ ] **Group restoration entries** visually in the log so a restore reads as
+- [x] **Group restoration entries** visually in the log so a restore reads as
       one event, not as another edit war.
 - *Mobile*: the diff is a stacked before/after list, not a two-column table.
 

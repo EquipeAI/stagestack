@@ -138,12 +138,45 @@ export const listRevisions = eventQuery({
   },
 });
 
+/** W3: the restorable states of a session's content — Current first, then one
+ * entry per revision, newest first, each labelled in event time by the model. */
+export const listSnapshots = eventQuery({
+  args: { sessionId: v.id("sessions") },
+  returns: v.object({
+    entries: v.array(
+      v.object({
+        key: v.string(),
+        revisionId: v.union(vv.id("sessionRevisions"), v.null()),
+        label: v.string(),
+        editedAt: v.union(v.number(), v.null()),
+        editorName: v.union(v.string(), v.null()),
+        editorEmail: v.union(v.string(), v.null()),
+        content: vContentFields,
+        origin: v.union(
+          v.literal("current"),
+          v.literal("edit"),
+          v.literal("restore"),
+        ),
+        originLabel: v.union(v.string(), v.null()),
+      }),
+    ),
+    /** True when the history is longer than the projection cap — the list is
+     * the newest slice, not "one entry per edit". */
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    return await Sessions.listSnapshots(ctx, ctx.caller, args.sessionId);
+  },
+});
+
 export const restoreRevision = eventMutation({
   args: { revisionId: v.id("sessionRevisions") },
-  returns: v.null(),
+  returns: v.object({
+    undoRevisionId: v.union(vv.id("sessionRevisions"), v.null()),
+    message: v.string(),
+  }),
   handler: async (ctx, args) => {
-    await Sessions.restoreRevision(ctx, ctx.caller, args.revisionId);
-    return null;
+    return await Sessions.restoreRevision(ctx, ctx.caller, args.revisionId);
   },
 });
 

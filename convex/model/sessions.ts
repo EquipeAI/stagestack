@@ -15,6 +15,13 @@ import {
   resolveFormatId,
 } from "./library";
 import { republishIfPublished } from "./publish";
+import {
+  CURRENT_SNAPSHOT_LABEL,
+  editSnapshotLabel,
+  restoreSnapshotLabel,
+  restoredFromSentence,
+  type SessionContentFields as SharedContentFields,
+} from "../shared/sessionContent";
 import { instantiateForSession } from "./tasks";
 import { eventUserDisplayName } from "./userDisplay";
 import { assertEventActive, assertText, normalizeEmail } from "./validation";
@@ -1046,11 +1053,7 @@ export async function setContentStatus(
 
 // ── Content editing & revision history (W5: CNT-09/CNT-11) ───────────────
 
-type SessionContentFields = {
-  title: string;
-  description?: string;
-  format?: string;
-};
+type SessionContentFields = SharedContentFields;
 
 function contentFields(session: Doc<"sessions">): SessionContentFields {
   return {
@@ -1069,17 +1072,22 @@ export async function recordRevision(
     session: Doc<"sessions">;
     after: SessionContentFields;
     editedBy: Id<"users">;
+    /** Set only by `restoreRevision`, so the history can group the restore. */
+    origin?: RevisionOrigin;
   },
-): Promise<void> {
-  await ctx.db.insert("sessionRevisions", {
+): Promise<Id<"sessionRevisions">> {
+  return await ctx.db.insert("sessionRevisions", {
     eventId: args.event._id,
     sessionId: args.session._id,
     editedBy: args.editedBy,
     editedAt: Date.now(),
     before: contentFields(args.session),
     after: args.after,
+    origin: args.origin,
   });
 }
+
+export type RevisionOrigin = NonNullable<Doc<"sessionRevisions">["origin"]>;
 
 /** Organizer content edit from the central admin view (CNT-09): patches the
  * content fields, records the revision, keeps public output current. */
@@ -1094,7 +1102,11 @@ export async function updateContent(
     /** null clears the override and falls back to the format's default. */
     durationMinutes?: number | null;
   },
-): Promise<void> {
+  options?: {
+    /** Marks the revision this save records as the product of a restore. */
+    origin?: RevisionOrigin;
+  },
+): Promise<{ revisionId: Id<"sessionRevisions"> | null }> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
   const session = await ctx.db.get("sessions", sessionId);
@@ -1150,14 +1162,16 @@ export async function updateContent(
     nextFormatId === session.formatId &&
     nextDuration === session.durationMinutes
   ) {
-    return;
+    return { revisionId: null };
   }
+  let revisionId: Id<"sessionRevisions"> | null = null;
   if (!contentUnchanged) {
-    await recordRevision(ctx, {
+    revisionId = await recordRevision(ctx, {
       event: caller.event,
       session,
       after: next,
       editedBy: caller.user._id,
+      origin: options?.origin,
     });
   }
   await ctx.db.patch("sessions", sessionId, {
@@ -1175,6 +1189,7 @@ export async function updateContent(
     targetId: sessionId,
     meta: { fields: Object.keys(patch) },
   });
+  return { revisionId };
 }
 
 export type RevisionRow = {
@@ -1221,13 +1236,115 @@ export async function listRevisions(
   return out.sort((a, b) => b.editedAt - a.editedAt);
 }
 
+// ── Snapshot projection (W3) ─────────────────────────────────────────────
+
+/**
+ * One restorable state of the session's content. The list is
+ * **Current, then one entry per revision, newest first** — the organizer picks
+ * a state to go back to, rather than reasoning about the direction of an edit.
+ *
+ * `label` and `originLabel` are composed HERE, in event time, and rendered
+ * verbatim (one explanation, one producer). Content fields only: schedule,
+ * track and tags are not versioned and must not appear here.
+ */
+export type SnapshotEntry = {
+  /** Stable React key; the revision id, or "current". */
+  key: string;
+  /** null on the Current entry — there is nothing to restore it onto. */
+  revisionId: Id<"sessionRevisions"> | null;
+  label: string;
+  /** null on Current: it is now, not a moment in the log. */
+  editedAt: number | null;
+  editorName: string | null;
+  editorEmail: string | null;
+  content: SessionContentFields;
+  /** "edit" | "restore" — grouping marker for the history list. */
+  origin: "current" | "edit" | "restore";
+  /** Only on restore entries: "Restored the snapshot from 11 Aug at 13:42 UTC". */
+  originLabel: string | null;
+};
+
+/** History cap: past this many revisions the projection reports `truncated`
+ * rather than silently presenting a prefix as the whole history. */
+const SNAPSHOT_CAP = 200;
+
+export async function listSnapshots(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  sessionId: Id<"sessions">,
+): Promise<{ entries: SnapshotEntry[]; truncated: boolean }> {
+  requireOrganizer(caller);
+  const session = await ctx.db.get("sessions", sessionId);
+  if (session === null || session.eventId !== caller.event._id) {
+    notFound("session", "No such session on this event.");
+  }
+  const timezone = caller.event.timezone;
+  // Probe one past the cap so a long history is REPORTED as truncated instead
+  // of silently presenting the newest 200 edits as "one entry per edit".
+  const probed = await ctx.db
+    .query("sessionRevisions")
+    .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+    .order("desc")
+    .take(SNAPSHOT_CAP + 1);
+  const truncated = probed.length > SNAPSHOT_CAP;
+  const rows = truncated ? probed.slice(0, SNAPSHOT_CAP) : probed;
+  const entries: SnapshotEntry[] = [
+    {
+      key: "current",
+      revisionId: null,
+      label: CURRENT_SNAPSHOT_LABEL,
+      editedAt: null,
+      editorName: null,
+      editorEmail: null,
+      content: contentFields(session),
+      origin: "current",
+      originLabel: null,
+    },
+  ];
+  // `take` already returned newest-first off the index; sort defensively so the
+  // contract "Current, then newest revision" holds whatever the read order is.
+  const ordered = [...rows].sort((a, b) => b.editedAt - a.editedAt);
+  for (const row of ordered) {
+    const editor = await ctx.db.get("users", row.editedBy);
+    const restored = row.origin?.kind === "restore";
+    entries.push({
+      key: row._id,
+      revisionId: row._id,
+      // The snapshot IS `before`: the content as it stood until this edit.
+      label: restored
+        ? restoreSnapshotLabel(row.editedAt, timezone)
+        : editSnapshotLabel(row.editedAt, timezone),
+      editedAt: row.editedAt,
+      editorName:
+        (await eventUserDisplayName(ctx, caller.event._id, editor)) ??
+        "Event team member",
+      editorEmail: editor?.email ?? null,
+      content: row.before,
+      origin: restored ? "restore" : "edit",
+      originLabel: restored
+        ? restoredFromSentence(row.origin?.restoredSnapshotAt ?? null, timezone)
+        : null,
+    });
+  }
+  return { entries, truncated };
+}
+
+export type RestoreResult = {
+  /** The revision the restore itself recorded — restoring THAT undoes this
+   * restore. null when the snapshot already matched the live content, so
+   * nothing was written and there is nothing to undo. */
+  undoRevisionId: Id<"sessionRevisions"> | null;
+  /** The persistent result sentence, composed once, in event time. */
+  message: string;
+};
+
 /** Restore the content as it was BEFORE the given revision (CNT-11). The
  * restore itself is recorded as a new revision, so nothing is ever lost. */
 export async function restoreRevision(
   ctx: MutationCtx,
   caller: EventCaller,
   revisionId: Id<"sessionRevisions">,
-): Promise<void> {
+): Promise<RestoreResult> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
   const revision = await ctx.db.get("sessionRevisions", revisionId);
@@ -1235,12 +1352,33 @@ export async function restoreRevision(
     notFound("revision", "No such revision on this event.");
   }
   // Absent fields restore as CLEARED, not as kept-current — "" is
-  // updateContent's explicit clear.
-  await updateContent(ctx, caller, revision.sessionId, {
-    title: revision.before.title,
-    description: revision.before.description ?? "",
-    format: revision.before.format ?? "",
-  });
+  // updateContent's explicit clear. The restore diff shown before this call
+  // says so in as many words (shared/sessionContent.ts CLEARED_NOTE).
+  const { revisionId: undoRevisionId } = await updateContent(
+    ctx,
+    caller,
+    revision.sessionId,
+    {
+      title: revision.before.title,
+      description: revision.before.description ?? "",
+      format: revision.before.format ?? "",
+    },
+    {
+      origin: {
+        kind: "restore",
+        restoredRevisionId: revision._id,
+        restoredSnapshotAt: revision.editedAt,
+      },
+    },
+  );
+  const from = restoredFromSentence(revision.editedAt, caller.event.timezone);
+  return {
+    undoRevisionId,
+    message:
+      undoRevisionId === null
+        ? `${from} — nothing changed: that snapshot already matched the current content.`
+        : `${from}. The previous content is kept, so this restore can be undone.`,
+  };
 }
 
 /** Post-commit half of `createDirectSession`: render + send the invitation

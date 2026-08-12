@@ -62,6 +62,7 @@ import type * as shared_importPlan from "../shared/importPlan.js";
 import type * as shared_jobTypes from "../shared/jobTypes.js";
 import type * as shared_reminderSchedule from "../shared/reminderSchedule.js";
 import type * as shared_scorecard from "../shared/scorecard.js";
+import type * as shared_sessionContent from "../shared/sessionContent.js";
 import type * as speakers from "../speakers.js";
 import type * as tasks from "../tasks.js";
 import type * as team from "../team.js";
@@ -130,6 +131,7 @@ declare const fullApi: ApiFromModules<{
   "shared/jobTypes": typeof shared_jobTypes;
   "shared/reminderSchedule": typeof shared_reminderSchedule;
   "shared/scorecard": typeof shared_scorecard;
+  "shared/sessionContent": typeof shared_sessionContent;
   speakers: typeof speakers;
   tasks: typeof tasks;
   team: typeof team;

@@ -288,6 +288,24 @@ export default defineSchema({
       description: v.optional(v.string()),
       format: v.optional(v.string()),
     }),
+    /**
+     * Present only when this revision was written BY a restore (W3), so the
+     * history can render it as one event — "Restored the snapshot from …" —
+     * instead of as another anonymous edit. Optional, so every row written
+     * before W3 stays valid and no migration is needed; absence means
+     * "an ordinary edit".
+     *
+     * `restoredSnapshotAt` is denormalized on purpose: the grouping sentence
+     * must not need a second read per row, and it must survive even if the
+     * referenced revision ever becomes unreachable.
+     */
+    origin: v.optional(
+      v.object({
+        kind: v.literal("restore"),
+        restoredRevisionId: v.id("sessionRevisions"),
+        restoredSnapshotAt: v.number(),
+      }),
+    ),
   }).index("by_sessionId", ["sessionId"]),
 
   // Comment thread on a task instance's uploaded file(s) — speaker and
