@@ -22,13 +22,19 @@ export const LEAD = 2.6;
 
 const ms = (n: number) => Math.max(0, Math.round((n / 1000) * FPS));
 
+/** Region of the 1920x1080 recording to show, in 0..1 source coords. Full-page
+ *  at half width is useless here: the whole beat rests on a two-digit number
+ *  in a sidebar, and at panel scale that is about ten pixels tall. */
+type Region = { x: number; y: number; w: number };
+
 const Panel: React.FC<{
   clip: string;
   label: string;
   trimBefore: number;
   durationInFrames: number;
   delay: number;
-}> = ({ clip, label, trimBefore, durationInFrames, delay }) => {
+  region: Region;
+}> = ({ clip, label, trimBefore, durationInFrames, delay, region }) => {
   const frame = useCurrentFrame();
   return (
     <div
@@ -70,7 +76,14 @@ const Panel: React.FC<{
           src={staticFile(`clips/${clip}.mp4`)}
           trimBefore={trimBefore}
           durationInFrames={durationInFrames}
-          style={{ width: "100%", height: "100%", objectFit: "fill" }}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "fill",
+            scale: 1 / region.w,
+            // Clamped so the zoom can never pull empty space into frame.
+            translate: `${(0.5 - Math.min(Math.max(region.x, region.w / 2), 1 - region.w / 2)) * 100 * (1 / region.w)}% ${(0.5 - Math.min(Math.max(region.y, region.w / 2), 1 - region.w / 2)) * 100 * (1 / region.w)}%`,
+          }}
         />
       </div>
     </div>
@@ -94,6 +107,8 @@ export const Split: React.FC<{ durationInFrames: number }> = ({
         trimBefore={ms(offsets.speaker - LEAD * 1000)}
         durationInFrames={durationInFrames}
         delay={0}
+        // The task list, where the box gets ticked.
+        region={{ x: 0.5, y: 0.54, w: 0.62 }}
       />
       <Panel
         clip="realtime-organizer"
@@ -101,6 +116,8 @@ export const Split: React.FC<{ durationInFrames: number }> = ({
         trimBefore={ms(offsets.organizer - LEAD * 1000)}
         durationInFrames={durationInFrames}
         delay={6}
+        // The sidebar, where the Tasks badge counts down.
+        region={{ x: 0.2, y: 0.45, w: 0.42 }}
       />
     </div>
   </AbsoluteFill>
