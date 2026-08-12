@@ -28,7 +28,7 @@
   --surface-overlay:rgba(10,14,20,0.48);
   --border-subtle:var(--gray-100);--border-default:var(--gray-200);--border-strong:var(--gray-300);--border-inverse:var(--gray-700);
   --text-inverse:var(--gray-0);--text-brand:var(--amber-700);--text-link:var(--beam-600);--text-link-hover:var(--beam-700);
-  --focus-ring:rgba(255,175,26,0.45);--focus-ring-danger:rgba(224,62,62,0.30);
+  --focus-ring:rgba(255,175,26,0.45);--focus-ring-danger:rgba(224,62,62,0.30);--focus-ring-edge:var(--gray-900);
   --shadow-color:16,24,40; /* @kind other */
 
   /* ---- Status system (paired bg / fg / dot per state) ---- */
@@ -58,7 +58,7 @@
   --surface-overlay:rgba(0,0,0,0.66);
   --border-subtle:var(--gray-200);--border-default:var(--gray-300);--border-strong:var(--gray-400);--border-inverse:var(--gray-700);
   --text-inverse:var(--gray-0);--text-brand:var(--amber-300);--text-link:#89ADFF;--text-link-hover:#B6CCFF;
-  --focus-ring:rgba(255,183,51,0.50);--focus-ring-danger:rgba(255,107,107,0.34);
+  --focus-ring:rgba(255,183,51,0.50);--focus-ring-danger:rgba(255,107,107,0.34);--focus-ring-edge:var(--gray-950);
   --shadow-color:0,0,0; /* @kind other */
   --sheen:inset 0 1px 0 rgba(255,255,255,0.06); /* @kind shadow */
 }
@@ -78,7 +78,7 @@
   --surface-overlay:rgba(10,14,20,0.48);
   --border-subtle:var(--gray-100);--border-default:var(--gray-200);--border-strong:var(--gray-300);--border-inverse:var(--gray-700);
   --text-inverse:var(--gray-0);--text-brand:var(--amber-700);--text-link:var(--beam-600);--text-link-hover:var(--beam-700);
-  --focus-ring:rgba(255,175,26,0.45);--focus-ring-danger:rgba(224,62,62,0.30);
+  --focus-ring:rgba(255,175,26,0.45);--focus-ring-danger:rgba(224,62,62,0.30);--focus-ring-edge:var(--gray-900);
   --shadow-color:16,24,40; /* @kind other */
   color:var(--text-primary);
 }
@@ -98,7 +98,7 @@
   --surface-overlay:rgba(0,0,0,0.66);
   --border-subtle:var(--gray-200);--border-default:var(--gray-300);--border-strong:var(--gray-400);--border-inverse:var(--gray-700);
   --text-inverse:var(--gray-0);--text-brand:var(--amber-300);--text-link:#89ADFF;--text-link-hover:#B6CCFF;
-  --focus-ring:rgba(255,183,51,0.50);--focus-ring-danger:rgba(255,107,107,0.34);
+  --focus-ring:rgba(255,183,51,0.50);--focus-ring-danger:rgba(255,107,107,0.34);--focus-ring-edge:var(--gray-950);
   --shadow-color:0,0,0; /* @kind other */
   --sheen:inset 0 1px 0 rgba(255,255,255,0.06); /* @kind shadow */
   color:var(--text-primary);

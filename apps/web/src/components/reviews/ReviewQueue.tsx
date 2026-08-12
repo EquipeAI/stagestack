@@ -16,7 +16,11 @@ export function ReviewQueue({
   selectedId: Id<'reviews'> | null
   onSelect: (reviewId: Id<'reviews'>) => void
 }) {
-  const done = submittedCount(assignments)
+  const actionableAssignments = assignments.filter(
+    (row) => row.status !== 'conflict',
+  )
+  const conflictCount = assignments.length - actionableAssignments.length
+  const done = submittedCount(actionableAssignments)
 
   return (
     <nav
@@ -50,9 +54,24 @@ export function ReviewQueue({
             color: 'var(--text-tertiary)',
           }}
         >
-          {done}/{assignments.length}
+          {done}/{actionableAssignments.length}
         </span>
       </div>
+      {conflictCount > 0 ? (
+        <span
+          role="status"
+          style={{
+            padding: 'var(--space-2)',
+            borderRadius: 'var(--radius-control)',
+            background: 'var(--status-attention-bg)',
+            color: 'var(--status-attention-fg)',
+            font: 'var(--type-caption)',
+          }}
+        >
+          {conflictCount} conflict{conflictCount === 1 ? '' : 's'} excluded from
+          the actionable queue.
+        </span>
+      ) : null}
       <ul
         style={{
           listStyle: 'none',
@@ -63,7 +82,7 @@ export function ReviewQueue({
           gap: 'var(--space-px)',
         }}
       >
-        {assignments.map((assignment) => (
+        {actionableAssignments.map((assignment) => (
           <li key={assignment.reviewId}>
             <QueueItem
               assignment={assignment}
@@ -89,10 +108,12 @@ function QueueItem({
   onSelect: () => void
 }) {
   const unfinished = isUnfinished(assignment)
+  const conflict = assignment.status === 'conflict'
   return (
     <button
       type="button"
-      onClick={onSelect}
+      disabled={conflict}
+      onClick={conflict ? undefined : onSelect}
       aria-current={selected ? 'true' : undefined}
       title={`${assignment.proposal.title} — ${REVIEW_STATUS_LABEL[assignment.status]}`}
       style={{
@@ -108,9 +129,18 @@ function QueueItem({
         borderLeft: `var(--space-half) solid ${
           selected ? 'var(--border-brand)' : 'transparent'
         }`,
-        background: selected ? 'var(--surface-selected)' : 'transparent',
-        color: unfinished ? 'var(--text-primary)' : 'var(--text-secondary)',
-        cursor: 'pointer',
+        background: conflict
+          ? 'var(--status-attention-bg)'
+          : selected
+            ? 'var(--surface-selected)'
+            : 'transparent',
+        color: conflict
+          ? 'var(--status-attention-fg)'
+          : unfinished
+            ? 'var(--text-primary)'
+            : 'var(--text-secondary)',
+        cursor: conflict ? 'not-allowed' : 'pointer',
+        opacity: 1,
         transition: 'var(--transition-control)',
       }}
     >
@@ -130,11 +160,32 @@ function QueueItem({
   )
 }
 
-/** Done reads as a check; everything else as its state's dot. */
+/**
+ * Done reads as a check; everything else as its state's dot.
+ *
+ * Two accessibility rules shape this. `aria-label` on a role-less `<span>` is
+ * prohibited and most screen readers drop it, so each mark declares
+ * `role="img"` — and the inner `Icon` is `aria-hidden`, which would otherwise
+ * leave an empty element. And draft vs awaiting-review used to differ only by
+ * the dot's colour: a draft is now a ring and an untouched assignment a filled
+ * dot, so the difference survives without colour (WCAG 1.4.1).
+ */
 function StatusMark({ assignment }: { assignment: Assignment }) {
+  if (assignment.status === 'conflict') {
+    return (
+      <span
+        role="img"
+        aria-label={REVIEW_STATUS_LABEL[assignment.status]}
+        style={{ color: 'var(--status-attention-fg)', display: 'flex' }}
+      >
+        <Icon name="triangle-alert" size={14} />
+      </span>
+    )
+  }
   if (!isUnfinished(assignment)) {
     return (
       <span
+        role="img"
         aria-label={REVIEW_STATUS_LABEL[assignment.status]}
         style={{ color: 'var(--status-success-fg)', display: 'flex' }}
       >
@@ -142,18 +193,20 @@ function StatusMark({ assignment }: { assignment: Assignment }) {
       </span>
     )
   }
+  const draft = assignment.status === 'draft'
   return (
     <span
+      role="img"
       aria-label={REVIEW_STATUS_LABEL[assignment.status]}
       style={{
         flex: 'none',
         width: 'var(--space-2)',
         height: 'var(--space-2)',
         borderRadius: 'var(--radius-full)',
-        background:
-          assignment.status === 'draft'
-            ? 'var(--status-attention-dot)'
-            : 'var(--status-info-dot)',
+        background: draft ? 'transparent' : 'var(--status-info-dot)',
+        boxShadow: draft
+          ? 'inset 0 0 0 var(--space-px) var(--status-attention-dot)'
+          : undefined,
       }}
     />
   )

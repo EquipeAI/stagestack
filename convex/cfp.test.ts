@@ -14,6 +14,7 @@ import {
 } from "./test.helpers";
 import { starterFormDef } from "./model/cfp";
 import type { FormDef } from "./shared/formDef";
+import type { Doc } from "./_generated/dataModel";
 
 // Starter-form ids for the two organizer-authored example fields (systemKey
 // fields use the systemKey itself as the id).
@@ -32,8 +33,48 @@ async function messageRows(t: TestT) {
   return await t.run(async (ctx) => ctx.db.query("messages").collect());
 }
 
+/** Submit defers its emails to a runAfter(0) job; let it land. */
+async function drainScheduled(t: TestT): Promise<void> {
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+  }
+}
+
 async function proposalRows(t: TestT) {
   return await t.run(async (ctx) => ctx.db.query("proposals").collect());
+}
+
+function speakerInput(speaker: Doc<"proposalSpeakers">) {
+  return {
+    proposalSpeakerId: speaker._id,
+    firstName: speaker.firstName,
+    lastName: speaker.lastName,
+    email: speaker.email,
+    phone: speaker.phone,
+    tagline: speaker.tagline,
+    bio: speaker.bio,
+    headshotId: speaker.headshotId,
+    links: speaker.links,
+    isPrimary: speaker.isPrimary,
+    role: speaker.role,
+  };
+}
+
+type CalendarJob = {
+  kind: string;
+  toEmail: string;
+  ics: { method: "REQUEST" | "CANCEL"; uid: string; sequence: number };
+  context?: { sessionId?: string; participantId?: string; mode?: string };
+};
+
+async function calendarJobs(t: TestT): Promise<CalendarJob[]> {
+  return await t.run(async (ctx) => {
+    const rows = await ctx.db.system.query("_scheduled_functions").collect();
+    return rows
+      .filter((row) => row.name === "emails:sendCalendarInvite")
+      .map((row) => row.args[0] as CalendarJob);
+  });
 }
 
 /** Publish the form AND flip the event's public CFP switch (independent
@@ -79,6 +120,42 @@ async function readyProposal(t: TestT) {
   return { ...ctx, proposalId };
 }
 
+async function acceptedProposal(t: TestT) {
+  const ready = await readyProposal(t);
+  await ready.bob.mutation(api.cfp.submitProposal, {
+    proposalId: ready.proposalId,
+  });
+  await drainScheduled(t);
+  await ready.alice.mutation(api.sessions.setStatus, {
+    eventSlug: ready.eventSlug,
+    proposalIds: [ready.proposalId],
+    to: "acceptQueue",
+  });
+  await ready.alice.mutation(api.sessions.release, {
+    eventSlug: ready.eventSlug,
+    proposalIds: [ready.proposalId],
+  });
+  const view = await ready.bob.query(api.cfp.getMyProposal, {
+    proposalId: ready.proposalId,
+  });
+  return { ...ready, view };
+}
+
+async function revisionState(t: TestT) {
+  return await t.run(async (ctx) => ({
+    proposals: await ctx.db.query("proposals").collect(),
+    speakers: await ctx.db.query("proposalSpeakers").collect(),
+    sessions: await ctx.db.query("sessions").collect(),
+    participants: await ctx.db.query("sessionParticipants").collect(),
+    contacts: await ctx.db.query("eventContacts").collect(),
+    tasks: await ctx.db.query("taskInstances").collect(),
+    reviews: await ctx.db.query("reviews").collect(),
+    audits: await ctx.db.query("auditLog").collect(),
+    messages: await ctx.db.query("messages").collect(),
+    scheduled: await ctx.db.system.query("_scheduled_functions").collect(),
+  }));
+}
+
 describe("cfp starter form", () => {
   test("every new event is created with the starter form", async () => {
     const t = setupTest();
@@ -96,9 +173,9 @@ describe("cfp starter form", () => {
     ]);
 
     const fields = form.working.sections.flatMap((s) => s.fields);
-    expect(fields.flatMap((f) => (f.systemKey ? [f.systemKey] : [])).sort()).toEqual(
-      ["abstract", "email", "firstName", "lastName", "talkTitle"],
-    );
+    expect(
+      fields.flatMap((f) => (f.systemKey ? [f.systemKey] : [])).sort(),
+    ).toEqual(["abstract", "email", "firstName", "lastName", "talkTitle"]);
     // System fields are required and keyed by their systemKey.
     for (const f of fields.filter((f) => f.systemKey !== undefined)) {
       expect(f.required).toBe(true);
@@ -242,7 +319,9 @@ describe("cfp.updateWorkingForm validation", () => {
     expect(before.published).toBeNull();
     expect(before.working.sections[1].fields.at(-1)?.id).toBe("travel-support");
 
-    const { version } = await alice.mutation(api.cfp.publishForm, { eventSlug });
+    const { version } = await alice.mutation(api.cfp.publishForm, {
+      eventSlug,
+    });
     expect(version).toBe(1);
     const after = await alice.query(api.cfp.getForm, { eventSlug });
     expect(after.published?.sections[1].fields.at(-1)?.id).toBe(
@@ -459,6 +538,15 @@ describe("cfp proposal ownership", () => {
       "not_found",
     );
     await expectRejectedWith(
+      mallory.mutation(api.cfp.resubmitProposal, {
+        proposalId,
+        expectedContentVersion: 0,
+        answers: {},
+        speakers: [],
+      }),
+      "not_found",
+    );
+    await expectRejectedWith(
       mallory.mutation(api.cfp.withdrawProposal, { proposalId }),
       "not_found",
     );
@@ -596,12 +684,14 @@ describe("cfp.submitProposal", () => {
     ).toBe("pending");
 
     // Answering the condition makes it required again.
-    await bob.mutation(api.cfp.saveAnswers, {
-      proposalId,
-      answers: { ...FULL_ANSWERS, [FORMAT_FIELD]: "Workshop" },
-    });
+    const submitted = await bob.query(api.cfp.getMyProposal, { proposalId });
     await expectRejectedWith(
-      bob.mutation(api.cfp.submitProposal, { proposalId }),
+      bob.mutation(api.cfp.resubmitProposal, {
+        proposalId,
+        expectedContentVersion: submitted.proposal.contentVersion ?? 0,
+        answers: { ...FULL_ANSWERS, [FORMAT_FIELD]: "Workshop" },
+        speakers: submitted.speakers.map(speakerInput),
+      }),
       "invalid_submission",
     );
   });
@@ -616,6 +706,7 @@ describe("cfp.submitProposal", () => {
 
     const result = await bob.mutation(api.cfp.submitProposal, { proposalId });
     expect(result.successMessage).toBe("We'll be in touch.");
+    await drainScheduled(t);
 
     const first = await bob.query(api.cfp.getMyProposal, { proposalId });
     expect(first.proposal.status).toBe("pending");
@@ -639,11 +730,13 @@ describe("cfp.submitProposal", () => {
     );
 
     // Resubmit: same submittedAt, different subject wording.
-    await bob.mutation(api.cfp.saveAnswers, {
+    await bob.mutation(api.cfp.resubmitProposal, {
       proposalId,
+      expectedContentVersion: first.proposal.contentVersion ?? 0,
       answers: { ...FULL_ANSWERS, abstract: "Now with more detail." },
+      speakers: first.speakers.map(speakerInput),
     });
-    await bob.mutation(api.cfp.submitProposal, { proposalId });
+    await drainScheduled(t);
     const second = await bob.query(api.cfp.getMyProposal, { proposalId });
     expect(second.proposal.submittedAt).toBe(first.proposal.submittedAt);
     expect(second.proposal.updatedAt).toBeGreaterThanOrEqual(
@@ -663,10 +756,58 @@ describe("cfp.submitProposal", () => {
     expect(actions.filter((a) => a === "cfp.submit")).toHaveLength(2);
   });
 
+  test("legacy split-write clients must refresh after submission and cannot write partial revisions", async () => {
+    const t = setupTest();
+    const { bob, proposalId } = await readyProposal(t);
+    // readyProposal used both split-write endpoints successfully while this was
+    // a draft. Only their already-submitted use is an obsolete client flow.
+    expect(
+      (await bob.query(api.cfp.getMyProposal, { proposalId })).proposal.status,
+    ).toBe("draft");
+    await bob.mutation(api.cfp.submitProposal, { proposalId });
+    const submitted = await bob.query(api.cfp.getMyProposal, { proposalId });
+    const before = await revisionState(t);
+
+    const expectClientUpgrade = async (operation: Promise<unknown>) => {
+      const failure = await operation.then(
+        () => null,
+        (error: { data?: { code?: string; message?: string } }) => error.data,
+      );
+      expect(failure?.code).toBe("client_upgrade_required");
+      expect(failure?.message).toContain("Refresh the page");
+      expect(failure?.message).toContain("Save & resubmit");
+      expect(await revisionState(t)).toEqual(before);
+    };
+
+    await expectClientUpgrade(
+      bob.mutation(api.cfp.saveAnswers, {
+        proposalId,
+        answers: {
+          ...submitted.proposal.answers,
+          abstract: "An unsafe partial answer update.",
+        },
+      }),
+    );
+    await expectClientUpgrade(
+      bob.mutation(api.cfp.setSpeakers, {
+        proposalId,
+        speakers: [
+          ...submitted.speakers.map(speakerInput),
+          {
+            firstName: "Unsafe",
+            lastName: "Partial Speaker",
+            isPrimary: false,
+          },
+        ],
+      }),
+    );
+  });
+
   test("the Resend webhook patches the comms log by resendEmailId", async () => {
     const t = setupTest();
     const { bob, proposalId } = await readyProposal(t);
     await bob.mutation(api.cfp.submitProposal, { proposalId });
+    await drainScheduled(t);
 
     const [message] = await messageRows(t);
     const emailId = message.resendEmailId! as EmailId;
@@ -728,8 +869,9 @@ describe("cfp.withdrawProposal", () => {
       await t.run(async (ctx) => ctx.db.query("proposalSpeakers").collect()),
     ).toEqual([]);
     // No organizer email for something nobody ever saw.
-    expect((await messageRows(t)).filter((m) => m.kind === "cfp.withdrawn"))
-      .toEqual([]);
+    expect(
+      (await messageRows(t)).filter((m) => m.kind === "cfp.withdrawn"),
+    ).toEqual([]);
     await expectRejectedWith(
       bob.query(api.cfp.getMyProposal, { proposalId }),
       "not_found",
@@ -899,15 +1041,574 @@ describe("cfp.reopenProposal", () => {
       until: Date.now() + 3600_000,
     });
 
-    await bob.mutation(api.cfp.saveAnswers, {
+    const reopened = await bob.query(api.cfp.getMyProposal, { proposalId });
+    await expectRejectedWith(
+      bob.mutation(api.cfp.saveAnswers, {
+        proposalId,
+        answers: { ...FULL_ANSWERS, abstract: "Late edit." },
+      }),
+      "client_upgrade_required",
+    );
+    await bob.mutation(api.cfp.resubmitProposal, {
       proposalId,
+      expectedContentVersion: reopened.proposal.contentVersion ?? 0,
       answers: { ...FULL_ANSWERS, abstract: "Late edit." },
+      speakers: reopened.speakers.map(speakerInput),
     });
-    await bob.mutation(api.cfp.submitProposal, { proposalId });
     expect(
       (await bob.query(api.cfp.getMyProposal, { proposalId })).windowOpen,
     ).toBe(true);
     expect(await auditActions(t)).toContain("cfp.reopenProposal");
+  });
+
+  test("an accepted proposal atomically adds one stable co-author, task, and current calendar request", async () => {
+    const t = setupTest();
+    const { alice, bob, eventSlug, proposalId } = await readyProposal(t);
+    await bob.mutation(api.cfp.submitProposal, { proposalId });
+    await drainScheduled(t);
+    await alice.mutation(api.tasks.createRequirement, {
+      eventSlug,
+      title: "Confirm speaker details",
+      scope: "participant",
+      evidence: "manual",
+      reviewRequired: false,
+      dueAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+    });
+    await alice.mutation(api.sessions.setStatus, {
+      eventSlug,
+      proposalIds: [proposalId],
+      to: "acceptQueue",
+    });
+    await alice.mutation(api.sessions.release, {
+      eventSlug,
+      proposalIds: [proposalId],
+    });
+
+    const initial = await bob.query(api.cfp.getMyProposal, { proposalId });
+    const originalSpeaker = initial.speakers[0];
+    const original = await t.run(async (ctx) => {
+      const session = await ctx.db
+        .query("sessions")
+        .withIndex("by_proposalId", (q) => q.eq("proposalId", proposalId))
+        .unique();
+      if (session === null) throw new Error("no accepted session");
+      const participant = await ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_sessionId", (q) => q.eq("sessionId", session._id))
+        .unique();
+      if (participant === null) throw new Error("no accepted participant");
+      const task = await ctx.db
+        .query("taskInstances")
+        .withIndex("by_sessionId", (q) => q.eq("sessionId", session._id))
+        .unique();
+      if (task === null) throw new Error("no accepted task");
+      const event = await ctx.db.get("events", session.eventId);
+      if (event === null) throw new Error("no event");
+      return { session, participant, task, event };
+    });
+    await alice.mutation(api.agenda.scheduleSession, {
+      eventSlug,
+      sessionId: original.session._id,
+      slot: {
+        startsAt: original.event.startsAt + 60 * 60 * 1000,
+        endsAt: original.event.startsAt + 2 * 60 * 60 * 1000,
+      },
+    });
+    expect(
+      await alice.mutation(api.agenda.release, {
+        eventSlug,
+        sessionIds: [original.session._id],
+      }),
+    ).toEqual([{ sessionId: original.session._id, ok: true }]);
+    await alice.mutation(api.agenda.setAck, {
+      eventSlug,
+      participantId: original.participant._id,
+      response: "acknowledged",
+    });
+
+    const reviewer = await signIn(t, "rita");
+    const reviewerUserId = await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("users")
+        .withIndex("by_tokenIdentifier", (q) =>
+          q.eq("tokenIdentifier", "https://test.clerk.example.com|rita"),
+        )
+        .unique();
+      if (row === null) throw new Error("no reviewer");
+      await ctx.db.insert("reviews", {
+        eventId: original.event._id,
+        proposalId,
+        reviewerUserId: row._id,
+        status: "submitted",
+        score: 5,
+        recommendation: "accept",
+        comments: "Strong proposal",
+        submittedAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      return row._id;
+    });
+    expect(reviewer).toBeDefined();
+
+    const revisionSpeakers = [
+      speakerInput(originalSpeaker),
+      {
+        firstName: "Marcus",
+        lastName: "Okafor",
+        isPrimary: false,
+        role: "Co-author",
+      },
+    ];
+    const revisedAnswers = {
+      ...initial.proposal.answers,
+      abstract: "Now includes the co-author's production findings.",
+    };
+
+    // Reopening the event-wide CFP is deliberately insufficient: a released
+    // acceptance needs its own explicit, audited proposal grant.
+    await expectRejectedWith(
+      bob.mutation(api.cfp.resubmitProposal, {
+        proposalId,
+        expectedContentVersion: initial.proposal.contentVersion ?? 0,
+        answers: revisedAnswers,
+        speakers: revisionSpeakers,
+      }),
+      "not_editable",
+    );
+    await alice.mutation(api.cfp.reopenProposal, {
+      eventSlug,
+      proposalId,
+      until: Date.now() + 3600_000,
+    });
+
+    // The old split writes are closed for accepted revisions.
+    await expectRejectedWith(
+      bob.mutation(api.cfp.setSpeakers, {
+        proposalId,
+        speakers: revisionSpeakers,
+      }),
+      "client_upgrade_required",
+    );
+    await bob.mutation(api.cfp.resubmitProposal, {
+      proposalId,
+      expectedContentVersion: initial.proposal.contentVersion ?? 0,
+      answers: revisedAnswers,
+      speakers: revisionSpeakers,
+    });
+
+    const accepted = await bob.query(api.cfp.getMyProposal, { proposalId });
+    expect(accepted.proposal.status).toBe("accepted");
+    expect(accepted.speakers[0]._id).toBe(originalSpeaker._id);
+    expect(accepted.speakers[1]).toMatchObject({
+      firstName: "Marcus",
+      lastName: "Okafor",
+      role: "Co-author",
+    });
+    expect(accepted.speakers[1].email).toBeUndefined();
+    const marcusSpeakerId = accepted.speakers[1]._id;
+
+    const afterRevision = await t.run(async (ctx) => {
+      const sessions = await ctx.db
+        .query("sessions")
+        .withIndex("by_proposalId", (q) => q.eq("proposalId", proposalId))
+        .collect();
+      const participants = await ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_sessionId", (q) =>
+          q.eq("sessionId", original.session._id),
+        )
+        .collect();
+      const tasks = await ctx.db
+        .query("taskInstances")
+        .withIndex("by_sessionId", (q) =>
+          q.eq("sessionId", original.session._id),
+        )
+        .collect();
+      const contacts = await Promise.all(
+        participants.map((participant) =>
+          ctx.db.get("eventContacts", participant.eventContactId),
+        ),
+      );
+      const reviews = await ctx.db
+        .query("reviews")
+        .withIndex("by_proposalId", (q) => q.eq("proposalId", proposalId))
+        .collect();
+      return { sessions, participants, tasks, contacts, reviews };
+    });
+    expect(afterRevision.sessions.map((session) => session._id)).toEqual([
+      original.session._id,
+    ]);
+    expect(afterRevision.participants).toHaveLength(2);
+    expect(afterRevision.tasks).toHaveLength(2);
+    expect(afterRevision.tasks.map((task) => task._id)).toContain(
+      original.task._id,
+    );
+    const originalParticipant = afterRevision.participants.find(
+      (participant) => participant._id === original.participant._id,
+    );
+    const addedParticipant = afterRevision.participants.find(
+      (participant) => participant._id !== original.participant._id,
+    );
+    expect(originalParticipant?.ack).toBe("acknowledged");
+    expect(originalParticipant?.role).toBe("speaker");
+    expect(addedParticipant?.ack).toBe("awaitingAck");
+    expect(addedParticipant?.role).toBe("Co-author");
+    const marcusContact = afterRevision.contacts.find(
+      (contact) => contact?.proposalSpeakerId === marcusSpeakerId,
+    );
+    expect(marcusContact).toMatchObject({
+      firstName: "Marcus",
+      lastName: "Okafor",
+    });
+    expect(marcusContact?.email).toBeUndefined();
+    expect(afterRevision.reviews).toHaveLength(1);
+    expect(afterRevision.reviews[0]).toMatchObject({
+      reviewerUserId,
+      status: "assigned",
+      contentVersion: 1,
+    });
+    expect(afterRevision.reviews[0].score).toBeUndefined();
+    expect(afterRevision.reviews[0].recommendation).toBeUndefined();
+    expect(afterRevision.reviews[0].comments).toBeUndefined();
+    expect(afterRevision.reviews[0].submittedAt).toBeUndefined();
+    expect(accepted.proposal.contentVersion).toBe(1);
+
+    // `sessions.list` is the organizer read model consumed by the session
+    // portal dialog, so the proposal role must survive all the way there.
+    const organizerSession = (
+      await alice.query(api.sessions.list, { eventSlug })
+    ).find((row) => row.session._id === original.session._id);
+    expect(
+      organizerSession?.participants.find(
+        (participant) => participant.participantId === addedParticipant?._id,
+      )?.role,
+    ).toBe("Co-author");
+
+    const jobsAfterRevision = await calendarJobs(t);
+    expect(jobsAfterRevision).toHaveLength(2);
+    const addedInvite = jobsAfterRevision.find(
+      (job) => job.context?.participantId === addedParticipant?._id,
+    );
+    expect(addedInvite).toMatchObject({
+      kind: "schedule.released",
+      toEmail: "bob@example.com",
+      ics: { method: "REQUEST", sequence: 1 },
+      context: { mode: "participant_added" },
+    });
+
+    // A second browser tab still holds revision 0. Its whole payload is stale
+    // now (including a speaker list that predates Marcus), so the version fence
+    // must win before speaker reconciliation or any proposal/session side
+    // effect. Every affected table and scheduled calendar request stays exact.
+    const beforeStaleTab = await revisionState(t);
+    const calendarBeforeStaleTab = await calendarJobs(t);
+    await expectRejectedWith(
+      bob.mutation(api.cfp.resubmitProposal, {
+        proposalId,
+        expectedContentVersion: initial.proposal.contentVersion ?? 0,
+        answers: {
+          ...initial.proposal.answers,
+          abstract: "A stale tab must not overwrite the accepted revision.",
+        },
+        speakers: initial.speakers.map(speakerInput),
+      }),
+      "stale_proposal_content",
+    );
+    expect(await revisionState(t)).toEqual(beforeStaleTab);
+    expect(await calendarJobs(t)).toEqual(calendarBeforeStaleTab);
+
+    const stableIds = {
+      speakers: accepted.speakers.map((speaker) => speaker._id),
+      participants: afterRevision.participants.map(
+        (participant) => participant._id,
+      ),
+      participantRoles: afterRevision.participants.map(
+        (participant) => participant.role,
+      ),
+      contacts: afterRevision.contacts.map((contact) => contact?._id),
+      tasks: afterRevision.tasks.map((task) => task._id),
+    };
+    await bob.mutation(api.cfp.resubmitProposal, {
+      proposalId,
+      expectedContentVersion: accepted.proposal.contentVersion ?? 0,
+      answers: accepted.proposal.answers,
+      speakers: accepted.speakers.map(speakerInput),
+    });
+    const repeated = await bob.query(api.cfp.getMyProposal, { proposalId });
+    const repeatedMaterialization = await t.run(async (ctx) => {
+      const participants = await ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_sessionId", (q) =>
+          q.eq("sessionId", original.session._id),
+        )
+        .collect();
+      const contacts = await Promise.all(
+        participants.map((participant) =>
+          ctx.db.get("eventContacts", participant.eventContactId),
+        ),
+      );
+      const tasks = await ctx.db
+        .query("taskInstances")
+        .withIndex("by_sessionId", (q) =>
+          q.eq("sessionId", original.session._id),
+        )
+        .collect();
+      return { participants, contacts, tasks };
+    });
+    expect({
+      speakers: repeated.speakers.map((speaker) => speaker._id),
+      participants: repeatedMaterialization.participants.map(
+        (participant) => participant._id,
+      ),
+      participantRoles: repeatedMaterialization.participants.map(
+        (participant) => participant.role,
+      ),
+      contacts: repeatedMaterialization.contacts.map((contact) => contact?._id),
+      tasks: repeatedMaterialization.tasks.map((task) => task._id),
+    }).toEqual(stableIds);
+    expect(await calendarJobs(t)).toHaveLength(2);
+
+    const actions = await auditActions(t);
+    expect(
+      actions.filter((action) => action === "decision.release"),
+    ).toHaveLength(1);
+    expect(
+      actions.filter(
+        (action) => action === "review.invalidateForProposalRevision",
+      ),
+    ).toHaveLength(1);
+    expect(
+      actions.filter(
+        (action) => action === "agenda.participantAddedToReleasedSlot",
+      ),
+    ).toHaveLength(1);
+    expect(
+      actions.filter((action) => action === "decision.correct"),
+    ).toHaveLength(0);
+
+    // The ordinary correction invariant is unchanged after the revision.
+    await alice.mutation(api.sessions.correct, {
+      eventSlug,
+      proposalId,
+      to: "declined",
+      note: "The program changed after acceptance.",
+    });
+    expect(
+      (await bob.query(api.cfp.getMyProposal, { proposalId })).proposal.status,
+    ).toBe("declined");
+    expect(
+      await t.run(
+        async (ctx) =>
+          (await ctx.db.get("sessions", original.session._id))?.status,
+      ),
+    ).toBe("cancelled");
+    await expectRejectedWith(
+      alice.mutation(api.cfp.reopenProposal, {
+        eventSlug,
+        proposalId,
+        until: Date.now() + 3600_000,
+      }),
+      "invalid_status",
+    );
+  });
+
+  test("accepted revision rejects removal, duplicate/foreign ids, and expiry without partial writes", async () => {
+    const t = setupTest();
+    const { alice, bob, eventSlug, proposalId, view } =
+      await acceptedProposal(t);
+    await alice.mutation(api.cfp.reopenProposal, {
+      eventSlug,
+      proposalId,
+      until: Date.now() + 3600_000,
+    });
+    const otherProposalId = await bob.mutation(api.cfp.startProposal, {
+      eventSlug,
+    });
+    await bob.mutation(api.cfp.setSpeakers, {
+      proposalId: otherProposalId,
+      speakers: [
+        { firstName: "Foreign", lastName: "Speaker", isPrimary: true },
+      ],
+    });
+    const foreign = (
+      await bob.query(api.cfp.getMyProposal, { proposalId: otherProposalId })
+    ).speakers[0];
+    const primary = speakerInput(view.speakers[0]);
+    const answers = {
+      ...view.proposal.answers,
+      abstract: "A revision that must stay atomic.",
+    };
+    const expectUnchangedFailure = async (
+      mutation: () => Promise<unknown>,
+      code: string,
+    ) => {
+      const before = await revisionState(t);
+      await expectRejectedWith(mutation(), code);
+      expect(await revisionState(t)).toEqual(before);
+    };
+
+    await expectUnchangedFailure(
+      () =>
+        bob.mutation(api.cfp.resubmitProposal, {
+          proposalId,
+          expectedContentVersion: view.proposal.contentVersion ?? 0,
+          answers,
+          speakers: [
+            primary,
+            {
+              ...speakerInput(foreign),
+              firstName: "Injected",
+            },
+          ],
+        }),
+      "invalid_speaker_id",
+    );
+    await expectUnchangedFailure(
+      () =>
+        bob.mutation(api.cfp.resubmitProposal, {
+          proposalId,
+          expectedContentVersion: view.proposal.contentVersion ?? 0,
+          answers,
+          speakers: [primary, { ...primary, isPrimary: false }],
+        }),
+      "duplicate_speaker_id",
+    );
+    await expectUnchangedFailure(
+      () =>
+        bob.mutation(api.cfp.resubmitProposal, {
+          proposalId,
+          expectedContentVersion: view.proposal.contentVersion ?? 0,
+          answers,
+          speakers: [
+            {
+              firstName: "Replacement",
+              lastName: "Speaker",
+              isPrimary: true,
+            },
+          ],
+        }),
+      "accepted_speaker_removal",
+    );
+
+    await t.run(async (ctx) => {
+      await ctx.db.patch("proposals", proposalId, {
+        reopenedUntil: Date.now() - 1,
+      });
+    });
+    await expectUnchangedFailure(
+      () =>
+        bob.mutation(api.cfp.resubmitProposal, {
+          proposalId,
+          expectedContentVersion: view.proposal.contentVersion ?? 0,
+          answers,
+          speakers: [
+            primary,
+            {
+              firstName: "Marcus",
+              lastName: "Okafor",
+              isPrimary: false,
+            },
+          ],
+        }),
+      "not_editable",
+    );
+  });
+
+  test("201 active requirements refuse accepted co-author fan-out with no partial revision state", async () => {
+    const t = setupTest();
+    const { alice, bob, eventSlug, proposalId, view } =
+      await acceptedProposal(t);
+    await alice.mutation(api.cfp.reopenProposal, {
+      eventSlug,
+      proposalId,
+      until: Date.now() + 3600_000,
+    });
+    await t.run(async (ctx) => {
+      for (let order = 0; order <= 200; order += 1) {
+        await ctx.db.insert("requirements", {
+          eventId: view.proposal.eventId,
+          title: `Requirement ${order}`,
+          scope: "participant",
+          evidence: "manual",
+          reviewRequired: false,
+          dueAt: Date.now() + 86_400_000,
+          active: true,
+        });
+      }
+    });
+    const before = await revisionState(t);
+    await expectRejectedWith(
+      bob.mutation(api.cfp.resubmitProposal, {
+        proposalId,
+        expectedContentVersion: view.proposal.contentVersion ?? 0,
+        answers: {
+          ...view.proposal.answers,
+          abstract: "This write must roll back with the downstream failure.",
+        },
+        speakers: [
+          speakerInput(view.speakers[0]),
+          {
+            firstName: "Marcus",
+            lastName: "Okafor",
+            isPrimary: false,
+            role: "Co-author",
+          },
+        ],
+      }),
+      "event_too_large",
+    );
+    expect(await revisionState(t)).toEqual(before);
+  });
+
+  test("archived events refuse reopen, editable writes, atomic resubmit, and accepted sync", async () => {
+    const t = setupTest();
+    const { alice, bob, eventSlug, proposalId, view } =
+      await acceptedProposal(t);
+    await alice.mutation(api.cfp.reopenProposal, {
+      eventSlug,
+      proposalId,
+      until: Date.now() + 3600_000,
+    });
+    await alice.mutation(api.events.setArchived, {
+      eventSlug,
+      archived: true,
+    });
+    const archivedView = await bob.query(api.cfp.getMyProposal, { proposalId });
+    expect(archivedView.event.archivedAt).toBeGreaterThan(0);
+    const before = await revisionState(t);
+
+    await expectRejectedWith(
+      alice.mutation(api.cfp.reopenProposal, {
+        eventSlug,
+        proposalId,
+        until: Date.now() + 7200_000,
+      }),
+      "event_archived",
+    );
+    await expectRejectedWith(
+      bob.mutation(api.cfp.saveAnswers, {
+        proposalId,
+        answers: view.proposal.answers,
+      }),
+      "event_archived",
+    );
+    await expectRejectedWith(
+      bob.mutation(api.cfp.resubmitProposal, {
+        proposalId,
+        expectedContentVersion: view.proposal.contentVersion ?? 0,
+        answers: view.proposal.answers,
+        speakers: view.speakers.map(speakerInput),
+      }),
+      "event_archived",
+    );
+    await expectRejectedWith(
+      t.mutation(internal.sessions.syncAcceptedProposalRevision, {
+        proposalId,
+        submittedByUserId: view.proposal.submitterUserId,
+      }),
+      "event_archived",
+    );
+    expect(await revisionState(t)).toEqual(before);
   });
 
   test("NEGATIVE: an organizer of another event cannot reopen this proposal", async () => {
@@ -929,23 +1630,34 @@ describe("cfp.setSpeakers", () => {
   test("replaces the speaker list and validates names and emails", async () => {
     const t = setupTest();
     const { bob, proposalId } = await readyProposal(t);
+    const originalSpeakerId = (
+      await bob.query(api.cfp.getMyProposal, { proposalId })
+    ).speakers[0]._id;
 
+    const payload = [
+      { firstName: "Bob", lastName: "Speaker", isPrimary: true },
+      {
+        firstName: "Carol",
+        lastName: "Cospeaker",
+        email: "  Carol@Example.COM ",
+        isPrimary: false,
+      },
+    ];
     await bob.mutation(api.cfp.setSpeakers, {
       proposalId,
-      speakers: [
-        { firstName: "Bob", lastName: "Speaker", isPrimary: true },
-        {
-          firstName: "Carol",
-          lastName: "Cospeaker",
-          email: "  Carol@Example.COM ",
-          isPrimary: false,
-        },
-      ],
+      speakers: payload,
     });
     const { speakers } = await bob.query(api.cfp.getMyProposal, { proposalId });
+    expect(speakers[0]._id).toBe(originalSpeakerId);
     expect(speakers.map((s) => s.order)).toEqual([0, 1]);
     expect(speakers.map((s) => s.firstName)).toEqual(["Bob", "Carol"]);
     expect(speakers[1].email).toBe("carol@example.com");
+    await bob.mutation(api.cfp.setSpeakers, { proposalId, speakers: payload });
+    expect(
+      (await bob.query(api.cfp.getMyProposal, { proposalId })).speakers.map(
+        (speaker) => speaker._id,
+      ),
+    ).toEqual(speakers.map((speaker) => speaker._id));
 
     await expectRejectedWith(
       bob.mutation(api.cfp.setSpeakers, {

@@ -6,10 +6,13 @@ import type { Id } from '@convex/_generated/dataModel'
 import type { PortalTask } from '~/components/tasks/model'
 import { PORTAL_TASK_STATUS, isOpen, isOverdue } from '~/components/tasks/model'
 import { Button, Callout, Card, EmptyState, StatusPill } from '~/ds'
+import { TaskCommentThread } from '~/components/tasks/TaskCommentThread'
+import { UploadVersionList } from '~/components/tasks/UploadVersionList'
 import { usePending } from '~/lib/usePending'
 import { errorMessage } from '~/lib/errors'
 import { formatDateTime } from '~/lib/datetime'
 import { pushToast } from '~/components/toast'
+import { FileButton } from '~/components/FileButton'
 import {
   ActionError,
   ButtonRow,
@@ -123,7 +126,7 @@ function TaskCard({
   const completeTask = useMutation(api.portal.completeTask)
   const generateUploadUrl = useMutation(api.portal.generateTaskUploadUrl)
   const uploadForTask = useMutation(api.portal.uploadForTask)
-  const { pending, error, setError, run } = usePending()
+  const { pending, error, setError, run } = usePending({ announce: false })
   const [uploading, setUploading] = useState(false)
 
   const state = PORTAL_TASK_STATUS[task.status]
@@ -185,7 +188,11 @@ function TaskCard({
       actions={<StatusPill status={state.label} tone={state.tone} />}
     >
       <div
-        style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
       >
         <div
           style={{
@@ -226,39 +233,7 @@ function TaskCard({
         <ActionError error={error} />
 
         {hasUploads ? (
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            {task.uploads.map((file) => (
-              <li
-                key={`${file.version}-${file.filename}`}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 'var(--space-3)',
-                  flexWrap: 'wrap',
-                  minHeight: 'var(--row-height-sm)',
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 'var(--text-xs)',
-                    color: 'var(--text-tertiary)',
-                  }}
-                >
-                  v{file.version}
-                </span>
-                {file.url === null ? (
-                  <span style={{ color: 'var(--text-tertiary)' }}>
-                    {file.filename}
-                  </span>
-                ) : (
-                  <a href={file.url} target="_blank" rel="noreferrer">
-                    {file.filename}
-                  </a>
-                )}
-              </li>
-            ))}
-          </ul>
+          <UploadVersionList uploads={task.uploads} timezone={timezone} />
         ) : null}
 
         {task.evidence === 'profileField' ? (
@@ -301,31 +276,37 @@ function TaskCard({
                 {uploading ? 'Uploading…' : 'Working…'}
               </Button>
             ) : (
-              <Button as="label" variant="primary" iconLeft="upload">
-                <input
-                  type="file"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    e.target.value = ''
-                    if (file !== undefined) void upload(file)
-                  }}
-                />
-                {hasUploads ? 'Replace file' : 'Upload file'}
-              </Button>
-            )}
-            {hasUploads ? (
-              <span
-                style={{
-                  font: 'var(--type-caption)',
-                  color: 'var(--text-tertiary)',
+              <FileButton
+                variant="primary"
+                iconLeft="upload"
+                onFile={(file) => {
+                  void upload(file)
                 }}
               >
-                A replacement is added as a new version — nothing you sent
-                before is lost.
-              </span>
-            ) : null}
+                {hasUploads ? 'Replace file' : 'Upload file'}
+              </FileButton>
+            )}
+            <span
+              style={{
+                font: 'var(--type-caption)',
+                color: 'var(--text-tertiary)',
+              }}
+            >
+              PDF, images, or ZIP · up to 50 MB per file.
+              {hasUploads
+                ? ' A replacement is added as a new version — nothing you sent before is lost.'
+                : ''}
+            </span>
           </ButtonRow>
+        ) : null}
+
+        {task.evidence === 'file' ? (
+          <TaskCommentThread
+            eventSlug={eventSlug}
+            instanceId={task.instanceId}
+            source="portal"
+            timezone={timezone}
+          />
         ) : null}
       </div>
     </Card>

@@ -7,7 +7,7 @@ import type { Id } from '@convex/_generated/dataModel'
 // the review UI reads it from convex/shared/importPlan.ts instead of restating
 // it — a field added to vImportRecord must not silently become invisible here.
 import type { ImportPlan, PlannedRecord } from '@convex/shared/importPlan'
-import { Badge, Button, Callout, Card, Checkbox, DescriptionList, EmptyState, Tag, Textarea } from '~/ds'
+import { ActionResult, Badge, Button, Callout, Card, Checkbox, DescriptionList, EmptyState, Tag, Textarea } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
 import { errorMessage } from '~/lib/errors'
@@ -299,6 +299,7 @@ function UploadView({
         <Textarea
           value={description}
           rows={2}
+          aria-label="What this file is"
           placeholder="Optional: tell the agent what this file is. e.g. “Talk submissions from our Google Form — one row per talk, columns C/D are the speaker.”"
           onChange={(e) => setDescription(e.target.value)}
         />
@@ -325,8 +326,13 @@ function PlanView({
 }) {
   const job = useQuery(api.imports.getJob, { eventSlug, jobId })
   const confirm = useMutation(api.imports.confirm)
-  const { pending, error, run } = usePending()
+  // Silent here: this run()'s catch feeds the ActionResult below, which
+  // announces the refusal itself.
+  const { pending, error, run } = usePending({ announce: false })
   const [excluded, setExcluded] = useState<ReadonlySet<string>>(new Set())
+  // W5: a refused import is a persistent result with a retry — it used to be a
+  // toast that took the reason with it when it faded.
+  const [startFailure, setStartFailure] = useState<string | null>(null)
 
   const plan = (job?.status === 'done' ? (job.result as ImportPlan) : null) ?? null
   const included = useMemo(
@@ -405,6 +411,7 @@ function PlanView({
                     checked={!excluded.has(r.id)}
                     onChange={() => toggle(r.id)}
                     name={`include-${r.id}`}
+                    aria-label={`Import ${recordTitle(r)}`}
                   />
                   <div
                     style={{
@@ -464,12 +471,24 @@ function PlanView({
               {plan.skippedRows.length > 8 ? ' · …' : ''}
             </Callout>
           ) : null}
+          {startFailure === null ? null : (
+            <ActionResult
+              status="failed"
+              title="The import was not started"
+              details={[
+                startFailure,
+                `Nothing was written. ${included.length} record${included.length === 1 ? '' : 's'} ${included.length === 1 ? 'is' : 'are'} still selected.`,
+              ]}
+              onDismiss={() => setStartFailure(null)}
+            />
+          )}
           <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
             <Button
               variant="primary"
               disabled={pending || included.length === 0}
               onClick={() => {
                 void run(async () => {
+                  setStartFailure(null)
                   try {
                     const executeJobId = await confirm({
                       eventSlug,
@@ -478,10 +497,9 @@ function PlanView({
                       // re-validates against vPlannedRecord.
                       records: included,
                     })
-                    pushToast('Import approved', `${included.length} records queued.`)
                     onConfirmed(executeJobId)
                   } catch (err) {
-                    pushToast('Could not start import', errorMessage(err), 'octagon-alert')
+                    setStartFailure(errorMessage(err))
                     throw err
                   }
                 })

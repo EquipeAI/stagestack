@@ -16,6 +16,8 @@ import type {
 } from './model'
 import { formatDateTime } from '~/lib/datetime'
 
+export type SheetCell = string | number
+
 // Export is client-side on purpose: the table is already bounded (≤500 rows)
 // and in memory, so CSV and XLSX are instant and cost the backend nothing.
 // `xlsx` and `jszip` are dynamically imported so they never enter the bundle
@@ -125,11 +127,12 @@ export function buildSheet(input: ExportInput): Array<Array<string>> {
   return [header, ...body].map((line) => line.map(sheetSafe))
 }
 
-function csvCell(value: string) {
-  return /["\n,]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value
+function csvCell(value: SheetCell) {
+  const text = String(value)
+  return /["\n,]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
 }
 
-export function toCsv(sheet: Array<Array<string>>) {
+export function toCsv(sheet: Array<Array<SheetCell>>) {
   return sheet.map((line) => line.map(csvCell).join(',')).join('\r\n')
 }
 
@@ -153,22 +156,134 @@ export function exportCsv(input: ExportInput, filename: string) {
   downloadBlob(blob, `${filename}.csv`)
 }
 
+// ── Review export (ABS-13) ───────────────────────────────────────────────
+
+export type ReviewExportRow = {
+  title: string
+  status: string
+  assigned: number
+  submitted: number
+  avgScore: number | null
+  reviewStatus: string
+  recommendationSummary: string
+  acceptCount: number
+  neutralCount: number
+  declineCount: number
+  criteria: Readonly<Partial<Record<string, { label: string; value: number }>>>
+}
+
+export function reviewCompletion(
+  submitted: number,
+  reviews: ReadonlyArray<{ status: string }>,
+): { assigned: number; conflicts: number; label: string } {
+  const conflicts = reviews.filter(
+    (review) => review.status === 'conflict',
+  ).length
+  const assigned = reviews.length - conflicts
+  return {
+    assigned,
+    conflicts,
+    label: `${submitted} of ${assigned} submitted${
+      conflicts === 0
+        ? ''
+        : ` · ${conflicts} conflict${conflicts === 1 ? '' : 's'}`
+    }`,
+  }
+}
+
+export function buildReviewSheet(
+  rows: ReadonlyArray<ReviewExportRow>,
+): Array<Array<SheetCell>> {
+  const criterionLabels = new Map<string, string>()
+  for (const row of rows) {
+    for (const [key, criterion] of Object.entries(row.criteria)) {
+      if (criterion !== undefined) criterionLabels.set(key, criterion.label)
+    }
+  }
+  const seenLabels = new Map<string, number>()
+  const criteria = [...criterionLabels].map(([key, label]) => {
+    const occurrence = (seenLabels.get(label) ?? 0) + 1
+    seenLabels.set(label, occurrence)
+    return {
+      key,
+      header: occurrence === 1 ? label : `${label} [${occurrence}]`,
+    }
+  })
+  const sheet = [
+    [
+      'Title',
+      'Proposal status',
+      'Assigned',
+      'Submitted',
+      'Aggregate score',
+      'Review status',
+      'Recommendation summary',
+      'Accept',
+      'Neutral',
+      'Decline',
+      ...criteria.map((criterion) => criterion.header),
+    ],
+    ...rows.map((row) => [
+      row.title,
+      row.status,
+      row.assigned,
+      row.submitted,
+      row.avgScore === null ? '' : Number(row.avgScore.toFixed(2)),
+      row.reviewStatus,
+      row.recommendationSummary,
+      row.acceptCount,
+      row.neutralCount,
+      row.declineCount,
+      ...criteria.map((criterion) => row.criteria[criterion.key]?.value ?? ''),
+    ]),
+  ]
+  return sheet.map((line) =>
+    line.map((cell) => (typeof cell === 'string' ? sheetSafe(cell) : cell)),
+  )
+}
+
+/** Exactly one row per proposal: progress, aggregates and criterion means. */
+export function exportReviewsCsv(
+  rows: ReadonlyArray<ReviewExportRow>,
+  filename: string,
+) {
+  const sheet = buildReviewSheet(rows)
+  const blob = new Blob(['﻿', toCsv(sheet)], {
+    type: 'text/csv;charset=utf-8',
+  })
+  downloadBlob(blob, `${filename}.csv`)
+}
+
 /** Split out from `exportXlsx` so the workbook can be round-tripped in a test
  * without a DOM download. */
 export async function xlsxBytes(
-  rows: Array<Array<string>>,
+  rows: Array<Array<SheetCell>>,
+  sheetName = 'Proposals',
 ): Promise<ArrayBuffer> {
   const XLSX = await import('xlsx')
   const sheet = XLSX.utils.aoa_to_sheet(rows)
   sheet['!cols'] = rows[0].map((_, index) => ({
     wch: Math.min(
       60,
-      Math.max(12, ...rows.map((line) => (line[index] ?? '').length + 2)),
+      Math.max(12, ...rows.map((line) => String(line[index] ?? '').length + 2)),
     ),
   }))
   const book = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(book, sheet, 'Proposals')
+  XLSX.utils.book_append_sheet(book, sheet, sheetName)
   return XLSX.write(book, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
+}
+
+export async function exportReviewsXlsx(
+  rows: ReadonlyArray<ReviewExportRow>,
+  filename: string,
+) {
+  const data = await xlsxBytes(buildReviewSheet(rows), 'Review results')
+  downloadBlob(
+    new Blob([data], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }),
+    `${filename}.xlsx`,
+  )
 }
 
 export async function exportXlsx(input: ExportInput, filename: string) {
@@ -199,8 +314,10 @@ const EXTENSION: Record<string, string> = {
   'image/jpeg': '.jpg',
   'text/plain': '.txt',
   'application/msword': '.doc',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    '.docx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+    '.pptx',
 }
 
 export type FileAnswer = {

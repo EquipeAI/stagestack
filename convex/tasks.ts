@@ -182,7 +182,12 @@ export const markNotApplicable = eventMutation({
   args: { instanceId: v.id("taskInstances"), reason: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await Tasks.markNotApplicable(ctx, ctx.caller, args.instanceId, args.reason);
+    await Tasks.markNotApplicable(
+      ctx,
+      ctx.caller,
+      args.instanceId,
+      args.reason,
+    );
     return null;
   },
 });
@@ -303,8 +308,148 @@ export const dashboard = eventQuery({
       missingProfile: v.number(),
       overdue: v.number(),
     }),
+    // W8's "what is blocked" counts, derived in the SAME pass as the readiness
+    // rows above so the panel's headline can never disagree with its list.
+    blockers: v.object({
+      contentDrafts: v.number(),
+      unscheduled: v.number(),
+      scheduleConflicts: v.number(),
+      blockedSessions: v.number(),
+    }),
   }),
   handler: async (ctx, args) => {
     return await Readiness.dashboard(ctx, ctx.caller, args.now);
+  },
+});
+
+// ── Files library & bulk export (W5: CNT-13/CNT-14) ──────────────────────
+
+export const filesLibrary = eventQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      instanceId: vv.id("taskInstances"),
+      requirementTitle: v.string(),
+      sessionId: vv.id("sessions"),
+      sessionTitle: v.string(),
+      speakerName: v.union(v.string(), v.null()),
+      filename: v.string(),
+      version: v.number(),
+      versionCount: v.number(),
+      uploadedAt: v.number(),
+      url: v.union(v.string(), v.null()),
+      commentCount: v.number(),
+    }),
+  ),
+  handler: async (ctx) => {
+    return Tasks.legacyLibraryFileRows(
+      await Tasks.filesLibrary(ctx, ctx.caller, { includeHeadshots: false }),
+    );
+  },
+});
+
+export const exportBundle = eventQuery({
+  args: { instanceIds: v.array(v.id("taskInstances")) },
+  returns: v.array(
+    v.object({
+      filename: v.string(),
+      url: v.union(v.string(), v.null()),
+      sessionTitle: v.string(),
+      speakerName: v.union(v.string(), v.null()),
+      requirementTitle: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Tasks.exportBundle(
+      ctx,
+      ctx.caller,
+      args.instanceIds.map((id) => `task:${id}`),
+      true,
+    );
+  },
+});
+
+// Expanded files API. Versioned names keep Convex-first deployments safe for
+// an older web bundle that still consumes the task-only contracts above.
+
+export const filesLibraryV2 = eventQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      fileId: v.string(),
+      kind: v.union(v.literal("task"), v.literal("headshot")),
+      instanceId: v.union(vv.id("taskInstances"), v.null()),
+      requirementTitle: v.string(),
+      sessionId: v.union(vv.id("sessions"), v.null()),
+      sessionTitle: v.string(),
+      speakerName: v.union(v.string(), v.null()),
+      sourceFilename: v.union(v.string(), v.null()),
+      filename: v.string(),
+      version: v.union(v.number(), v.null()),
+      versionCount: v.union(v.number(), v.null()),
+      uploadedByName: v.union(v.string(), v.null()),
+      uploadedByNote: v.union(v.string(), v.null()),
+      uploadedAt: v.union(v.number(), v.null()),
+      url: v.union(v.string(), v.null()),
+      commentCount: v.number(),
+    }),
+  ),
+  handler: async (ctx) => {
+    return await Tasks.filesLibrary(ctx, ctx.caller);
+  },
+});
+
+export const exportBundleV2 = eventQuery({
+  args: { fileIds: v.array(v.string()) },
+  returns: v.array(
+    v.object({
+      filename: v.string(),
+      url: v.union(v.string(), v.null()),
+      sessionTitle: v.string(),
+      speakerName: v.union(v.string(), v.null()),
+      requirementTitle: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Tasks.exportBundle(ctx, ctx.caller, args.fileIds);
+  },
+});
+
+// Organizer-side comment thread (same rows the portal reads).
+
+export const taskComments = eventQuery({
+  args: { instanceId: v.id("taskInstances") },
+  returns: v.array(
+    v.object({
+      commentId: vv.id("uploadComments"),
+      authorName: v.union(v.string(), v.null()),
+      authorEmail: v.union(v.string(), v.null()),
+      body: v.string(),
+      createdAt: v.number(),
+      mine: v.boolean(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Tasks.listTaskComments(
+      ctx,
+      ctx.caller.user,
+      ctx.caller.event,
+      args.instanceId,
+    );
+  },
+});
+
+export const commentOnTask = eventMutation({
+  args: { instanceId: v.id("taskInstances"), body: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Tasks.addTaskComment(
+      ctx,
+      ctx.caller.user,
+      ctx.caller.event,
+      args.instanceId,
+      args.body,
+    );
+    return null;
   },
 });

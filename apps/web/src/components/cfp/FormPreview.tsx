@@ -93,10 +93,15 @@ function PreviewField({
   const text = typeof value === 'string' ? value : ''
   const selected = Array.isArray(value) ? value : []
 
+  // Same rule as the real renderer (CfpForm): a multiselect or file field is
+  // a wrapper, not a labelable control, so <label for> would name nothing —
+  // role="group" plus the id lets Field name it with aria-labelledby.
+  const grouped = field.kind === 'multiselect' || field.kind === 'file'
+
   return (
     <Field
       label={field.label === '' ? 'Untitled question' : field.label}
-      htmlFor={id}
+      htmlFor={grouped ? undefined : id}
       required={field.required}
       hint={field.help}
     >
@@ -122,7 +127,11 @@ function PreviewField({
           onChange={(next) => onChange(next)}
         />
       ) : field.kind === 'multiselect' ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+        <div
+          role="group"
+          id={id}
+          style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}
+        >
           {(field.options ?? []).map((option) => (
             <Checkbox
               key={option}
@@ -140,6 +149,8 @@ function PreviewField({
         </div>
       ) : field.kind === 'file' ? (
         <div
+          role="group"
+          id={id}
           style={{
             padding: 'var(--space-3)',
             borderRadius: 'var(--radius-control)',

@@ -1,6 +1,29 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  plugins: [
+    {
+      name: "convex-test-storage-content-type",
+      enforce: "pre",
+      transform(code, id) {
+        if (!id.includes("/convex-test/dist/index.js")) return;
+        const withoutMime = `size: blob.size,\n                        sha256: await blobSha(blob),`;
+        if (!code.includes(withoutMime)) {
+          throw new Error(
+            "convex-test storage shim no longer matches; verify its fake metadata implementation",
+          );
+        }
+        // convex-test 0.0.55 keeps the Blob itself (including Blob.type) but
+        // omits contentType from its fake `_storage` system row. Real Convex
+        // persists it. Keep the fake faithful so production validators remain
+        // fail-closed rather than learning a test-only missing-MIME fallback.
+        return code.replace(
+          withoutMime,
+          `size: blob.size,\n                        contentType: blob.type || undefined,\n                        sha256: await blobSha(blob),`,
+        );
+      },
+    },
+  ],
   test: {
     environment: "edge-runtime",
     include: ["convex/**/*.test.ts"],
@@ -27,7 +50,11 @@ export default defineConfig({
         // The component packages ship their convex-test registration helpers as
         // raw TS with `import.meta.glob`, which only works when Vite transforms
         // them instead of externalizing them.
-        inline: ["@convex-dev/resend", "@convex-dev/rate-limiter"],
+        inline: [
+          "@convex-dev/resend",
+          "@convex-dev/rate-limiter",
+          "convex-test",
+        ],
       },
     },
   },

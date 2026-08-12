@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { vAnswerValue, vFormDef } from "./shared/formDef";
+import { vReviewAnswers, vScorecard } from "./shared/scorecard";
 
 // Org-level roles: owner manages ownership + billing-ish concerns, admin has
 // org-wide admin powers. Event-scoped access lives in eventMembers.
@@ -19,6 +20,10 @@ export const contactProfileFields = {
   phone: v.optional(v.string()),
   // Short role line, e.g. "CTO, Acme" — shown on public speaker cards.
   tagline: v.optional(v.string()),
+  // Structured versions of the tagline (W6): widget cards want "Job title,
+  // Company" as separate fields; tagline stays as the freeform fallback.
+  jobTitle: v.optional(v.string()),
+  company: v.optional(v.string()),
   bio: v.optional(v.string()),
   headshotId: v.optional(v.id("_storage")),
   links: v.optional(
@@ -125,6 +130,8 @@ export default defineSchema({
   })
     .index("by_orgId", ["orgId"])
     .index("by_slug", ["slug"])
+    .index("by_logoId", ["logoId"])
+    .index("by_bannerId", ["bannerId"])
     // The hourly reminder sweep (convex/reminders.ts) dispatches only events
     // that opted into reminders. Indexing the cadence lets it SELECT those
     // rows instead of scanning the head of the table and silently missing
@@ -142,9 +149,74 @@ export default defineSchema({
   contacts: defineTable({
     orgId: v.id("organizations"),
     ...contactProfileFields,
+    // Light CRM (W8): freeform labels, filterable in the directory. A future
+    // pipeline/segments build layers on these rather than replacing them.
+    tags: v.optional(v.array(v.string())),
+    // Optional CRM enrollment. Absent means the contact is not on the board.
+    pipelineStage: v.optional(
+      v.union(
+        v.literal("sourced"),
+        v.literal("contacted"),
+        v.literal("shortlisted"),
+        v.literal("confirmed"),
+        v.literal("declined"),
+      ),
+    ),
   })
     .index("by_orgId", ["orgId"])
-    .index("by_orgId_and_email", ["orgId", "email"]),
+    .index("by_orgId_and_email", ["orgId", "email"])
+    // Replacement cleanup only deletes a securely-owned headshot after an
+    // exact reference lookup proves no reusable directory profile still uses
+    // it. Legacy/shared blobs are retained when ownership is ambiguous.
+    .index("by_headshotId", ["headshotId"]),
+
+  // Internal notes on a directory contact (W8) — organizer-only, never
+  // published anywhere. Kept as its own table so activity kinds (stage
+  // moves, outreach) can join it later without a schema rewrite.
+  contactNotes: defineTable({
+    orgId: v.id("organizations"),
+    contactId: v.id("contacts"),
+    authorUserId: v.id("users"),
+    body: v.string(),
+    createdAt: v.number(),
+  }).index("by_contactId", ["contactId"]),
+
+  contactPipelineHistory: defineTable({
+    orgId: v.id("organizations"),
+    contactId: v.id("contacts"),
+    fromStage: v.optional(
+      v.union(
+        v.literal("sourced"),
+        v.literal("contacted"),
+        v.literal("shortlisted"),
+        v.literal("confirmed"),
+        v.literal("declined"),
+      ),
+    ),
+    toStage: v.optional(
+      v.union(
+        v.literal("sourced"),
+        v.literal("contacted"),
+        v.literal("shortlisted"),
+        v.literal("confirmed"),
+        v.literal("declined"),
+      ),
+    ),
+    changedByUserId: v.id("users"),
+    changedAt: v.number(),
+  }).index("by_contactId", ["contactId"]),
+
+  savedSegments: defineTable({
+    orgId: v.id("organizations"),
+    name: v.string(),
+    filters: v.object({
+      search: v.optional(v.string()),
+      tag: v.optional(v.string()),
+      company: v.optional(v.string()),
+    }),
+    createdByUserId: v.id("users"),
+    createdAt: v.number(),
+  }).index("by_orgId", ["orgId"]),
 
   // ── Event library (event-scoped vocabulary) ──────────────────────────
   tracks: defineTable({
@@ -169,6 +241,18 @@ export default defineSchema({
     order: v.number(),
   }).index("by_eventId", ["eventId"]),
 
+  // Session formats (W2). The NAME is the verbatim organizer-facing label —
+  // "Workshop (120 min)" keeps its parenthetical, because the CFP form's
+  // conditional logic matches option strings exactly and the eval asserts
+  // those labels verbatim. `defaultDurationMinutes` is the parsed number, kept
+  // as a separate field precisely so nothing has to re-parse the label.
+  formats: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    defaultDurationMinutes: v.optional(v.number()),
+    order: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
   customFields: defineTable({
     eventId: v.id("events"),
     name: v.string(),
@@ -182,6 +266,86 @@ export default defineSchema({
     options: v.optional(v.array(v.string())),
     appliesTo: v.union(v.literal("session"), v.literal("speaker")),
     order: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
+  // ── Content history & file comments (W5) ─────────────────────────────
+  // One row per content edit of a session (organizer or portal), storing the
+  // values BEFORE the edit so any revision can be restored. CNT-11.
+  sessionRevisions: defineTable({
+    eventId: v.id("events"),
+    sessionId: v.id("sessions"),
+    editedBy: v.id("users"),
+    editedAt: v.number(),
+    /** The fields as they were before this edit (only content fields). */
+    before: v.object({
+      title: v.string(),
+      description: v.optional(v.string()),
+      format: v.optional(v.string()),
+    }),
+    /** What the edit changed them to (for display; restore uses `before`). */
+    after: v.object({
+      title: v.string(),
+      description: v.optional(v.string()),
+      format: v.optional(v.string()),
+    }),
+    /**
+     * Present only when this revision was written BY a restore (W3), so the
+     * history can render it as one event — "Restored the snapshot from …" —
+     * instead of as another anonymous edit. Optional, so every row written
+     * before W3 stays valid and no migration is needed; absence means
+     * "an ordinary edit".
+     *
+     * `restoredSnapshotAt` is denormalized on purpose: the grouping sentence
+     * must not need a second read per row, and it must survive even if the
+     * referenced revision ever becomes unreachable.
+     */
+    origin: v.optional(
+      v.object({
+        kind: v.literal("restore"),
+        restoredRevisionId: v.id("sessionRevisions"),
+        restoredSnapshotAt: v.number(),
+      }),
+    ),
+  }).index("by_sessionId", ["sessionId"]),
+
+  // Comment thread on a task instance's uploaded file(s) — speaker and
+  // organizer both read and write (CNT-05).
+  uploadComments: defineTable({
+    eventId: v.id("events"),
+    instanceId: v.id("taskInstances"),
+    authorUserId: v.id("users"),
+    body: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_instanceId", ["instanceId"])
+    .index("by_eventId", ["eventId"]),
+
+  // ── Embeds (W3) ──────────────────────────────────────────────────────
+  // Named, enable/disable-able widget embeds an organizer generates from the
+  // publish console. The embed id is the public key: /embed/w/<id> renders
+  // the widget, /api/embeds/<id>(.ics) serves the feed — all reading the same
+  // published-program blob with this row's filters applied.
+  embeds: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    widget: v.union(
+      v.literal("sessions"),
+      v.literal("speakers"),
+      v.literal("agenda"),
+      v.literal("itinerary"),
+      v.literal("gallery"),
+    ),
+    enabled: v.boolean(),
+    config: v.object({
+      /** Restrict to one track (by published track name). */
+      trackName: v.optional(v.string()),
+      /** Accent color for the styled widget (hex). */
+      brandColor: v.optional(v.string()),
+      /** Card fields to hide (e.g. "description", "speakers", "room"). */
+      hiddenFields: v.optional(v.array(v.string())),
+    }),
+    createdBy: v.id("users"),
+    updatedAt: v.number(),
   }).index("by_eventId", ["eventId"]),
 
   // ── Audit trail ──────────────────────────────────────────────────────
@@ -282,6 +446,9 @@ export default defineSchema({
     // Form version the answers were last validated against (stamped on
     // submit/resubmit).
     formVersion: v.number(),
+    /** Monotonic proposal-content revision. Optional for pre-fence rows, which
+     * read as version 0 until their first content-changing resubmit. */
+    contentVersion: v.optional(v.number()),
     submittedAt: v.optional(v.number()),
     updatedAt: v.number(),
     withdrawnAt: v.optional(v.number()),
@@ -318,23 +485,81 @@ export default defineSchema({
     ),
     // True when this row mirrors the submitter themself.
     isPrimary: v.boolean(),
+    /** Role label on this proposal: Speaker, Co-speaker, Co-author, Panelist…
+     * Free text so imports can carry whatever the source used. */
+    role: v.optional(v.string()),
   })
     .index("by_proposalId", ["proposalId"])
     // One-query speaker counts for the organizer's proposal list.
-    .index("by_eventId", ["eventId"]),
+    .index("by_eventId", ["eventId"])
+    .index("by_headshotId", ["headshotId"]),
 
-  // ── Review & sessions (M2) ───────────────────────────────────────────
+  // ── Review & sessions (M2, rebuilt W2) ───────────────────────────────
+  // An evaluation plan is one or more rounds per event, each with its own
+  // dates, anonymization flag, reviewer pool and scorecard.
+  reviewRounds: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    /** Display + default-round order (0 = first). */
+    order: v.number(),
+    opensAt: v.optional(v.number()),
+    closesAt: v.optional(v.number()),
+    /** Blind review: reviewers in this round see no author identity. */
+    anonymized: v.boolean(),
+    /** Per-reviewer assignment ceiling for auto-distribute; no cap when unset. */
+    reviewerCap: v.optional(v.number()),
+    scorecard: vScorecard,
+    /**
+     * Set while the launch flow is still building the round (W11).
+     *
+     * Polarity is deliberate: ABSENCE means launched, so every row written
+     * before this field existed keeps exactly today's behavior with no
+     * migration. A draft round is visible only on the organizer's plan list
+     * (as a draft) — it assigns nothing, reaches no reviewer, and counts
+     * toward no readiness number until `launchRound` clears the marker.
+     */
+    draft: v.optional(v.boolean()),
+    updatedAt: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
+  // Round membership: who reviews in a given round. Kept separate from
+  // eventMembers so round 2 can have a different pool than round 1.
+  roundReviewers: defineTable({
+    eventId: v.id("events"),
+    roundId: v.id("reviewRounds"),
+    userId: v.id("users"),
+  })
+    .index("by_roundId_and_userId", ["roundId", "userId"])
+    .index("by_eventId_and_userId", ["eventId", "userId"]),
+
   // Assignment + evaluation in one row: created when a reviewer is assigned.
   reviews: defineTable({
     eventId: v.id("events"),
     proposalId: v.id("proposals"),
     reviewerUserId: v.id("users"),
+    /** Absent only on rows that predate rounds; read through the event's
+     * default round (see model/reviews.ts `roundFor`). */
+    roundId: v.optional(v.id("reviewRounds")),
     status: v.union(
       v.literal("assigned"),
       v.literal("draft"),
       v.literal("submitted"),
       v.literal("locked"),
+      // Reviewer declared a conflict of interest; out of their queue,
+      // surfaced to organizers for reassignment.
+      v.literal("conflict"),
     ),
+    /** Scorecard answers keyed by criterion id (W2). */
+    answers: v.optional(vReviewAnswers),
+    /** Proposal content revision these answers evaluate. Optional legacy rows
+     * are version 0; writes must fence against both this and the proposal. */
+    contentVersion: v.optional(v.number()),
+    /** Weighted mean of this review's numeric criteria, precomputed on
+     * submit so list views never re-derive it. */
+    weightedScore: v.optional(v.number()),
+    conflictNote: v.optional(v.string()),
+    // Pre-W2 columns; still written for the default round so the decision
+    // pipeline's recommendation counts keep working.
     score: v.optional(v.number()), // 1-5
     recommendation: v.optional(
       v.union(v.literal("accept"), v.literal("decline"), v.literal("neutral")),
@@ -361,25 +586,156 @@ export default defineSchema({
     ...contactProfileFields,
     // Set when a portal user claims this snapshot (M3).
     userId: v.optional(v.id("users")),
+    // Values for the event's speaker-scoped custom fields (W6: logistics
+    // like travel preferences), keyed by customFields id. Wired through
+    // speakers.setCustomValues; select/multiselect store option strings.
+    customValues: v.optional(
+      v.record(v.string(), v.union(v.string(), v.array(v.string()))),
+    ),
   })
     .index("by_eventId", ["eventId"])
     .index("by_contactId", ["contactId"])
     .index("by_proposalSpeakerId", ["proposalSpeakerId"])
     .index("by_userId", ["userId"])
-    .index("by_eventId_and_email", ["eventId", "email"]),
+    .index("by_eventId_and_userId", ["eventId", "userId"])
+    .index("by_eventId_and_email", ["eventId", "email"])
+    .index("by_eventId_and_headshotId", ["eventId", "headshotId"])
+    .index("by_headshotId", ["headshotId"]),
+
+  // One-time, actor-bound headshot upload tickets. Only the authenticated HTTP
+  // upload action receives bytes and calls storage.store; the client never sees
+  // the resulting storage id. Attach consumes the ready ticket rather than a
+  // bearer-like raw id.
+  headshotUploads: defineTable({
+    orgId: v.id("organizations"),
+    eventId: v.id("events"),
+    eventContactId: v.id("eventContacts"),
+    uploadedByUserId: v.id("users"),
+    purpose: v.literal("speakerHeadshot"),
+    expectedContentType: v.string(),
+    expectedSize: v.number(),
+    // Browser-provided basename, validated at authenticated ticket minting.
+    // Optional for tickets created before provenance was retained.
+    originalFilename: v.optional(v.string()),
+    // Raw source bytes live only long enough for the private Node action to
+    // decode and normalize them. The HTTP action records the fresh storage id
+    // immediately so the sweeper can recover a crashed/lost-response action.
+    sourceStorageId: v.optional(v.id("_storage")),
+    sourceStoredAt: v.optional(v.number()),
+    sourceContentType: v.optional(v.string()),
+    sourceSize: v.optional(v.number()),
+    sourceCleanupPending: v.optional(v.boolean()),
+    sourceDeletedAt: v.optional(v.number()),
+    storageId: v.optional(v.id("_storage")),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("uploading"),
+      v.literal("ready"),
+      v.literal("attached"),
+      v.literal("rejected"),
+      v.literal("discarded"),
+      v.literal("replaced"),
+      v.literal("deleted"),
+      v.literal("retained"),
+      v.literal("cleanupPending"),
+    ),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    claimedAt: v.optional(v.number()),
+    uploadLeaseExpiresAt: v.optional(v.number()),
+    reservedBytes: v.optional(v.number()),
+    reservedBlobCount: v.optional(v.number()),
+    storageAttemptStartedAt: v.optional(v.number()),
+    outputStoreStartedAt: v.optional(v.number()),
+    outputKnownDeletedAt: v.optional(v.number()),
+    quotaState: v.optional(
+      v.union(
+        v.literal("conservative"),
+        v.literal("reconciled"),
+        v.literal("indeterminate"),
+      ),
+    ),
+    // Present only when the dedicated HTTP action itself stored the bytes.
+    // Cleanup never deletes a legacy/client-uploaded id without this proof.
+    serverStoredAt: v.optional(v.number()),
+    registeredAt: v.optional(v.number()),
+    sanitizedContentType: v.optional(v.string()),
+    sanitizedSize: v.optional(v.number()),
+    width: v.optional(v.number()),
+    height: v.optional(v.number()),
+    attachedAt: v.optional(v.number()),
+    replacedAt: v.optional(v.number()),
+    deletedAt: v.optional(v.number()),
+    cleanupAfter: v.optional(v.number()),
+  })
+    .index("by_storageId", ["storageId"])
+    .index("by_sourceStorageId", ["sourceStorageId"])
+    .index("by_eventId_and_attachedAt", ["eventId", "attachedAt"])
+    .index("by_sourceCleanupPending_and_sourceStoredAt", [
+      "sourceCleanupPending",
+      "sourceStoredAt",
+    ])
+    .index("by_eventContactId", ["eventContactId"])
+    .index("by_status_and_expiresAt", ["status", "expiresAt"])
+    .index("by_status_and_cleanupAfter", ["status", "cleanupAfter"]),
+
+  // Durable quota accounting includes active and retained server-owned
+  // headshots. `ticketCount` counts reserved physical blob slots (two during
+  // an indeterminate store attempt, one after success reconciliation).
+  // A blob releases its reservation only after safe deletion.
+  headshotUploadUsage: defineTable({
+    orgId: v.id("organizations"),
+    userId: v.id("users"),
+    storedBytes: v.number(),
+    ticketCount: v.number(),
+    updatedAt: v.number(),
+  }).index("by_orgId_and_userId", ["orgId", "userId"]),
+
+  // Cross-org and org-total ledgers close quota bypasses through disposable
+  // organizations while preserving the stricter per-org/user allowance.
+  headshotUploadUserUsage: defineTable({
+    userId: v.id("users"),
+    storedBytes: v.number(),
+    ticketCount: v.number(),
+    updatedAt: v.number(),
+  }).index("by_userId", ["userId"]),
+
+  headshotUploadOrgUsage: defineTable({
+    orgId: v.id("organizations"),
+    storedBytes: v.number(),
+    ticketCount: v.number(),
+    updatedAt: v.number(),
+  }).index("by_orgId", ["orgId"]),
 
   // A planned talk: created by accepting a proposal or by direct invitation.
   sessions: defineTable({
     eventId: v.id("events"),
     title: v.string(),
     description: v.optional(v.string()),
+    // Free-text format label. Kept as the DISPLAY FALLBACK forever: sessions
+    // that predate the formats library (or whose label never matched a row)
+    // still show what the organizer typed. When `formatId` is set this string
+    // is the library row's name, denormalized so revisions stay readable.
     format: v.optional(v.string()),
+    /** Link to the formats library — what carries the default duration. */
+    formatId: v.optional(v.id("formats")),
+    /** Per-session override of the format's default block length. */
+    durationMinutes: v.optional(v.number()),
     trackId: v.optional(v.id("tracks")),
     tagIds: v.optional(v.array(v.id("tags"))),
     proposalId: v.optional(v.id("proposals")),
     source: v.union(v.literal("cfp"), v.literal("direct")),
     status: v.union(v.literal("planned"), v.literal("cancelled")),
     cancelledAt: v.optional(v.number()),
+    // Content approval (W5): draft content never reaches public output.
+    // Absent on legacy rows = approved (they were already being served).
+    // Approval and the publish console's per-session listing flag are
+    // independent: an enabled draft remains held back until approved.
+    contentStatus: v.optional(
+      v.union(v.literal("draft"), v.literal("approved")),
+    ),
+    contentStatusSetBy: v.optional(v.id("users")),
+    contentStatusSetAt: v.optional(v.number()),
     // ── Scheduling (M6). Draft placement is internal; releasedSlot is what
     // speakers were told (its sequence records the release that carried it).
     roomId: v.optional(v.id("rooms")),
@@ -495,7 +851,11 @@ export default defineSchema({
     // M5 reminder overrides: cadence in days, or disabled outright.
     reminderCadenceDays: v.optional(v.number()),
     remindersDisabled: v.optional(v.boolean()),
-  }).index("by_eventId", ["eventId"]),
+  })
+    .index("by_eventId", ["eventId"])
+    // The reminder dispatcher must discover requirement-level cadence even
+    // when the parent event has no default and the task is not due soon.
+    .index("by_reminderCadenceDays", ["reminderCadenceDays"]),
 
   taskInstances: defineTable({
     requirementId: v.id("requirements"),
@@ -523,9 +883,19 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_eventId", ["eventId"])
+    .index("by_status_and_dueAt", ["status", "dueAt"])
     .index("by_requirementId", ["requirementId"])
     .index("by_sessionId", ["sessionId"])
     .index("by_eventContactId", ["eventContactId"]),
+
+  // One compact operational row per event. All paginated reminder discovery
+  // sources converge here before scheduling a per-event sweep, so one logical
+  // hourly run cannot enqueue the same expensive event sweep repeatedly.
+  reminderDispatchStates: defineTable({
+    eventId: v.id("events"),
+    lastRunAt: v.number(),
+    dispatchCount: v.number(),
+  }).index("by_eventId", ["eventId"]),
 
   // Versioned uploads as task evidence. Resubmission adds a version; prior
   // files, feedback, actors and timestamps are never erased (M4).
@@ -540,7 +910,11 @@ export default defineSchema({
     // task to provided/awaiting review.
     approvedAt: v.optional(v.number()),
     approvedBy: v.optional(v.id("users")),
-  }).index("by_taskInstanceId", ["taskInstanceId"]),
+  })
+    .index("by_taskInstanceId", ["taskInstanceId"])
+    // The files library (W5) reads all of an event's uploads in one scan.
+    .index("by_eventId", ["eventId"])
+    .index("by_storageId", ["storageId"]),
 
   // ── Agenda items (M6): non-session blocks (breaks, registration, meals).
   // They share drafting/overlap checks/publication but bypass CFP, review,
@@ -618,11 +992,18 @@ export default defineSchema({
       v.literal("complained"),
       v.literal("failed"),
     ),
+    // The PROVIDER's own timestamp for the delivery event that last moved
+    // `deliveryStatus`, so the log can say when something was delivered rather
+    // than only when StageStack handed it over. Optional: rows written before
+    // this field existed (and rows still sitting at `queued`, which no provider
+    // event has touched) simply do not carry one — no backfill needed.
+    deliveryUpdatedAt: v.optional(v.number()),
     sentByUserId: v.optional(v.id("users")),
     context: v.optional(v.any()),
   })
     .index("by_eventId", ["eventId"])
     .index("by_contactId", ["contactId"])
+    .index("by_contactId_and_kind", ["contactId", "kind"])
     .index("by_resendEmailId", ["resendEmailId"])
     // Per-contact comms log (M4): `toEmail` is stored NORMALIZED (trimmed +
     // lowercased) by every write path, so an indexed equality on the address

@@ -62,6 +62,10 @@ export const sendOneOff = eventMutation({
         kind: v.literal("contact"),
         eventContactId: v.id("eventContacts"),
       }),
+      v.object({
+        kind: v.literal("contacts"),
+        eventContactIds: v.array(v.id("eventContacts")),
+      }),
       v.object({ kind: v.literal("audience"), audience: vAudience }),
     ),
     subject: v.string(),
@@ -69,7 +73,11 @@ export const sendOneOff = eventMutation({
     html: v.string(),
     now: v.number(),
   },
-  returns: v.object({ sent: v.number(), skipped: v.number() }),
+  returns: v.object({
+    sent: v.number(),
+    failed: v.number(),
+    skipped: v.number(),
+  }),
   handler: async (ctx, args) => {
     return await Comms.sendOneOff(ctx, ctx.caller, {
       to: args.to,
@@ -77,6 +85,23 @@ export const sendOneOff = eventMutation({
       html: args.html,
       now: args.now,
     });
+  },
+});
+
+/**
+ * Recent-send failure summary (CFP-08). A refused send commits the caller's
+ * write and lands as a `failed` messages row, so repeated failures — almost
+ * always a misconfigured mail deployment — need an organizer-visible signal.
+ */
+export const deliveryHealth = eventQuery({
+  args: {},
+  returns: v.object({
+    scanned: v.number(),
+    failed: v.number(),
+    lastFailedAt: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx) => {
+    return await Comms.deliveryHealth(ctx, ctx.caller);
   },
 });
 
@@ -91,6 +116,7 @@ export const contactLog = eventQuery({
       toEmail: v.string(),
       deliveryStatus: vDeliveryStatus,
       sentAt: v.number(),
+      deliveryUpdatedAt: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {

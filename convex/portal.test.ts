@@ -10,6 +10,7 @@ import {
   setupTest,
   signIn,
   type TestT,
+  type TestUserT,
 } from "./test.helpers";
 
 // Speaker portal (M3). The rules worth breaking the build over: access comes
@@ -80,6 +81,46 @@ async function eventContact(t: TestT, id: Id<"eventContacts">) {
     if (row === null) throw new Error("no eventContact");
     return row;
   });
+}
+
+function pngBlob(): Blob {
+  const binary = atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  );
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new Blob([bytes.buffer as ArrayBuffer], { type: "image/png" });
+}
+
+async function uploadPortalHeadshot(
+  t: TestT,
+  as: TestUserT,
+  eventSlug: string,
+  eventContactId: Id<"eventContacts">,
+): Promise<Id<"_storage">> {
+  const body = pngBlob();
+  const ticket = await as.mutation(api.portal.beginHeadshotUpload, {
+    eventSlug,
+    eventContactId,
+    contentType: body.type,
+    size: body.size,
+  });
+  const response = await as.fetch(`/api/headshots/${ticket.uploadId}`, {
+    method: "POST",
+    headers: { "Content-Type": body.type },
+    body,
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ ok: true });
+  await as.mutation(api.portal.attachHeadshot, {
+    eventSlug,
+    eventContactId,
+    uploadId: ticket.uploadId,
+  });
+  const upload = await t.run(async (ctx) =>
+    ctx.db.get("headshotUploads", ticket.uploadId),
+  );
+  if (upload?.storageId === undefined) throw new Error("storage id missing");
+  return upload.storageId;
 }
 
 /** An organizer, an event, and a directly invited speaker whose email matches
@@ -204,6 +245,55 @@ describe("portal.enter (verified-email auto-claim)", () => {
     ).toHaveLength(1);
   });
 
+  test("a snapshot with a split tagline still loads the portal", async () => {
+    // Regression: snapshot time splits "Title, Company" into structured
+    // jobTitle/company (2c55f84), and `portal.context`'s returns validator
+    // rejected the extra fields — every speaker whose tagline split saw
+    // "This portal could not be loaded" (Aug 2026 eval).
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+    await alice.mutation(api.sessions.createDirect, {
+      eventSlug,
+      title: "Opening keynote",
+      speaker: {
+        firstName: "Dana",
+        lastName: "Keynote",
+        email: "dana@example.com",
+        tagline: "Principal Engineer, Acme",
+      },
+    });
+
+    const dana = await signIn(t, "dana", VERIFIED);
+    await dana.mutation(api.portal.enter, { eventSlug });
+    const context = await dana.query(api.portal.context, { eventSlug });
+    expect(context.speaking[0].eventContact).toMatchObject({
+      tagline: "Principal Engineer, Acme",
+      jobTitle: "Principal Engineer",
+      company: "Acme",
+    });
+
+    // A full-profile save must round-trip the structured fields, not clear
+    // them (`updateMyProfile` treats omitted optionals as removals).
+    await dana.mutation(api.portal.updateMyProfile, {
+      eventSlug,
+      eventContactId: context.speaking[0].eventContact._id,
+      profile: {
+        firstName: "Dana",
+        lastName: "Keynote",
+        tagline: "Principal Engineer, Acme",
+        jobTitle: "Principal Engineer",
+        company: "Acme",
+      },
+    });
+    const after = await dana.query(api.portal.context, { eventSlug });
+    expect(after.speaking[0].eventContact).toMatchObject({
+      jobTitle: "Principal Engineer",
+      company: "Acme",
+    });
+  });
+
   test("an unverified email can neither claim a snapshot nor complete a handoff", async () => {
     const t = setupTest();
     const { eventSlug, eventContactId } = await directSetup(t);
@@ -247,6 +337,96 @@ describe("portal.enter (verified-email auto-claim)", () => {
 });
 
 describe("portal.updateMyProfile", () => {
+  test("attaches a valid photo immediately, refreshes linked records, and completes headshot evidence", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, eventContactId } = await directSetup(t);
+    await alice.mutation(api.tasks.createRequirement, {
+      eventSlug,
+      title: "Speaker headshot",
+      scope: "participant",
+      evidence: "profileField",
+      fieldKey: "headshot",
+      reviewRequired: false,
+      dueAt: Date.parse("2026-08-20T00:00:00Z"),
+    });
+    const dana = await signIn(t, "dana", VERIFIED);
+    await dana.mutation(api.portal.enter, { eventSlug });
+    const storageId = await uploadPortalHeadshot(
+      t,
+      dana,
+      eventSlug,
+      eventContactId,
+    );
+
+    const context = await dana.query(api.portal.context, { eventSlug });
+    expect(context.speaking[0].eventContact).toMatchObject({
+      headshotId: storageId,
+    });
+    expect(context.speaking[0].eventContact.headshotUrl).toContain("http");
+    const snapshot = await eventContact(t, eventContactId);
+    const directory = await t.run(async (ctx) =>
+      snapshot.contactId === undefined
+        ? null
+        : ctx.db.get("contacts", snapshot.contactId),
+    );
+    expect(snapshot.headshotId).toBe(storageId);
+    expect(directory?.headshotId).toBe(storageId);
+    expect(await alice.query(api.tasks.listInstances, { eventSlug })).toEqual([
+      expect.objectContaining({ status: "complete" }),
+    ]);
+    expect(await auditActions(t)).toContain("portal.attachHeadshot");
+  });
+
+  test("removing an event photo preserves a newer cross-event directory photo", async () => {
+    const t = setupTest();
+    const { alice, orgSlug, eventSlug, eventContactId } = await directSetup(t);
+    const otherSlug = await createEvent(alice, orgSlug, "Acme Winter");
+    const { eventContactId: otherContactId } = await alice.mutation(
+      api.sessions.createDirect,
+      {
+        eventSlug: otherSlug,
+        title: "Winter fireside",
+        speaker: {
+          firstName: "Dana",
+          lastName: "Keynote",
+          email: "dana@example.com",
+        },
+      },
+    );
+    const dana = await signIn(t, "dana", VERIFIED);
+    await dana.mutation(api.portal.enter, { eventSlug });
+    const oldEventPhoto = await uploadPortalHeadshot(
+      t,
+      dana,
+      eventSlug,
+      eventContactId,
+    );
+    await dana.mutation(api.portal.enter, { eventSlug: otherSlug });
+    const newerDirectoryPhoto = await uploadPortalHeadshot(
+      t,
+      dana,
+      otherSlug,
+      otherContactId,
+    );
+    expect(newerDirectoryPhoto).not.toBe(oldEventPhoto);
+
+    await dana.mutation(api.portal.removeMyHeadshot, {
+      eventSlug,
+      eventContactId,
+    });
+
+    const oldSnapshot = await eventContact(t, eventContactId);
+    const otherSnapshot = await eventContact(t, otherContactId);
+    const directory = await t.run(async (ctx) =>
+      oldSnapshot.contactId === undefined
+        ? null
+        : ctx.db.get("contacts", oldSnapshot.contactId),
+    );
+    expect(oldSnapshot.headshotId).toBeUndefined();
+    expect(otherSnapshot.headshotId).toBe(newerDirectoryPhoto);
+    expect(directory?.headshotId).toBe(newerDirectoryPhoto);
+  });
+
   test("refreshes the snapshot and the org directory, never another event", async () => {
     const t = setupTest();
     const { alice, orgSlug, eventSlug, eventContactId } = await directSetup(t);
@@ -357,9 +537,11 @@ describe("portal.updateMyProfile", () => {
         eventContactId,
         profile: { firstName: "Mallory", lastName: "Malicious" },
       }),
-      mallory.mutation(api.portal.generateHeadshotUploadUrl, {
+      mallory.mutation(api.portal.beginHeadshotUpload, {
         eventSlug,
         eventContactId,
+        contentType: "image/png",
+        size: 10,
       }),
       mallory.mutation(api.portal.confirmParticipation, {
         eventSlug,
@@ -591,6 +773,11 @@ describe("published blob follows privacy transitions", () => {
       participantId,
       to: "confirmed",
     });
+    await alice.mutation(api.sessions.setContentStatus, {
+      eventSlug,
+      sessionId,
+      to: "approved",
+    });
     await alice.mutation(api.publish.setLineup, { eventSlug, enabled: true });
     await alice.mutation(api.publish.setSession, {
       eventSlug,
@@ -685,7 +872,6 @@ describe("published blob follows privacy transitions", () => {
     expect(rows).toEqual([]);
   });
 });
-
 
 describe("manager backstage audience", () => {
   test("the manager sees the backstage link only once a speaker confirmed", async () => {

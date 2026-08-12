@@ -5,6 +5,7 @@ import {
   fieldDomId,
   isBlankAnswer,
   missingAnswers,
+  proposalEditAccess,
 } from './model'
 import type { FieldDef, FormDef } from '@convex/shared/formDef'
 import type { Answers } from './model'
@@ -69,7 +70,11 @@ describe('conditionMet', () => {
   })
 
   it('notEquals is met while the controlling field is still unanswered', () => {
-    const cond = { fieldId: 'format', op: 'notEquals', value: 'Workshop' } as const
+    const cond = {
+      fieldId: 'format',
+      op: 'notEquals',
+      value: 'Workshop',
+    } as const
     expect(conditionMet(cond, {})).toBe(true)
     expect(conditionMet(cond, { format: 'Workshop' })).toBe(false)
   })
@@ -108,7 +113,10 @@ describe('missingAnswers (submit blockers)', () => {
 
   it('treats "", [], and null as blank for a required field', () => {
     for (const blank of ['', '   ', null, []] as const) {
-      const out = missingAnswers(form, { ...complete, talkTitle: blank as never })
+      const out = missingAnswers(form, {
+        ...complete,
+        talkTitle: blank as never,
+      })
       expect(out.map((m) => m.field.id)).toContain('talkTitle')
     }
     expect(isBlankAnswer(undefined)).toBe(true)
@@ -176,15 +184,71 @@ describe('cfpWindowState', () => {
   })
 
   it('an unexpired reopen overrides a closed window; an expired one does not', () => {
-    expect(cfpWindowState({ openAt, closeAt, reopenedUntil: 3_000, now: 2_500 })).toBe(
-      'open',
-    )
-    expect(cfpWindowState({ openAt, closeAt, reopenedUntil: 2_400, now: 2_500 })).toBe(
-      'closed',
-    )
+    expect(
+      cfpWindowState({ openAt, closeAt, reopenedUntil: 3_000, now: 2_500 }),
+    ).toBe('open')
+    expect(
+      cfpWindowState({ openAt, closeAt, reopenedUntil: 2_400, now: 2_500 }),
+    ).toBe('closed')
     // A reopen also overrides "before".
-    expect(cfpWindowState({ openAt, closeAt, reopenedUntil: 900, now: 500 })).toBe(
-      'open',
+    expect(
+      cfpWindowState({ openAt, closeAt, reopenedUntil: 900, now: 500 }),
+    ).toBe('open')
+  })
+})
+
+describe('proposalEditAccess', () => {
+  it('keeps undecided proposals eligible for the ordinary CFP window', () => {
+    for (const status of [
+      'draft',
+      'pending',
+      'acceptQueue',
+      'declineQueue',
+    ] as const) {
+      expect(proposalEditAccess({ status, now: 2_000 })).toBe('eligible')
+    }
+  })
+
+  it('requires a live proposal-specific grant for a released acceptance', () => {
+    expect(proposalEditAccess({ status: 'accepted', now: 2_000 })).toBe(
+      'locked',
     )
+    expect(
+      proposalEditAccess({
+        status: 'accepted',
+        reopenedUntil: 2_500,
+        now: 2_000,
+      }),
+    ).toBe('eligible')
+    expect(
+      proposalEditAccess({
+        status: 'accepted',
+        reopenedUntil: 1_500,
+        now: 2_000,
+      }),
+    ).toBe('expired-grant')
+  })
+
+  it('keeps declined and withdrawn proposals correction-only', () => {
+    expect(proposalEditAccess({ status: 'declined', now: 2_000 })).toBe(
+      'locked',
+    )
+    expect(proposalEditAccess({ status: 'withdrawn', now: 2_000 })).toBe(
+      'locked',
+    )
+  })
+
+  it('locks every proposal when its event is archived', () => {
+    expect(
+      proposalEditAccess({
+        status: 'accepted',
+        reopenedUntil: 3_000,
+        archivedAt: 1_900,
+        now: 2_000,
+      }),
+    ).toBe('locked')
+    expect(
+      proposalEditAccess({ status: 'draft', archivedAt: 1_900, now: 2_000 }),
+    ).toBe('locked')
   })
 })

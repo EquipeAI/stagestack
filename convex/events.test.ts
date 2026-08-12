@@ -29,6 +29,15 @@ describe("events.create", () => {
     expect(org.slug).toBe(orgSlug);
     expect(role).toBe("organizer");
     expect(orgRole).toBe("owner");
+    const customFields = await alice.query(api.library.list, { eventSlug });
+    expect(customFields.customFields).toEqual([
+      expect.objectContaining({
+        name: "Travel preferences",
+        kind: "text",
+        appliesTo: "speaker",
+        order: 0,
+      }),
+    ]);
   });
 
   test("NEGATIVE: a non-member of the org cannot create an event in it", async () => {

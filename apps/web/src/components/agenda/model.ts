@@ -1,6 +1,12 @@
 import { DateTime } from 'luxon'
+import {
+  boardSpeakerIds,
+  candidateConflicts,
+  boardScheduledThings as sharedBoardScheduledThings,
+} from '@convex/shared/agenda'
 import type { FunctionReturnType } from 'convex/server'
 import type { api } from '@convex/_generated/api'
+import type { Conflict, ScheduledThing } from '@convex/shared/agenda'
 import type { Id } from '@convex/_generated/dataModel'
 
 // The agenda board's read model (M6). The list/day/week/track/room views are
@@ -48,9 +54,28 @@ export const HOUR_MS = 60 * 60 * 1000
 export const MIN_MS = 60 * 1000
 /** One hour of wall-clock time is this tall. */
 export const HOUR_PX = 64
+/**
+ * The floor a block's drawn height is clamped to. At HOUR_PX = 64 this is 26px
+ * — the height of a block just under 25 minutes long — so anything shorter is
+ * drawn taller than it really is and says so (`BlockCard`'s overflow mark).
+ * Without a floor a 10-minute lightning talk is 10px tall: its own title does
+ * not fit, let alone its time.
+ */
 export const MIN_BLOCK_PX = 26
+/** Durations at or below this are drawn clamped (see MIN_BLOCK_PX). */
+export const CLAMPED_BELOW_MS = (MIN_BLOCK_PX / HOUR_PX) * HOUR_MS
 export const TIME_GUTTER_PX = 60
 export const MIN_COL_PX = 168
+/** W6's coarse-pointer target floor, applied to one 15-minute slot. */
+export const SLOT_TAP_PX = 44
+/**
+ * The grid's hour height WHILE a session is armed for tap-to-place. A slot on
+ * the ordinary grid is 16px tall, which is a fine drop target for a pointer
+ * already holding a block and an impossible one for a thumb — so arming
+ * tap-to-place zooms the time axis until one 15-minute slot is a 44px target.
+ * The lattice itself is unchanged: same slots, same ids, same snap.
+ */
+export const HOUR_PX_PLACING = SLOT_TAP_PX * (60 / SNAP_MIN)
 
 // ── Time helpers (event timezone is authoritative) ─────────────────────────
 
@@ -323,8 +348,169 @@ export function parseSlotDroppableId(
   return { columnKey: rest.slice(0, idx), ms }
 }
 
-/** Round a duration-preserving placement so a dropped block keeps its length. */
+/**
+ * How long a block should be once placed: the length it already has, else the
+ * session's resolved duration (override → format default, W2), else an hour.
+ *
+ * The middle case is the one that matters: a tray card has no interval at all,
+ * so before W13 every dragged Lightning Talk landed as a 60-minute block.
+ */
 export function durationOf(block: PlacedBlock): number {
   const d = block.endsAt - block.startsAt
-  return d > 0 ? d : DEFAULT_DURATION_MS
+  if (d > 0) return d
+  return block.session === undefined
+    ? DEFAULT_DURATION_MS
+    : sessionDurationMs(block.session)
+}
+
+/** A session's block length in ms — `durationMinutes` is resolved server-side
+ * (override → format default → 60), so DEFAULT_DURATION_MS is only ever the
+ * fallback for a projection that predates it. */
+export function sessionDurationMs(session: BoardSession): number {
+  const minutes = session.durationMinutes
+  return typeof minutes === 'number' && minutes > 0
+    ? minutes * MIN_MS
+    : DEFAULT_DURATION_MS
+}
+
+// ── Client-side eligibility (W13) ──────────────────────────────────────────
+// The board asks the SHARED conflict engine (convex/shared/agenda.ts) whether
+// a placement WOULD be legal, so a highlighted cell and the backend's answer
+// cannot disagree. Everything below is pure and bounded to what is on screen.
+
+export type { Conflict, ScheduledThing } from '@convex/shared/agenda'
+
+/**
+ * The board projection as conflict-engine input — the client half of the
+ * server's `toScheduledThings`. Delegates to the shared adapter so the
+ * withdrawn/declined participant filter (`counts()` in convex/model/agenda.ts)
+ * has exactly one implementation.
+ */
+export function boardScheduledThings(board: Board): Array<ScheduledThing> {
+  return sharedBoardScheduledThings(board)
+}
+
+/** Every 15-minute slot start on one grid column, in order. The lattice the
+ * droppables are built from — shared with TimeGrid so an eligibility map and
+ * the cells it colours can never be computed from two different walks. */
+export function columnSlotTimes(
+  day: string,
+  hours: HourRange,
+  zone: string,
+): Array<number> {
+  const base = dayStartMs(day, zone) + hours.startHour * HOUR_MS
+  const span = Math.max(1, hours.endHour - hours.startHour)
+  const count = (span * 60) / SNAP_MIN
+  return Array.from({ length: count }, (_, i) => base + i * SNAP_MIN * MIN_MS)
+}
+
+/**
+ * Which room a drop or tap on `columnKey` means. Only the Room view rewrites
+ * the room; every other grid keeps whatever the block already had.
+ */
+export function roomForColumn(
+  view: ViewId,
+  columnKey: string,
+  current: Id<'rooms'> | undefined,
+): Id<'rooms'> | undefined {
+  if (view !== 'room') return current
+  return columnKey === 'noroom' ? undefined : (columnKey as Id<'rooms'>)
+}
+
+export type SlotEligibility = Map<string, Array<Conflict>>
+
+/**
+ * The conflicts a candidate placement of `session` would have, for every
+ * VISIBLE cell of the scoped view — keyed by the cell's droppable id, so the
+ * grid colours exactly the lattice it drops onto.
+ *
+ * Bounded by construction: columns on screen × slots in the visible hour range.
+ * A cell with no entry is impossible; a cell whose entry has no blocker is
+ * eligible (a same-track warning is still a legal placement).
+ */
+export function eligibleSlots(args: {
+  board: Board
+  session: BoardSession
+  view: ViewId
+  columns: ReadonlyArray<{ key: string; dayKey: string }>
+  hours: HourRange
+  zone: string
+}): SlotEligibility {
+  const { board, session, view, columns, hours, zone } = args
+  const duration = sessionDurationMs(session)
+  const speakerIds = boardSpeakerIds(session)
+  // A session being re-placed must not collide with the placement it is
+  // leaving; the tray case has nothing to exclude.
+  const things = boardScheduledThings(board).filter(
+    (thing) => thing.id !== (session.sessionId as string),
+  )
+  const out: SlotEligibility = new Map()
+  for (const column of columns) {
+    const roomId = roomForColumn(view, column.key, session.roomId)
+    for (const startsAt of columnSlotTimes(column.dayKey, hours, zone)) {
+      out.set(
+        slotDroppableId(column.key, startsAt),
+        candidateConflicts(things, {
+          type: 'session',
+          id: session.sessionId,
+          title: session.title,
+          startsAt,
+          endsAt: startsAt + duration,
+          roomId,
+          trackId: session.trackId,
+          speakerIds,
+        }),
+      )
+    }
+  }
+  return out
+}
+
+/** A cell is placeable unless something non-overridable sits in it. */
+export function slotIsEligible(conflicts: ReadonlyArray<Conflict>): boolean {
+  return !conflicts.some((c) => c.level === 'blocker')
+}
+
+// ── The one placement request ──────────────────────────────────────────────
+
+/**
+ * What the board sends when a block lands somewhere — from a drop, from an
+ * arrow-key drop, or from a tap on a highlighted slot. All three build this
+ * and hand it to the same submit, so "tap to place" cannot drift from "drag to
+ * place": there is one request shape and one caller of each mutation.
+ */
+export type PlacementRequest =
+  | {
+      kind: 'session'
+      sessionId: Id<'sessions'>
+      slot: { startsAt: number; endsAt: number; roomId?: Id<'rooms'> } | null
+    }
+  | {
+      kind: 'item'
+      itemId: Id<'agendaItems'>
+      patch: { startsAt: number; endsAt: number; roomId?: Id<'rooms'> }
+    }
+
+/** The request for landing `block` at `ms` on `columnKey` in `view`. */
+export function placementRequest(args: {
+  view: ViewId
+  block: PlacedBlock
+  columnKey: string
+  ms: number
+}): PlacementRequest {
+  const { view, block, columnKey, ms } = args
+  const startsAt = ms
+  const endsAt = startsAt + durationOf(block)
+  const roomId = roomForColumn(view, columnKey, block.roomId)
+  return block.kind === 'session'
+    ? {
+        kind: 'session',
+        sessionId: block.id as Id<'sessions'>,
+        slot: { startsAt, endsAt, roomId },
+      }
+    : {
+        kind: 'item',
+        itemId: block.id as Id<'agendaItems'>,
+        patch: { startsAt, endsAt, roomId },
+      }
 }

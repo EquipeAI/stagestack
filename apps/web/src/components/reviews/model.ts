@@ -10,9 +10,15 @@ export type Assignment = FunctionReturnType<
 >[number]
 
 export type ReviewStatus = Assignment['status']
-export type Recommendation = NonNullable<Assignment['recommendation']>
 export type ReviewerSpeaker = Assignment['proposal']['speakers'][number]
 export type Answers = Assignment['proposal']['answers']
+export type ReviewAnswers = Assignment['answers']
+export type ScorecardField = Assignment['round']['scorecard'][number]
+
+/** Remount local answer/autosave state whenever the proposal content changes. */
+export function reviewPanelKey(assignment: Assignment): string {
+  return `${assignment.reviewId}:${assignment.contentVersion}`
+}
 
 /** Review state, written exactly as the product says it. */
 export const REVIEW_STATUS_LABEL: Record<ReviewStatus, string> = {
@@ -20,21 +26,8 @@ export const REVIEW_STATUS_LABEL: Record<ReviewStatus, string> = {
   draft: 'Draft',
   submitted: 'Submitted',
   locked: 'Locked',
+  conflict: 'Conflict declared',
 }
-
-export const RECOMMENDATION_LABEL: Record<Recommendation, string> = {
-  accept: 'Accept',
-  neutral: 'Neutral',
-  decline: 'Decline',
-}
-
-export const RECOMMENDATIONS: ReadonlyArray<Recommendation> = [
-  'accept',
-  'neutral',
-  'decline',
-]
-
-export const SCORES: ReadonlyArray<number> = [1, 2, 3, 4, 5]
 
 /** A review still waiting on this reviewer. Drives "unfinished first". */
 export function isUnfinished(assignment: Assignment): boolean {
@@ -43,7 +36,7 @@ export function isUnfinished(assignment: Assignment): boolean {
 
 /** A locked review is evidence: it is shown, never edited. */
 export function isEditable(assignment: Assignment): boolean {
-  return assignment.status !== 'locked'
+  return assignment.status !== 'locked' && assignment.status !== 'conflict'
 }
 
 /**
@@ -129,7 +122,12 @@ export function readableAnswers(
     }
     if (fieldId === 'talkTitle' && text === proposalTitle) continue
     if (text === '—') continue
-    rows.push({ fieldId, label: field?.label ?? fieldLabel(fieldId), text, href })
+    rows.push({
+      fieldId,
+      label: field?.label ?? fieldLabel(fieldId),
+      text,
+      href,
+    })
   }
   return rows.sort((a, b) => {
     const rank = (id: string) => (id === 'abstract' ? 0 : 1)
@@ -143,5 +141,7 @@ export function speakerName(speaker: ReviewerSpeaker): string {
 
 /** "3 of 12 reviewed" — counts are concrete and mono everywhere. */
 export function submittedCount(assignments: ReadonlyArray<Assignment>): number {
-  return assignments.filter((row) => !isUnfinished(row)).length
+  return assignments.filter(
+    (row) => row.status === 'submitted' || row.status === 'locked',
+  ).length
 }

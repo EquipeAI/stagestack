@@ -6,7 +6,12 @@ import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
 import { notifyOrganizers, sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
-import { assertEventActive, assertText } from "./validation";
+import { assertEventActive, assertText, takeAll } from "./validation";
+import {
+  eventUserDisplayName,
+  resolveEventUserDisplayName,
+} from "./userDisplay";
+import type { DisplayNameResolution } from "./userDisplay";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Speaker ops: requirements & task instances (M4).
@@ -39,6 +44,13 @@ const PARTICIPANT_SCAN = 5000;
 const INSTANCE_SCAN = 8000;
 const CONTACT_SCAN = 2000;
 const UPLOAD_SCAN = 200;
+const FILE_LIBRARY_SCAN = 300;
+const FILE_LIBRARY_CURRENT_LIMIT = 120;
+const FILE_LIBRARY_HEADSHOT_CONTACT_LIMIT = 64;
+const FILE_LIBRARY_TASK_CONTACT_LIMIT = 16;
+const FILE_LIBRARY_SESSION_LIMIT = 64;
+const FILE_LIBRARY_HEADSHOT_CONTACT_BYTES = 2 * 1024 * 1024;
+const FILE_LIBRARY_HYDRATION_BYTES = 6 * 1024 * 1024;
 const MAX_PARTICIPANTS_PER_SESSION = 100;
 
 const MAX_TITLE = 200;
@@ -67,7 +79,10 @@ export function isOpen(instance: Doc<"taskInstances">): boolean {
   return !SETTLED.has(instance.status);
 }
 
-export function isOverdue(instance: Doc<"taskInstances">, now: number): boolean {
+export function isOverdue(
+  instance: Doc<"taskInstances">,
+  now: number,
+): boolean {
   return isOpen(instance) && instance.dueAt < now;
 }
 
@@ -155,13 +170,33 @@ function assertFieldKey(
 
 // ── Instantiation ────────────────────────────────────────────────────────
 
-/** Identity of an obligation: one per (requirement, session, participant). */
-function instanceKey(
+/**
+ * Identity of an obligation. Session scope: one per (requirement, session).
+ * Participant scope: one per (requirement, event contact) — a speaker owes a
+ * bio ONCE however many sessions they present (a per-session key here is the
+ * eval-run bug that gave a two-session speaker duplicate speaker-level tasks).
+ */
+function sessionScopeKey(
   requirementId: Id<"requirements">,
   sessionId: Id<"sessions">,
-  participantId: Id<"sessionParticipants"> | undefined,
 ): string {
-  return `${requirementId}:${sessionId}:${participantId ?? "-"}`;
+  return `${requirementId}:session:${sessionId}`;
+}
+
+function participantScopeKey(
+  requirementId: Id<"requirements">,
+  eventContactId: Id<"eventContacts">,
+): string {
+  return `${requirementId}:contact:${eventContactId}`;
+}
+
+/** The key an already-stored instance occupies. Cross-scope collision is
+ * impossible: a requirement is either session- or participant-scoped. */
+function existingInstanceKey(instance: Doc<"taskInstances">): string {
+  return instance.participantId !== undefined &&
+    instance.eventContactId !== undefined
+    ? participantScopeKey(instance.requirementId, instance.eventContactId)
+    : sessionScopeKey(instance.requirementId, instance.sessionId);
 }
 
 type ContactCache = Map<Id<"eventContacts">, Doc<"eventContacts"> | null>;
@@ -217,10 +252,9 @@ async function insertInstance(
     eventContactId: args.eventContactId,
     status: await initialStatus(ctx, cache, requirement, args.eventContactId),
     dueAt: requirement.dueAt,
-    // Fix 2: stamp creation time so the FIRST reminder is due one full cadence
-    // AFTER assignment — not at the next hourly sweep (undefined would read as
-    // epoch 0 and fire immediately).
-    lastRemindedAt: now,
+    // `lastRemindedAt` is reserved for a provider-accepted send. General
+    // cadence uses `_creationTime` as its initial baseline, while due-soon
+    // safety reminders intentionally run at the next hourly evaluation.
     updatedAt: now,
   });
 }
@@ -251,18 +285,21 @@ async function instantiateRequirement(
       )
       .take(INSTANCE_SCAN),
   ]);
-  const seen = new Set(
-    existing.map((i) =>
-      instanceKey(i.requirementId, i.sessionId, i.participantId),
-    ),
-  );
+  const seen = new Set(existing.map(existingInstanceKey));
   const cache: ContactCache = new Map();
   let created = 0;
   for (const session of sessions) {
     if (session.status !== "planned") continue;
-    created += await instantiateOne(ctx, cache, requirement, session._id, seen, {
-      participants: participants.filter((p) => p.sessionId === session._id),
-    });
+    created += await instantiateOne(
+      ctx,
+      cache,
+      requirement,
+      session._id,
+      seen,
+      {
+        participants: participants.filter((p) => p.sessionId === session._id),
+      },
+    );
   }
   return created;
 }
@@ -301,7 +338,7 @@ async function instantiateOne(
 ): Promise<number> {
   let created = 0;
   if (requirement.scope === "session") {
-    const key = instanceKey(requirement._id, sessionId, undefined);
+    const key = sessionScopeKey(requirement._id, sessionId);
     if (seen.has(key)) return 0;
     seen.add(key);
     await insertInstance(ctx, cache, requirement, {
@@ -314,7 +351,12 @@ async function instantiateOne(
     // A withdrawn speaker owes nothing (M4: reminders stop on withdrawal), so
     // they never get an instance in the first place.
     if (participant.state === "withdrawn") continue;
-    const key = instanceKey(requirement._id, sessionId, participant._id);
+    // Once per unique speaker: a contact already owing this requirement on any
+    // session (including this one) is skipped.
+    const key = participantScopeKey(
+      requirement._id,
+      participant.eventContactId,
+    );
     if (seen.has(key)) continue;
     seen.add(key);
     await insertInstance(ctx, cache, requirement, {
@@ -331,9 +373,10 @@ async function instantiateOne(
  * The instantiation seam (MILESTONES M4: "create and assign applicable
  * requirements when an acceptance or direct invitation is formally released").
  * Called from model/sessions.ts after a session and its participants exist,
- * and again after any participant change — it is idempotent per
- * (requirement, session, participant), so a co-speaker added later gets their
- * own obligations without duplicating anyone else's.
+ * and again after any participant change — it is idempotent per requirement
+ * identity key (per session for session scope, per unique speaker for
+ * participant scope), so a co-speaker added later gets their own obligations
+ * without duplicating anyone else's.
  */
 export async function instantiateForSession(
   ctx: MutationCtx,
@@ -348,29 +391,36 @@ export async function instantiateForSession(
   ) {
     return 0;
   }
-  const requirements = (
-    await ctx.db
+  const requirementRows = await takeAll(
+    ctx.db
       .query("requirements")
-      .withIndex("by_eventId", (q) => q.eq("eventId", event._id))
-      .take(REQUIREMENT_SCAN)
-  ).filter((r) => r.active);
+      .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+    REQUIREMENT_SCAN,
+    "requirements",
+  );
+  const requirements = requirementRows.filter((r) => r.active);
   if (requirements.length === 0) return 0;
 
+  // Event-wide existing scan, not per-session: a participant-scope obligation
+  // is owed once per speaker, so an instance on their OTHER session must
+  // suppress creation here too.
   const [existing, participants] = await Promise.all([
-    ctx.db
-      .query("taskInstances")
-      .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
-      .take(INSTANCE_SCAN),
-    ctx.db
-      .query("sessionParticipants")
-      .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
-      .take(MAX_PARTICIPANTS_PER_SESSION),
-  ]);
-  const seen = new Set(
-    existing.map((i) =>
-      instanceKey(i.requirementId, i.sessionId, i.participantId),
+    takeAll(
+      ctx.db
+        .query("taskInstances")
+        .withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+      INSTANCE_SCAN,
+      "task instances",
     ),
-  );
+    takeAll(
+      ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId)),
+      MAX_PARTICIPANTS_PER_SESSION,
+      "participants on one session",
+    ),
+  ]);
+  const seen = new Set(existing.map(existingInstanceKey));
   const cache: ContactCache = new Map();
   let created = 0;
   for (const requirement of requirements) {
@@ -411,6 +461,43 @@ export async function createRequirement(
   );
   const fieldKey = assertFieldKey(args.evidence, args.fieldKey);
   const dueAt = assertDueAt(args.dueAt);
+
+  // Retry guard: a double-submit / network retry re-sends the identical
+  // definition, and it must not mint a second requirement (the eval run turned
+  // five intended types into seven this way). An identical active definition
+  // is the same request — re-run the idempotent backfill and return it.
+  const existingRequirements = await takeAll(
+    ctx.db
+      .query("requirements")
+      .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id)),
+    REQUIREMENT_SCAN,
+    "requirements",
+  );
+  const duplicate = existingRequirements.find(
+    (r) =>
+      r.active &&
+      r.title === title &&
+      r.description === description &&
+      r.scope === args.scope &&
+      r.evidence === args.evidence &&
+      r.fieldKey === fieldKey &&
+      r.reviewRequired === args.reviewRequired &&
+      r.dueAt === dueAt,
+  );
+  if (duplicate !== undefined) {
+    const instances = await instantiateRequirement(
+      ctx,
+      caller.event,
+      duplicate,
+    );
+    return { requirementId: duplicate._id, instances };
+  }
+  if (existingRequirements.length >= REQUIREMENT_SCAN) {
+    throw new ConvexError({
+      code: "event_too_large",
+      message: `This event already has the ${REQUIREMENT_SCAN}-requirement maximum. Consolidate existing requirements or contact support before adding another.`,
+    });
+  }
 
   const requirementId = await ctx.db.insert("requirements", {
     eventId: caller.event._id,
@@ -821,15 +908,32 @@ export async function attachUpload(
     max: MAX_FILENAME,
     code: "invalid_filename",
   });
+  if (
+    filename === "." ||
+    filename === ".." ||
+    /[\\/\u0000-\u001f\u007f]/.test(filename)
+  ) {
+    throw new ConvexError({
+      code: "invalid_filename",
+      message:
+        "File names cannot contain path separators or control characters.",
+    });
+  }
 
-  const existing = await ctx.db
+  const latest = await ctx.db
     .query("uploads")
-    .withIndex("by_taskInstanceId", (q) =>
-      q.eq("taskInstanceId", instance._id),
-    )
-    .take(UPLOAD_SCAN);
-  const version =
-    existing.reduce((max, row) => Math.max(max, row.version), 0) + 1;
+    .withIndex("by_taskInstanceId", (q) => q.eq("taskInstanceId", instance._id))
+    .order("desc")
+    .first();
+  if (latest !== null && latest.version >= UPLOAD_SCAN) {
+    throw new ConvexError({
+      code: "upload_version_limit",
+      message: `A task can keep at most ${UPLOAD_SCAN} file versions.`,
+    });
+  }
+  // `by_taskInstanceId` is ordered by `_creationTime` after the indexed key.
+  // Versions are append-only, so the newest row is the authoritative max.
+  const version = (latest?.version ?? 0) + 1;
   const uploadId = await ctx.db.insert("uploads", {
     eventId: event._id,
     taskInstanceId: instance._id,
@@ -879,12 +983,17 @@ export async function listUploads(
   const { instance } = await requireTaskAccess(ctx, user, event, instanceId);
   const rows = await ctx.db
     .query("uploads")
-    .withIndex("by_taskInstanceId", (q) =>
-      q.eq("taskInstanceId", instance._id),
-    )
-    .take(UPLOAD_SCAN);
+    .withIndex("by_taskInstanceId", (q) => q.eq("taskInstanceId", instance._id))
+    .order("desc")
+    .take(UPLOAD_SCAN + 1);
+  if (rows.length > UPLOAD_SCAN) {
+    throw new ConvexError({
+      code: "upload_version_limit",
+      message: `This task has more than ${UPLOAD_SCAN} file versions. The history is refused rather than silently truncated.`,
+    });
+  }
   const out: UploadRow[] = [];
-  for (const row of rows.sort((a, b) => b.version - a.version)) {
+  for (const row of rows) {
     out.push({
       uploadId: row._id,
       filename: row.filename,
@@ -902,12 +1011,11 @@ async function latestUpload(
   ctx: QueryCtx,
   instanceId: Id<"taskInstances">,
 ): Promise<Doc<"uploads"> | null> {
-  const rows = await ctx.db
+  return await ctx.db
     .query("uploads")
     .withIndex("by_taskInstanceId", (q) => q.eq("taskInstanceId", instanceId))
-    .take(UPLOAD_SCAN);
-  if (rows.length === 0) return null;
-  return rows.reduce((best, row) => (row.version > best.version ? row : best));
+    .order("desc")
+    .first();
 }
 
 // ── Review gate (organizer only) ─────────────────────────────────────────
@@ -1350,4 +1458,774 @@ export async function listInstances(
     });
   }
   return rows;
+}
+
+// ── File comments (W5: CNT-05) ───────────────────────────────────────────
+
+const MAX_COMMENT = 2000;
+const COMMENT_SCAN = 200;
+
+export type TaskCommentRow = {
+  commentId: Id<"uploadComments">;
+  authorName: string | null;
+  authorEmail: string | null;
+  body: string;
+  createdAt: number;
+  mine: boolean;
+};
+
+/** Comment on a task's uploaded evidence. Same access rule as the uploads
+ * themselves: organizers and the task's own speaker/manager. */
+export async function addTaskComment(
+  ctx: MutationCtx,
+  actor: Doc<"users">,
+  event: Doc<"events">,
+  instanceId: Id<"taskInstances">,
+  body: string,
+): Promise<void> {
+  const { instance } = await requireTaskAccess(ctx, actor, event, instanceId);
+  assertEventActive(event);
+  const text = assertText(body, { label: "Comment", max: MAX_COMMENT });
+  await ctx.db.insert("uploadComments", {
+    eventId: event._id,
+    instanceId: instance._id,
+    authorUserId: actor._id,
+    body: text,
+    createdAt: Date.now(),
+  });
+  await logAudit(ctx, {
+    orgId: event.orgId,
+    eventId: event._id,
+    actorUserId: actor._id,
+    action: "task.comment",
+    targetType: "taskInstance",
+    targetId: instance._id,
+    meta: {},
+  });
+}
+
+export async function listTaskComments(
+  ctx: QueryCtx,
+  actor: Doc<"users">,
+  event: Doc<"events">,
+  instanceId: Id<"taskInstances">,
+): Promise<TaskCommentRow[]> {
+  const { instance } = await requireTaskAccess(ctx, actor, event, instanceId);
+  const taskContact =
+    instance.eventContactId === undefined
+      ? null
+      : await ctx.db.get("eventContacts", instance.eventContactId);
+  const participants = await ctx.db
+    .query("sessionParticipants")
+    .withIndex("by_sessionId", (q) => q.eq("sessionId", instance.sessionId))
+    .take(MAX_PARTICIPANTS_PER_SESSION);
+  const managerUserIds = new Set(
+    participants.flatMap((participant) =>
+      participant.managerUserId === undefined
+        ? []
+        : [participant.managerUserId],
+    ),
+  );
+  const rows = await ctx.db
+    .query("uploadComments")
+    .withIndex("by_instanceId", (q) => q.eq("instanceId", instance._id))
+    .take(COMMENT_SCAN);
+  const out: TaskCommentRow[] = [];
+  const authors = new Map<
+    Id<"users">,
+    {
+      personName: string | null;
+      organizer: boolean;
+      speaker: boolean;
+      manager: boolean;
+    }
+  >();
+  for (const row of rows.sort((a, b) => a.createdAt - b.createdAt)) {
+    let authorDetails = authors.get(row.authorUserId);
+    if (authorDetails === undefined) {
+      const author = await ctx.db.get("users", row.authorUserId);
+      authorDetails = {
+        personName: await eventUserDisplayName(
+          ctx,
+          event._id,
+          author,
+          instance.eventContactId,
+        ),
+        organizer:
+          author !== null && (await isEventOrganizer(ctx, author, event)),
+        speaker:
+          author !== null &&
+          taskContact !== null &&
+          taskContact.eventId === event._id &&
+          taskContact.userId === author._id,
+        manager: author !== null && managerUserIds.has(author._id),
+      };
+      authors.set(row.authorUserId, authorDetails);
+    }
+    out.push({
+      commentId: row._id,
+      authorName:
+        authorDetails.personName ??
+        (authorDetails.organizer
+          ? "Organizer"
+          : authorDetails.speaker
+            ? "Speaker"
+            : authorDetails.manager
+              ? "Session manager"
+              : "Someone"),
+      // The shared thread identifies people by a human name or scoped role.
+      // Login/delivery email is not part of either audience's comment surface.
+      authorEmail: null,
+      body: row.body,
+      createdAt: row.createdAt,
+      mine: row.authorUserId === actor._id,
+    });
+  }
+  return out;
+}
+
+// ── Files library & bulk export (W5: CNT-13/CNT-14) ──────────────────────
+
+export type LibraryFileRow = {
+  fileId: string;
+  kind: "task" | "headshot";
+  instanceId: Id<"taskInstances"> | null;
+  requirementTitle: string;
+  sessionId: Id<"sessions"> | null;
+  sessionTitle: string;
+  speakerName: string | null;
+  /** Original browser basename retained as provenance; null for task uploads
+   * (whose stored/download filename is already the original) and legacy
+   * headshots created before provenance capture. */
+  sourceFilename: string | null;
+  /** MIME-correct filename used for view/download and bundle export. */
+  filename: string;
+  version: number | null;
+  versionCount: number | null;
+  uploadedByName: string | null;
+  /** Why `uploadedByName` is null, in the words the surface should show.
+   * Null whenever a name resolved. One producer: never re-worded in TSX. */
+  uploadedByNote: string | null;
+  uploadedAt: number | null;
+  url: string | null;
+  commentCount: number;
+};
+
+/** Original files-library contract kept for clients deployed before headshots
+ * became first-class rows. It is intentionally task-only and contains no
+ * nullable task/session/version fields. */
+export type LegacyLibraryFileRow = {
+  instanceId: Id<"taskInstances">;
+  requirementTitle: string;
+  sessionId: Id<"sessions">;
+  sessionTitle: string;
+  speakerName: string | null;
+  filename: string;
+  version: number;
+  versionCount: number;
+  uploadedAt: number;
+  url: string | null;
+  commentCount: number;
+};
+
+export function legacyLibraryFileRows(
+  rows: ReadonlyArray<LibraryFileRow>,
+): LegacyLibraryFileRow[] {
+  return rows.flatMap((row) => {
+    if (
+      row.kind !== "task" ||
+      row.instanceId === null ||
+      row.sessionId === null ||
+      row.version === null ||
+      row.versionCount === null ||
+      row.uploadedAt === null
+    ) {
+      return [];
+    }
+    return [
+      {
+        instanceId: row.instanceId,
+        requirementTitle: row.requirementTitle,
+        sessionId: row.sessionId,
+        sessionTitle: row.sessionTitle,
+        speakerName: row.speakerName,
+        filename: row.filename,
+        version: row.version,
+        versionCount: row.versionCount,
+        uploadedAt: row.uploadedAt,
+        url: row.url,
+        commentCount: row.commentCount,
+      },
+    ];
+  });
+}
+
+function headshotDownloadFilename(
+  originalFilename: string | undefined,
+): string {
+  if (originalFilename === undefined) return "headshot.webp";
+  const dot = originalFilename.lastIndexOf(".");
+  const rawStem = dot <= 0 ? originalFilename : originalFilename.slice(0, dot);
+  const stem = rawStem.trim().replace(/[. ]+$/g, "");
+  return `${stem.length === 0 ? "headshot" : stem}.webp`;
+}
+
+function genericHeadshotDownloadFilename(
+  contentType: string | null | undefined,
+): string | null {
+  switch (contentType?.split(";", 1)[0]?.trim().toLowerCase()) {
+    case "image/webp":
+      return "headshot.webp";
+    case "image/png":
+      return "headshot.png";
+    case "image/jpeg":
+    case "image/jpg":
+      return "headshot.jpg";
+    default:
+      return null;
+  }
+}
+
+const FILE_LIBRARY_IO_BATCH = 100;
+const fileLibraryEncoder = new TextEncoder();
+
+function encodedDocumentBytes(value: unknown): number {
+  return fileLibraryEncoder.encode(JSON.stringify(value)).length;
+}
+
+export function completeHeadshotContactPage(page: {
+  page: unknown[];
+  isDone: boolean;
+  pageStatus?: "SplitRecommended" | "SplitRequired" | null;
+}): boolean {
+  return (
+    page.isDone &&
+    page.pageStatus !== "SplitRequired" &&
+    page.page.length <= FILE_LIBRARY_HEADSHOT_CONTACT_LIMIT &&
+    encodedDocumentBytes(page.page) <= FILE_LIBRARY_HEADSHOT_CONTACT_BYTES
+  );
+}
+
+async function mapInBatches<Input, Output>(
+  rows: ReadonlyArray<Input>,
+  operation: (row: Input) => Promise<Output>,
+): Promise<Output[]> {
+  const out: Output[] = [];
+  for (let offset = 0; offset < rows.length; offset += FILE_LIBRARY_IO_BATCH) {
+    out.push(
+      ...(await Promise.all(
+        rows.slice(offset, offset + FILE_LIBRARY_IO_BATCH).map(operation),
+      )),
+    );
+  }
+  return out;
+}
+
+/** Every current uploaded deliverable on the event — latest version per task
+ * plus every current headshot referenced by an event-contact snapshot.
+ *
+ * The contact is the source of truth for whether a headshot is current. A
+ * same-event, currently-attached secure-upload ticket may enrich that row with
+ * provenance, but a copied directory/other-event/legacy blob still remains a
+ * downloadable current file. In that fallback case we deliberately expose no
+ * source actor, filename, timestamp, or history from another context. */
+export async function filesLibrary(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  options?: { includeHeadshots?: boolean },
+): Promise<LibraryFileRow[]> {
+  requireOrganizer(caller);
+  const includeHeadshots = options?.includeHeadshots ?? true;
+  const [uploads, headshotContactPage, headshotUploads, comments] =
+    await Promise.all([
+      ctx.db
+        .query("uploads")
+        .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+        .take(FILE_LIBRARY_SCAN + 1),
+      includeHeadshots
+        ? ctx.db
+            .query("eventContacts")
+            .withIndex("by_eventId_and_headshotId", (q) =>
+              q.eq("eventId", caller.event._id).gt("headshotId", undefined),
+            )
+            // Convex permits one paginated range per function. Spend it on
+            // the only source whose legacy rows may contain hundreds of KiB
+            // of custom profile values. A byte split is an explicit refusal,
+            // never a partial files view.
+            .paginate({
+              cursor: null,
+              numItems: FILE_LIBRARY_HEADSHOT_CONTACT_LIMIT + 1,
+              maximumRowsRead: FILE_LIBRARY_HEADSHOT_CONTACT_LIMIT + 1,
+              maximumBytesRead: FILE_LIBRARY_HEADSHOT_CONTACT_BYTES,
+            })
+        : Promise.resolve({
+            page: [] as Array<Doc<"eventContacts">>,
+            isDone: true,
+            pageStatus: null,
+          }),
+      includeHeadshots
+        ? ctx.db
+            .query("headshotUploads")
+            .withIndex("by_eventId_and_attachedAt", (q) =>
+              q.eq("eventId", caller.event._id).gt("attachedAt", undefined),
+            )
+            .take(FILE_LIBRARY_SCAN + 1)
+        : Promise.resolve([] as Array<Doc<"headshotUploads">>),
+      ctx.db
+        .query("uploadComments")
+        .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+        .take(FILE_LIBRARY_SCAN + 1),
+    ]);
+  const headshotContacts = headshotContactPage.page;
+  if (uploads.length > FILE_LIBRARY_SCAN) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 300 uploaded file versions. The files library refuses a partial version history.",
+    });
+  }
+  if (!completeHeadshotContactPage(headshotContactPage)) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 64 current headshots or its headshot profiles exceed the 2 MiB safe read budget. The files library refuses a partial view.",
+    });
+  }
+  if (headshotUploads.length > FILE_LIBRARY_SCAN) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 300 attached headshot versions. The files library cannot report complete same-event history safely.",
+    });
+  }
+  if (comments.length > FILE_LIBRARY_SCAN) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 300 file comments. The files library cannot report complete counts safely.",
+    });
+  }
+
+  const byInstance = new Map<Id<"taskInstances">, Array<Doc<"uploads">>>();
+  for (const upload of uploads) {
+    const list = byInstance.get(upload.taskInstanceId) ?? [];
+    list.push(upload);
+    byInstance.set(upload.taskInstanceId, list);
+  }
+  const commentCount = new Map<Id<"taskInstances">, number>();
+  for (const comment of comments) {
+    commentCount.set(
+      comment.instanceId,
+      (commentCount.get(comment.instanceId) ?? 0) + 1,
+    );
+  }
+
+  if (byInstance.size + headshotContacts.length > FILE_LIBRARY_CURRENT_LIMIT) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event has more than 120 current files. Select a smaller event before opening Files or building a bundle.",
+    });
+  }
+
+  // Hydrate only relationships referenced by current file rows. The three
+  // `.take` sources above have compact, write-bounded strings. Contacts are
+  // different: legacy custom values can make one row approach the database's
+  // document limit. Their indexed range has its own byte ceiling, and every
+  // targeted get below is sequential and charged to this shared budget. At
+  // most one max-size document can cross the soft ceiling before we refuse,
+  // leaving ample room below Convex's 16 MiB transaction read limit.
+  let hydrationBytes = encodedDocumentBytes(headshotContacts);
+  function trackHydratedDocument<T>(document: T): T {
+    if (document !== null && document !== undefined) {
+      hydrationBytes += encodedDocumentBytes(document);
+      if (hydrationBytes > FILE_LIBRARY_HYDRATION_BYTES) {
+        throw new ConvexError({
+          code: "files_export_too_large",
+          message:
+            "This event's file relationships exceed the 6 MiB safe read budget. The files library refuses a partial view.",
+        });
+      }
+    }
+    return document;
+  }
+
+  const instanceDocs: Array<Doc<"taskInstances"> | null> = [];
+  for (const instanceId of byInstance.keys()) {
+    instanceDocs.push(
+      trackHydratedDocument(await ctx.db.get("taskInstances", instanceId)),
+    );
+  }
+  const instanceById = new Map<Id<"taskInstances">, Doc<"taskInstances">>();
+  for (const instance of instanceDocs) {
+    if (instance !== null && instance.eventId === caller.event._id) {
+      instanceById.set(instance._id, instance);
+    }
+  }
+
+  const taskCandidates = [...byInstance].flatMap(([instanceId, list]) => {
+    const instance = instanceById.get(instanceId);
+    if (instance === undefined) return [];
+    const latest = list.reduce((a, b) => (a.version >= b.version ? a : b));
+    return [{ instance, latest, versionCount: list.length }];
+  });
+  const requirementIds = new Set(
+    taskCandidates.map(({ instance }) => instance.requirementId),
+  );
+  const sessionIds = new Set(
+    taskCandidates.map(({ instance }) => instance.sessionId),
+  );
+  const taskContactIds = new Set(
+    taskCandidates.flatMap(({ instance }) =>
+      instance.eventContactId === undefined ? [] : [instance.eventContactId],
+    ),
+  );
+  if (sessionIds.size > FILE_LIBRARY_SESSION_LIMIT) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event's current files span more than 64 sessions. The files library refuses a partial view.",
+    });
+  }
+  const headshotContactIds = new Set(
+    headshotContacts.map((contact) => contact._id),
+  );
+  const additionalTaskContactIds = [...taskContactIds].filter(
+    (eventContactId) => !headshotContactIds.has(eventContactId),
+  );
+  if (additionalTaskContactIds.length > FILE_LIBRARY_TASK_CONTACT_LIMIT) {
+    throw new ConvexError({
+      code: "files_export_too_large",
+      message:
+        "This event's task files span more than 16 additional speaker profiles. The files library refuses a partial view.",
+    });
+  }
+
+  const contactById = new Map<Id<"eventContacts">, Doc<"eventContacts">>(
+    headshotContacts.map((contact) => [contact._id, contact]),
+  );
+  for (const eventContactId of additionalTaskContactIds) {
+    const contact = trackHydratedDocument(
+      await ctx.db.get("eventContacts", eventContactId),
+    );
+    if (contact !== null && contact.eventId === caller.event._id) {
+      contactById.set(contact._id, contact);
+    }
+  }
+  const requirementById = new Map<Id<"requirements">, Doc<"requirements">>();
+  for (const requirementId of requirementIds) {
+    const requirement = trackHydratedDocument(
+      await ctx.db.get("requirements", requirementId),
+    );
+    if (requirement !== null && requirement.eventId === caller.event._id) {
+      requirementById.set(requirement._id, requirement);
+    }
+  }
+  const sessionById = new Map<Id<"sessions">, Doc<"sessions">>();
+  for (const sessionId of sessionIds) {
+    const session = trackHydratedDocument(
+      await ctx.db.get("sessions", sessionId),
+    );
+    if (session !== null && session.eventId === caller.event._id) {
+      sessionById.set(session._id, session);
+    }
+  }
+
+  const headshotVersions = new Map<
+    Id<"eventContacts">,
+    Array<Doc<"headshotUploads">>
+  >();
+  for (const upload of headshotUploads) {
+    const versions = headshotVersions.get(upload.eventContactId) ?? [];
+    versions.push(upload);
+    headshotVersions.set(upload.eventContactId, versions);
+  }
+  for (const versions of headshotVersions.values()) {
+    versions.sort(
+      (a, b) =>
+        (a.attachedAt ?? 0) - (b.attachedAt ?? 0) ||
+        a._creationTime - b._creationTime,
+    );
+  }
+  const headshotCandidates = headshotContacts.flatMap((contact) => {
+    const storageId = contact.headshotId;
+    if (storageId === undefined) return [];
+    const versions = headshotVersions.get(contact._id) ?? [];
+    // Replaced/retained/corrupt duplicate tickets must not be presented as
+    // the current upload's provenance. Ambiguity falls back to an honest
+    // generic row instead of choosing a potentially unrelated actor.
+    const matches = versions.filter(
+      (upload) =>
+        upload.status === "attached" && upload.storageId === storageId,
+    );
+    const provenance = matches.length === 1 ? matches[0] : undefined;
+    const version =
+      provenance === undefined
+        ? null
+        : versions.findIndex((row) => row._id === provenance._id) + 1;
+    return [{ contact, storageId, versions, provenance, version }];
+  });
+
+  // Only non-exact actors require user-row hydration. Reads are deduplicated,
+  // sequential, and charged to the same byte budget as other relationships.
+  const uploaderUserIds = new Set<Id<"users">>();
+  const addUploaderIfNeeded = (
+    userId: Id<"users">,
+    eventContactId: Id<"eventContacts"> | undefined,
+  ) => {
+    if (
+      eventContactId === undefined ||
+      contactById.get(eventContactId)?.userId !== userId
+    ) {
+      uploaderUserIds.add(userId);
+    }
+  };
+  for (const candidate of taskCandidates) {
+    addUploaderIfNeeded(
+      candidate.latest.uploadedBy,
+      candidate.instance.eventContactId,
+    );
+  }
+  for (const candidate of headshotCandidates) {
+    if (candidate.provenance !== undefined) {
+      addUploaderIfNeeded(
+        candidate.provenance.uploadedByUserId,
+        candidate.contact._id,
+      );
+    }
+  }
+  // W5: a file whose uploader IS recorded must name that person. The generic
+  // "Event contributor" placeholder this used to emit was the worst of both
+  // worlds — it read like a resolved actor while naming nobody, and it fired
+  // whenever the account's own profile carried no name even though the event
+  // knew exactly who they were. Resolve through the SAME chain every other
+  // attribution surface uses (`eventUserDisplayName`: exact contact snapshot →
+  // auth profile → the event's own unambiguous snapshot), and when that chain
+  // genuinely resolves nothing, say so instead of inventing a label.
+  const stableUploaders = new Map<Id<"users">, DisplayNameResolution>();
+  for (const userId of uploaderUserIds) {
+    const user = trackHydratedDocument(await ctx.db.get("users", userId));
+    stableUploaders.set(
+      userId,
+      await resolveEventUserDisplayName(ctx, caller.event._id, user),
+    );
+  }
+  const uploaderResolution = (
+    userId: Id<"users">,
+    eventContactId: Id<"eventContacts"> | undefined,
+  ): DisplayNameResolution => {
+    const exact =
+      eventContactId === undefined
+        ? undefined
+        : contactById.get(eventContactId);
+    if (exact?.userId === userId) {
+      const exactName = `${exact.firstName} ${exact.lastName}`
+        .trim()
+        .replace(/\s+/g, " ");
+      if (exactName !== "") return { name: exactName, reason: "resolved" };
+    }
+    return (
+      stableUploaders.get(userId) ?? { name: null, reason: "no_user" as const }
+    );
+  };
+  /**
+   * Honest copy for each distinct way a name can be missing — produced here so
+   * no route has to guess which kind of blank it is looking at, and so the
+   * three are never collapsed into one flattering sentence:
+   *   • no provenance row at all — nobody was ever recorded;
+   *   • the account exists and has set no display name;
+   *   • the account record is gone, or the event holds conflicting names for
+   *     it, so this upload cannot be attributed to a person at all.
+   */
+  const uploaderNote = (
+    resolution: DisplayNameResolution | null,
+  ): string | null => {
+    if (resolution === null) {
+      return "The uploader was not recorded for this file.";
+    }
+    switch (resolution.reason) {
+      case "resolved":
+        return null;
+      case "unnamed_account":
+        return "Uploaded by an account that has not set a display name.";
+      case "no_user":
+      case "ambiguous":
+        return "Not attributable: the uploading account's record is missing, or this event holds more than one name for it.";
+    }
+  };
+
+  // A provenance-less headshot may predate normalization or may be copied
+  // from another event. Read only target storage metadata: never source-event
+  // tickets. Unsupported/unknown bytes remain listed but receive no URL or
+  // misleading extension.
+  const genericStorageIds = new Set<Id<"_storage">>();
+  for (const candidate of headshotCandidates) {
+    if (candidate.provenance === undefined) {
+      genericStorageIds.add(candidate.storageId);
+    }
+  }
+  const metadataEntries = await mapInBatches(
+    [...genericStorageIds],
+    async (storageId) =>
+      [storageId, await ctx.db.system.get(storageId)] as const,
+  );
+  const metadataByStorageId = new Map(metadataEntries);
+  const genericFilenameByStorageId = new Map<Id<"_storage">, string | null>();
+  for (const storageId of genericStorageIds) {
+    genericFilenameByStorageId.set(
+      storageId,
+      genericHeadshotDownloadFilename(
+        metadataByStorageId.get(storageId)?.contentType,
+      ),
+    );
+  }
+
+  const downloadableStorageIds = new Set<Id<"_storage">>();
+  for (const candidate of taskCandidates) {
+    downloadableStorageIds.add(candidate.latest.storageId);
+  }
+  for (const candidate of headshotCandidates) {
+    if (
+      candidate.provenance !== undefined ||
+      genericFilenameByStorageId.get(candidate.storageId) !== null
+    ) {
+      downloadableStorageIds.add(candidate.storageId);
+    }
+  }
+  const urlEntries = await mapInBatches(
+    [...downloadableStorageIds],
+    async (storageId) =>
+      [storageId, await ctx.storage.getUrl(storageId)] as const,
+  );
+  const urlByStorageId = new Map(urlEntries);
+
+  const taskRows: LibraryFileRow[] = taskCandidates.map(
+    ({ instance, latest, versionCount }) => {
+      const requirement = requirementById.get(instance.requirementId);
+      const session = sessionById.get(instance.sessionId);
+      const contact =
+        instance.eventContactId === undefined
+          ? null
+          : (contactById.get(instance.eventContactId) ?? null);
+      const taskUploader = uploaderResolution(
+        latest.uploadedBy,
+        instance.eventContactId,
+      );
+      return {
+        fileId: `task:${instance._id}`,
+        kind: "task",
+        instanceId: instance._id,
+        requirementTitle: requirement?.title ?? "(deleted requirement)",
+        sessionId: instance.sessionId,
+        sessionTitle: session?.title ?? "(deleted session)",
+        speakerName:
+          contact === null
+            ? null
+            : `${contact.firstName} ${contact.lastName}`.trim(),
+        sourceFilename: null,
+        filename: latest.filename,
+        version: latest.version,
+        versionCount,
+        uploadedByName: taskUploader.name,
+        uploadedByNote: uploaderNote(taskUploader),
+        uploadedAt: latest._creationTime,
+        url: urlByStorageId.get(latest.storageId) ?? null,
+        commentCount: commentCount.get(instance._id) ?? 0,
+      };
+    },
+  );
+  const headshotRows: LibraryFileRow[] = headshotCandidates.map(
+    ({ contact, storageId, versions, provenance, version }) => {
+      const genericFilename = genericFilenameByStorageId.get(storageId) ?? null;
+      // No provenance row means nobody was recorded — a different fact from
+      // "recorded, but we cannot name them".
+      const headshotUploader =
+        provenance === undefined
+          ? null
+          : uploaderResolution(provenance.uploadedByUserId, contact._id);
+      return {
+        fileId: `headshot:${contact._id}`,
+        kind: "headshot",
+        instanceId: null,
+        requirementTitle: "Speaker headshot",
+        sessionId: null,
+        sessionTitle: "Speaker profile",
+        speakerName: `${contact.firstName} ${contact.lastName}`.trim(),
+        sourceFilename: provenance?.originalFilename ?? null,
+        filename:
+          provenance === undefined
+            ? (genericFilename ?? "headshot")
+            : headshotDownloadFilename(provenance.originalFilename),
+        version: provenance === undefined || version === 0 ? null : version,
+        versionCount: provenance === undefined ? null : versions.length,
+        uploadedByName: headshotUploader?.name ?? null,
+        uploadedByNote: uploaderNote(headshotUploader),
+        uploadedAt: provenance?.attachedAt ?? null,
+        url:
+          provenance === undefined && genericFilename === null
+            ? null
+            : (urlByStorageId.get(storageId) ?? null),
+        commentCount: 0,
+      };
+    },
+  );
+
+  const out = [...taskRows, ...headshotRows];
+  return out.sort((a, b) => {
+    if (a.uploadedAt === null && b.uploadedAt !== null) return 1;
+    if (a.uploadedAt !== null && b.uploadedAt === null) return -1;
+    if (a.uploadedAt !== null && b.uploadedAt !== null) {
+      const newestFirst = b.uploadedAt - a.uploadedAt;
+      if (newestFirst !== 0) return newestFirst;
+    }
+    return (
+      (a.speakerName ?? a.sessionTitle).localeCompare(
+        b.speakerName ?? b.sessionTitle,
+      ) || a.fileId.localeCompare(b.fileId)
+    );
+  });
+}
+
+export type BundleFile = {
+  filename: string;
+  url: string | null;
+  sessionTitle: string;
+  speakerName: string | null;
+  requirementTitle: string;
+};
+
+/** The latest version of each selected deliverable, for the client-side ZIP
+ * (CNT-14). `fileIds` empty means every current file, except the legacy
+ * `instanceIds: []` compatibility path, which still means every task upload. */
+export async function exportBundle(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  fileIds: string[],
+  legacyTaskOnly = false,
+): Promise<BundleFile[]> {
+  requireOrganizer(caller);
+  if (!legacyTaskOnly && fileIds.length > FILE_LIBRARY_CURRENT_LIMIT) {
+    throw new ConvexError({
+      code: "too_many",
+      message: `Select at most ${FILE_LIBRARY_CURRENT_LIMIT} files at a time.`,
+    });
+  }
+  const all = await filesLibrary(ctx, caller, {
+    includeHeadshots: !legacyTaskOnly,
+  });
+  const eligible = legacyTaskOnly
+    ? all.filter((row) => row.kind === "task")
+    : all;
+  const selected = new Set(fileIds);
+  const wanted =
+    selected.size === 0
+      ? eligible
+      : eligible.filter((row) => selected.has(row.fileId));
+  return wanted.map((row) => ({
+    filename: row.filename,
+    url: row.url,
+    sessionTitle: row.sessionTitle,
+    speakerName: row.speakerName,
+    requirementTitle: row.requirementTitle,
+  }));
 }

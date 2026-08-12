@@ -11,7 +11,19 @@ import type {
   SortKey,
   ViewDef,
 } from '~/components/abstracts/model'
-import { Button, Callout, Card, EmptyState, SearchInput, Toolbar } from '~/ds'
+import type { BulkOutcomeView } from '~/components/abstracts/BulkBar'
+import type { ActiveFilter } from '~/ds'
+import {
+  ActionResult,
+  ActiveFilters,
+  Button,
+  Callout,
+  Card,
+  DataTable,
+  EmptyState,
+  SearchInput,
+  Toolbar,
+} from '~/ds'
 import { copyToClipboard } from '~/lib/clipboard'
 import { AbstractsTable } from '~/components/abstracts/AbstractsTable'
 import { AddProposalDialog } from '~/components/abstracts/AddProposalDialog'
@@ -24,6 +36,7 @@ import {
   ViewsMenu,
 } from '~/components/abstracts/TableMenus'
 import {
+  ABSTRACT_STATUS_LABEL,
   ALL_COLUMN_IDS,
   filterRows,
   loadSavedViews,
@@ -126,6 +139,10 @@ function Abstracts({
 
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [failures, setFailures] = useState<ReadonlyMap<string, string>>(new Map())
+  // The bulk outcome lives on the PAGE, not in the bar: a clean run clears the
+  // selection and unmounts the bar, and that is exactly when the organizer
+  // still needs to read what happened.
+  const [bulkResult, setBulkResult] = useState<BulkOutcomeView | null>(null)
   const [openId, setOpenId] = useState<ProposalId | null>(null)
   const [adding, setAdding] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -272,8 +289,51 @@ function Abstracts({
     })
   }
 
+  // W12: a skeleton, not a sentence in an empty page — the toolbar and the
+  // table's shape are already knowable, so they hold still while the rows land.
+  // "Clear all" clears FILTERS. Sort direction and the column set are not
+  // filters — they are how this organizer reads a table, kept across views and
+  // stored per event — so wiping them to answer "show me everything again"
+  // costs them a set-up they never asked to undo.
+  const clearFilters = () => {
+    setQ('')
+    pushedQ.current = ''
+    patch({ q: undefined, status: undefined })
+  }
+
+  const activeChips: Array<ActiveFilter> = [
+    ...(q.trim() === ''
+      ? []
+      : [
+          {
+            id: 'q',
+            label: `Search: ${q.trim()}`,
+            onRemove: () => {
+              setQ('')
+              pushedQ.current = ''
+              patch({ q: undefined })
+            },
+          },
+        ]),
+    ...state.statuses.map((status) => ({
+      id: `status:${status}`,
+      label: `Status: ${ABSTRACT_STATUS_LABEL[status]}`,
+      onRemove: () => onToggleStatus(status),
+    })),
+  ]
+
   if (list === undefined) {
-    return <p style={{ color: 'var(--text-tertiary)' }}>Loading proposals…</p>
+    return (
+      <Card padded={false}>
+        <DataTable
+          aria-label="Proposals"
+          loading
+          loadingLabel="Loading proposals…"
+          rows={[]}
+          columns={state.cols.map((id) => ({ key: id, header: id }))}
+        />
+      </Card>
+    )
   }
 
   return (
@@ -290,6 +350,7 @@ function Abstracts({
           >
             <SearchInput
               value={q}
+              aria-label="Search proposals"
               placeholder="Search titles, submitters, answers"
               onChange={(e) => setQ(e.target.value)}
             />
@@ -351,6 +412,12 @@ function Abstracts({
         }
       />
 
+      {/* W12: every narrowing in force, each removable, each removal a URL
+          write (replace — a filter tweak is a view of this page, not a
+          journey). The counted chips below are the PICKER; this row is the
+          statement of what is currently on. */}
+      <ActiveFilters chips={activeChips} onClearAll={clearFilters} />
+
       {capped ? (
         <Callout tone="attention" title="This list is not the whole CFP">
           This event has more proposals than one page loads, so only the{' '}
@@ -388,6 +455,16 @@ function Abstracts({
         </Card>
       ) : (
         <>
+          {bulkResult === null ? null : (
+            <ActionResult
+              status={bulkResult.status}
+              title={bulkResult.title}
+              details={bulkResult.lines}
+              onRetry={bulkResult.retry}
+              retryLabel={bulkResult.retryLabel}
+              onDismiss={() => setBulkResult(null)}
+            />
+          )}
           <div
             style={{
               display: 'flex',
@@ -450,6 +527,7 @@ function Abstracts({
           eventSlug={eventSlug}
           selection={selection}
           onFailures={setFailures}
+          onResult={setBulkResult}
           onClear={() => {
             clearSelection()
             setFailures(new Map())

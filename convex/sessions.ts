@@ -1,4 +1,5 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import { internalMutation } from "./_generated/server";
 import { eventMutation, eventQuery } from "./lib/functions";
 import { vv } from "./lib/validators";
 import * as Sessions from "./model/sessions";
@@ -49,6 +50,148 @@ export const setStatus = eventMutation({
   },
 });
 
+export const sendDirectInvitation = internalMutation({
+  args: {
+    sessionId: v.id("sessions"),
+    eventContactId: v.id("eventContacts"),
+    sentByUserId: v.id("users"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Sessions.sendDirectInvitation(ctx, args);
+    return null;
+  },
+});
+
+/** Internal half of an accepted-proposal resubmission. The public CFP
+ * mutation owns submitter authorization and the active reopen grant; this
+ * function only reconciles the already-accepted session in the same logical
+ * operation without exposing a second public write surface. */
+export const syncAcceptedProposalRevision = internalMutation({
+  args: {
+    proposalId: v.id("proposals"),
+    submittedByUserId: v.id("users"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const proposal = await ctx.db.get("proposals", args.proposalId);
+    if (proposal === null) {
+      throw new ConvexError({
+        code: "not_found",
+        message: "The accepted proposal no longer exists.",
+      });
+    }
+    const event = await ctx.db.get("events", proposal.eventId);
+    if (event === null) {
+      throw new ConvexError({
+        code: "not_found",
+        message: "The proposal's event no longer exists.",
+      });
+    }
+    await Sessions.syncAcceptedProposalRevision(
+      ctx,
+      event,
+      proposal,
+      args.submittedByUserId,
+    );
+    return null;
+  },
+});
+
+export const updateContent = eventMutation({
+  args: {
+    sessionId: v.id("sessions"),
+    title: v.optional(v.string()),
+    description: v.optional(v.string()),
+    format: v.optional(v.string()),
+    /** null clears the per-session length override. */
+    durationMinutes: v.optional(v.union(v.number(), v.null())),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { sessionId, ...patch } = args;
+    await Sessions.updateContent(ctx, ctx.caller, sessionId, patch);
+    return null;
+  },
+});
+
+const vContentFields = v.object({
+  title: v.string(),
+  description: v.optional(v.string()),
+  format: v.optional(v.string()),
+});
+
+export const listRevisions = eventQuery({
+  args: { sessionId: v.id("sessions") },
+  returns: v.array(
+    v.object({
+      revisionId: vv.id("sessionRevisions"),
+      editedAt: v.number(),
+      editorName: v.union(v.string(), v.null()),
+      editorEmail: v.union(v.string(), v.null()),
+      before: vContentFields,
+      after: vContentFields,
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Sessions.listRevisions(ctx, ctx.caller, args.sessionId);
+  },
+});
+
+/** W3: the restorable states of a session's content — Current first, then one
+ * entry per revision, newest first, each labelled in event time by the model. */
+export const listSnapshots = eventQuery({
+  args: { sessionId: v.id("sessions") },
+  returns: v.object({
+    entries: v.array(
+      v.object({
+        key: v.string(),
+        revisionId: v.union(vv.id("sessionRevisions"), v.null()),
+        label: v.string(),
+        editedAt: v.union(v.number(), v.null()),
+        editorName: v.union(v.string(), v.null()),
+        editorEmail: v.union(v.string(), v.null()),
+        content: vContentFields,
+        origin: v.union(
+          v.literal("current"),
+          v.literal("edit"),
+          v.literal("restore"),
+        ),
+        originLabel: v.union(v.string(), v.null()),
+      }),
+    ),
+    /** True when the history is longer than the projection cap — the list is
+     * the newest slice, not "one entry per edit". */
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    return await Sessions.listSnapshots(ctx, ctx.caller, args.sessionId);
+  },
+});
+
+export const restoreRevision = eventMutation({
+  args: { revisionId: v.id("sessionRevisions") },
+  returns: v.object({
+    undoRevisionId: v.union(vv.id("sessionRevisions"), v.null()),
+    message: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    return await Sessions.restoreRevision(ctx, ctx.caller, args.revisionId);
+  },
+});
+
+export const setContentStatus = eventMutation({
+  args: {
+    sessionId: v.id("sessions"),
+    to: v.union(v.literal("draft"), v.literal("approved")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Sessions.setContentStatus(ctx, ctx.caller, args.sessionId, args.to);
+    return null;
+  },
+});
+
 export const release = eventMutation({
   args: { proposalIds: v.array(v.id("proposals")) },
   returns: vBulkResults,
@@ -81,6 +224,7 @@ export const createDirect = eventMutation({
     title: v.string(),
     description: v.optional(v.string()),
     format: v.optional(v.string()),
+    durationMinutes: v.optional(v.number()),
     trackId: v.optional(v.id("tracks")),
     speaker: v.object({
       firstName: v.string(),

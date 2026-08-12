@@ -15,6 +15,8 @@ export async function logAudit(
     targetId?: string;
     meta?: unknown;
   },
-): Promise<void> {
-  await ctx.db.insert("auditLog", entry);
+  // Returns the row id so a capability can point a later "undo" at exactly
+  // the run it wrote (W2's assisted placement is the first caller).
+): Promise<Id<"auditLog">> {
+  return await ctx.db.insert("auditLog", entry);
 }

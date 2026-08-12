@@ -2,6 +2,7 @@ import { cronJobs } from "convex/server";
 import { components, internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
+import { SWEEP_CRON } from "./shared/reminderSchedule";
 
 const crons = cronJobs();
 
@@ -18,12 +19,14 @@ crons.interval(
 // same window a no-op. `sweep` only dispatches — it schedules one independent
 // per-event mutation per eligible event (M8), so a failing event cannot
 // starve the others.
-crons.interval(
-  "reminder sweep",
-  { hours: 1 },
-  internal.reminders.sweep,
-  {},
-);
+//
+// `crons.cron` with a FIXED UTC minute, not `crons.interval`: an interval is
+// anchored to the deploy that first registered it, which made the "next
+// evaluation" the task page predicts unknowable (W1). `SWEEP_CRON` and the
+// prediction in `reminders.automationStatus` both come from
+// shared/reminderSchedule.ts, so the schedule and the sentence about it cannot
+// drift.
+crons.cron("reminder sweep", SWEEP_CRON, internal.reminders.sweep, {});
 
 // Worker-queue lease sweep: requeues jobs whose claim outlived the lease TTL
 // (see convex/worker.ts sweepExpiredLeases).
@@ -31,6 +34,13 @@ crons.interval(
   "requeue expired job leases",
   { minutes: 5 },
   internal.worker.sweepExpiredLeases,
+  {},
+);
+
+crons.interval(
+  "cleanup expired headshot uploads",
+  { minutes: 15 },
+  internal.headshotUploads.cleanupExpired,
   {},
 );
 

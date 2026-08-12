@@ -1,6 +1,7 @@
 import { Show, SignInButton } from '@clerk/tanstack-react-start'
 import type * as React from 'react'
 import { Button, Callout, Card } from '~/ds'
+import { DisplayNameGate } from '~/components/DisplayNameGate'
 import { PageBody } from '~/components/PageBody'
 import { useProvisioning } from '~/lib/useProvisioning'
 
@@ -34,7 +35,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
             </Callout>
           </PageBody>
         ) : provisioned ? (
-          children
+          <DisplayNameGate>{children}</DisplayNameGate>
         ) : (
           <GateStatus>Preparing your account…</GateStatus>
         )}

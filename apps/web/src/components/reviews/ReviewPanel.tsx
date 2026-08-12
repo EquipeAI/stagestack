@@ -1,38 +1,40 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation } from 'convex/react'
 import { api } from '@convex/_generated/api'
-import {
-  RECOMMENDATIONS,
-  RECOMMENDATION_LABEL,
-  REVIEW_STATUS_LABEL,
-  SCORES,
-} from './model'
+import { REVIEW_STATUS_LABEL } from './model'
 import { Segmented } from './Segmented'
-import type { Assignment, Recommendation } from './model'
-import { Button, Callout, Card, Field, StatusPill, Textarea } from '~/ds'
+import type { Assignment, ReviewAnswers, ScorecardField } from './model'
+import {
+  Button,
+  Callout,
+  Card,
+  Field,
+  Select,
+  StatusPill,
+  Textarea,
+} from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
 import { saveStatusLabel, useAutosave } from '~/components/cfp/useAutosave'
 import { SaveIndicator } from '~/components/cfp/CfpChrome'
 
-// The review itself: score, recommendation, comments, one commit button. The
-// panel is mounted with the review id as its key, so its state always starts
-// from what the server holds for the proposal on screen.
+// The review itself: the round's scorecard rendered dynamically (numeric
+// steppers, dropdowns, text), one commit button. The route mounts the panel by
+// review id + proposal content version, so a revision starts with fresh server
+// state while any already-queued old autosave is rejected by the same fence.
 //
-// Speed is the point (M2: "Submit & Next"). Drafts autosave, the whole panel
-// is reachable from the keyboard — 1–5 sets the score, A/N/D the
-// recommendation, Cmd/Ctrl+Enter commits — and committing moves on by itself.
+// Speed is still the point (M2: "Submit & Next"). Drafts autosave, and when
+// the scorecard has a single numeric criterion the 1–9 keys set it;
+// Cmd/Ctrl+Enter commits.
 
-type Draft = {
-  score?: number
-  recommendation?: Recommendation
-  comments?: string
-}
-
-const RECOMMENDATION_KEY: Record<string, Recommendation | undefined> = {
-  a: 'accept',
-  n: 'neutral',
-  d: 'decline',
+function numericOptions(field: ScorecardField): Array<number> {
+  const min = field.min ?? 1
+  const max = field.max ?? 5
+  const out: Array<number> = []
+  for (let value = min; value <= max && out.length <= 20; value += 1) {
+    out.push(value)
+  }
+  return out
 }
 
 export function ReviewPanel({
@@ -51,72 +53,54 @@ export function ReviewPanel({
 }) {
   const saveDraft = useMutation(api.reviews.saveDraft)
   const submitReview = useMutation(api.reviews.submit)
+  const declareConflict = useMutation(api.reviews.declareConflict)
   const commit = usePending()
+  const conflictAction = usePending()
 
-  const [score, setScore] = useState<number | null>(assignment.score ?? null)
-  const [recommendation, setRecommendation] = useState<Recommendation | null>(
-    assignment.recommendation ?? null,
-  )
-  const [comments, setComments] = useState(assignment.comments ?? '')
+  const scorecard = assignment.round.scorecard
+  const [answers, setAnswers] = useState<ReviewAnswers>(assignment.answers)
+  const [confirmConflict, setConfirmConflict] = useState(false)
 
   const locked = assignment.status === 'locked'
   const submitted = assignment.status === 'submitted'
-  const readOnly = locked || archived
+  const conflicted = assignment.status === 'conflict'
+  const readOnly = locked || archived || conflicted
   // The backend refuses a draft write on a submitted review — it is revised by
   // submitting again — so autosave only runs while the review is unfinished.
   const autosaveOn = !readOnly && !submitted
 
   // A queued draft must not land after the review is submitted.
   const committed = useRef(false)
-  const autosave = useAutosave<Draft>(async (value) => {
+  const autosave = useAutosave<ReviewAnswers>(async (value) => {
     if (committed.current) return
-    await saveDraft({ eventSlug, reviewId: assignment.reviewId, ...value })
+    await saveDraft({
+      eventSlug,
+      reviewId: assignment.reviewId,
+      answers: value,
+      expectedContentVersion: assignment.contentVersion,
+    })
   })
 
-  const queue = (next: Draft) => {
-    if (!autosaveOn) return
-    autosave.schedule({
-      score: next.score,
-      recommendation: next.recommendation,
-      comments: next.comments,
-    })
-  }
-
-  const applyScore = (value: number) => {
+  const applyAnswer = (fieldId: string, value: number | string) => {
     if (readOnly) return
-    setScore(value)
-    queue({
-      score: value,
-      recommendation: recommendation ?? undefined,
-      comments,
-    })
+    const next = { ...answers, [fieldId]: value }
+    setAnswers(next)
+    if (autosaveOn) autosave.schedule(next)
   }
 
-  const applyRecommendation = (value: Recommendation) => {
-    if (readOnly) return
-    setRecommendation(value)
-    queue({
-      score: score ?? undefined,
-      recommendation: value,
-      comments,
-    })
-  }
+  const missing = scorecard.filter(
+    (field) =>
+      field.required === true &&
+      (!(field.id in answers) || answers[field.id] === ''),
+  )
+  const ready = missing.length === 0
 
-  const applyComments = (value: string) => {
-    if (readOnly) return
-    setComments(value)
-    queue({
-      score: score ?? undefined,
-      recommendation: recommendation ?? undefined,
-      comments: value,
-    })
-  }
-
-  const ready = score !== null && recommendation !== null
   const doCommit = () => {
     if (readOnly || commit.pending) return
     if (!ready) {
-      commit.setError('A score and a recommendation are required to submit.')
+      commit.setError(
+        `Still needed: ${missing.map((f) => `"${f.label}"`).join(', ')}.`,
+      )
       return
     }
     committed.current = true
@@ -125,9 +109,8 @@ export function ReviewPanel({
         await submitReview({
           eventSlug,
           reviewId: assignment.reviewId,
-          score,
-          recommendation,
-          comments,
+          answers,
+          expectedContentVersion: assignment.contentVersion,
         })
         pushToast(
           submitted ? 'Review updated' : 'Review submitted',
@@ -144,15 +127,43 @@ export function ReviewPanel({
       })
   }
 
-  // The shortcuts read the current render's handlers rather than closing over
-  // the first ones; one window listener is cheaper than focus plumbing.
-  const latest = useRef({ applyScore, applyRecommendation, doCommit, readOnly })
-  latest.current = { applyScore, applyRecommendation, doCommit, readOnly }
+  const doDeclareConflict = () => {
+    void conflictAction.run(async () => {
+      await declareConflict({
+        eventSlug,
+        reviewId: assignment.reviewId,
+        expectedContentVersion: assignment.contentVersion,
+      })
+      setConfirmConflict(false)
+      pushToast('Conflict declared', assignment.proposal.title)
+    })
+  }
+
+  // Keyboard: when exactly one numeric criterion exists, digits set it.
+  const soloNumeric =
+    scorecard.filter((f) => f.kind === 'numeric').length === 1
+      ? scorecard.find((f) => f.kind === 'numeric')
+      : undefined
+  const latest = useRef({ applyAnswer, doCommit, readOnly, soloNumeric })
+  latest.current = { applyAnswer, doCommit, readOnly, soloNumeric }
+
+  // WCAG 2.1.4 Character Key Shortcuts: an unqualified 1-9 shortcut bound to
+  // the window is a trap for anyone driving the page by voice, where a stray
+  // recognised digit silently scores a proposal. There is no remap and no off
+  // switch here, so the criterion is met the third way — the shortcut is live
+  // only while focus is inside this panel. The panel takes focus when a
+  // proposal opens (below), so the shortcut still works the moment you arrive.
+  const panelRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    panelRef.current?.focus({ preventScroll: true })
+  }, [assignment.proposal._id])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const now = latest.current
       if (now.readOnly) return
+      if (panelRef.current?.contains(document.activeElement) !== true) return
       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
         event.preventDefault()
         now.doCommit()
@@ -169,15 +180,14 @@ export function ReviewPanel({
       ) {
         return
       }
-      if (/^[1-5]$/.test(event.key)) {
-        event.preventDefault()
-        now.applyScore(Number(event.key))
-        return
-      }
-      const mapped = RECOMMENDATION_KEY[event.key.toLowerCase()]
-      if (mapped !== undefined) {
-        event.preventDefault()
-        now.applyRecommendation(mapped)
+      if (now.soloNumeric !== undefined && /^[1-9]$/.test(event.key)) {
+        const value = Number(event.key)
+        const min = now.soloNumeric.min ?? 1
+        const max = now.soloNumeric.max ?? 5
+        if (value >= min && value <= max) {
+          event.preventDefault()
+          now.applyAnswer(now.soloNumeric.id, value)
+        }
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -198,17 +208,27 @@ export function ReviewPanel({
       subtitle={
         submitted
           ? 'Submitted reviews stay revisable until the round closes.'
-          : 'Only you see your score and comments until you submit.'
+          : `${assignment.round.name} · only you see your answers until you submit.`
       }
       actions={<StatusPill status={REVIEW_STATUS_LABEL[assignment.status]} />}
     >
       <div
+        ref={panelRef}
+        tabIndex={-1}
         style={{
           display: 'flex',
           flexDirection: 'column',
           gap: 'var(--space-5)',
+          // The panel is a focus target for the shortcut scoping above, not a
+          // control; it must not draw a focus ring for that.
+          outline: 'none',
         }}
       >
+        {conflicted ? (
+          <Callout tone="attention" title="You declared a conflict of interest">
+            This item is out of your queue. An organizer will reassign it.
+          </Callout>
+        ) : null}
         {locked ? (
           <Callout tone="neutral" title="This review is locked">
             The round is closed. Ask an organizer to reopen it if something
@@ -226,73 +246,103 @@ export function ReviewPanel({
             {commit.error}
           </Callout>
         ) : null}
+        {conflictAction.error !== null ? (
+          <Callout tone="blocked" title="Conflict was not recorded">
+            {conflictAction.error}
+          </Callout>
+        ) : null}
         {autosave.error !== null ? (
           <Callout tone="blocked" title="Your last change was not saved">
             {autosave.error}
           </Callout>
         ) : null}
 
-        <Field label="Score" required>
-          <div>
-            <Segmented
-              name="Score"
-              value={score === null ? null : String(score)}
-              disabled={readOnly}
-              options={SCORES.map((value) => ({
-                value: String(value),
-                label: String(value),
-                hint:
-                  value === 1
-                    ? 'weak'
-                    : value === SCORES.length
-                      ? 'strong'
-                      : undefined,
-              }))}
-              onChange={(value) => {
-                applyScore(Number(value))
-              }}
-            />
-          </div>
-        </Field>
-
-        <Field label="Recommendation" required>
-          <div>
-            <Segmented
-              name="Recommendation"
-              value={recommendation}
-              disabled={readOnly}
-              options={RECOMMENDATIONS.map((value) => ({
-                value,
-                label: RECOMMENDATION_LABEL[value],
-              }))}
-              onChange={(value) => {
-                applyRecommendation(value as Recommendation)
-              }}
-            />
-          </div>
-        </Field>
-
-        <Field
-          label="Comments"
-          htmlFor="review-comments"
-          optional
-          hint={
-            submitted
-              ? 'Changes to a submitted review are saved when you update it.'
-              : undefined
+        {scorecard.map((field) => {
+          const value = answers[field.id]
+          if (field.kind === 'numeric') {
+            const options = numericOptions(field)
+            return (
+              <Field
+                key={field.id}
+                label={field.label}
+                required={field.required}
+              >
+                <div>
+                  <Segmented
+                    name={field.label}
+                    value={typeof value === 'number' ? String(value) : null}
+                    disabled={readOnly}
+                    options={options.map((n) => ({
+                      value: String(n),
+                      label: String(n),
+                      hint:
+                        n === options[0]
+                          ? 'weak'
+                          : n === options[options.length - 1]
+                            ? 'strong'
+                            : undefined,
+                    }))}
+                    onChange={(next) => {
+                      applyAnswer(field.id, Number(next))
+                    }}
+                  />
+                </div>
+              </Field>
+            )
           }
-        >
-          <Textarea
-            id="review-comments"
-            rows={5}
-            value={comments}
-            disabled={readOnly}
-            placeholder="What would help the organizers decide?"
-            onChange={(e) => {
-              applyComments(e.target.value)
-            }}
-          />
-        </Field>
+          if (field.kind === 'dropdown') {
+            return (
+              <Field
+                key={field.id}
+                label={field.label}
+                htmlFor={`review-${field.id}`}
+                required={field.required}
+              >
+                <Select
+                  id={`review-${field.id}`}
+                  value={typeof value === 'string' ? value : ''}
+                  disabled={readOnly}
+                  onChange={(e) => {
+                    applyAnswer(field.id, e.target.value)
+                  }}
+                >
+                  <option value="" disabled>
+                    Choose…
+                  </option>
+                  {(field.options ?? []).map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            )
+          }
+          return (
+            <Field
+              key={field.id}
+              label={field.label}
+              htmlFor={`review-${field.id}`}
+              optional={field.required !== true}
+              hint={
+                submitted && field.id === scorecard[scorecard.length - 1]?.id
+                  ? 'Changes to a submitted review are saved when you update it.'
+                  : undefined
+              }
+            >
+              <Textarea
+                id={`review-${field.id}`}
+                rows={5}
+                value={typeof value === 'string' ? value : ''}
+                disabled={readOnly}
+                placeholder="What would help the organizers decide?"
+                onChange={(e) => {
+                  applyAnswer(field.id, e.target.value)
+                }}
+              />
+            </Field>
+          )
+        })}
 
         <div
           style={{
@@ -307,13 +357,49 @@ export function ReviewPanel({
             label={autosaveOn ? saveStatusLabel(autosave.status) : null}
             tone={autosave.status === 'error' ? 'danger' : 'muted'}
           />
-          <Button
-            variant="primary"
-            disabled={readOnly || commit.pending || !ready}
-            onClick={doCommit}
-          >
-            {commit.pending ? 'Submitting…' : commitLabel}
-          </Button>
+          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            {!readOnly && !submitted ? (
+              confirmConflict ? (
+                <>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setConfirmConflict(false)
+                    }}
+                  >
+                    Keep reviewing
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={conflictAction.pending}
+                    onClick={doDeclareConflict}
+                  >
+                    {conflictAction.pending
+                      ? 'Recording…'
+                      : 'Confirm conflict — remove from my queue'}
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setConfirmConflict(true)
+                  }}
+                >
+                  Declare conflict
+                </Button>
+              )
+            ) : null}
+            <Button
+              variant="primary"
+              disabled={readOnly || commit.pending || !ready}
+              onClick={doCommit}
+            >
+              {commit.pending ? 'Submitting…' : commitLabel}
+            </Button>
+          </div>
         </div>
 
         {readOnly ? null : (
@@ -324,9 +410,15 @@ export function ReviewPanel({
               margin: 'var(--space-0)',
             }}
           >
-            <kbd>1</kbd>–<kbd>5</kbd> score · <kbd>A</kbd> <kbd>N</kbd>{' '}
-            <kbd>D</kbd> recommendation · <kbd>Cmd</kbd>/<kbd>Ctrl</kbd> +{' '}
-            <kbd>Enter</kbd> {commitLabel.toLowerCase()}
+            {soloNumeric !== undefined ? (
+              <>
+                <kbd>{soloNumeric.min ?? 1}</kbd>–
+                <kbd>{soloNumeric.max ?? 5}</kbd>{' '}
+                {soloNumeric.label.toLowerCase()} ·{' '}
+              </>
+            ) : null}
+            <kbd>Cmd</kbd>/<kbd>Ctrl</kbd> + <kbd>Enter</kbd>{' '}
+            {commitLabel.toLowerCase()}
           </p>
         )}
       </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type * as React from 'react'
 import { Button } from '~/ds'
 
@@ -36,10 +36,26 @@ export function Popover({
   children: (close: () => void) => React.ReactNode
 }) {
   const [open, setOpen] = useState(false)
+  // Flip up when the trigger sits too low for the panel to fit below it (the
+  // bulk bar is pinned to the viewport bottom, so downward-only is unusable).
+  const [openUp, setOpenUp] = useState(false)
   const hostRef = useRef<HTMLDivElement | null>(null)
   const triggerRef = useRef<HTMLDivElement | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const panelId = useId()
+  const triggerId = useId()
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const host = hostRef.current
+    const panel = panelRef.current
+    if (!host || !panel) return
+    const rect = host.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - rect.bottom
+    const spaceAbove = rect.top
+    const needed = Math.min(panel.scrollHeight, window.innerHeight * 0.7) + 16
+    setOpenUp(spaceBelow < needed && spaceAbove > spaceBelow)
+  }, [open])
 
   const close = useCallback(() => {
     setOpen(false)
@@ -66,16 +82,38 @@ export function Popover({
         if (e.key === 'Escape' && open) {
           e.stopPropagation()
           close()
+          return
+        }
+        // Tabbing past the last control left the panel open behind the focus —
+        // a menu that visibly will not close. Rather than trapping Tab (this is
+        // a disclosure, not a modal) the panel closes once focus has actually
+        // landed outside it, which is what the pointer already got from the
+        // outside-mousedown handler. Keyed off Tab specifically, not blur:
+        // Safari does not focus a button on click, so a blur-driven close would
+        // dismiss the panel before a menu item's own onClick ran.
+        if (e.key === 'Tab' && open) {
+          window.setTimeout(() => {
+            if (hostRef.current?.contains(document.activeElement) !== true) {
+              setOpen(false)
+            }
+          }, 0)
         }
       }}
     >
       <div ref={triggerRef} style={{ display: 'inline-flex' }}>
         <Button
+          id={triggerId}
           variant={variant}
           size={size}
           iconLeft={icon}
           iconRight={iconRight ?? 'chevron-down'}
           disabled={disabled}
+          // The panel id was generated and applied but nothing pointed at it,
+          // so the trigger announced as a plain button: no signal that it
+          // opens anything, and no signal that it is currently open.
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls={open ? panelId : undefined}
           onClick={() => setOpen((v) => !v)}
         >
           {label}
@@ -86,11 +124,14 @@ export function Popover({
           id={panelId}
           ref={panelRef}
           role="dialog"
-          aria-label={typeof label === 'string' ? label : undefined}
+          // Named by the trigger rather than by `label`, which is a ReactNode
+          // and would leave the panel unnamed the moment a caller passes one
+          // that is not a string.
+          aria-labelledby={triggerId}
           tabIndex={-1}
           style={{
             position: 'absolute',
-            top: `calc(100% + var(--space-2))`,
+            [openUp ? 'bottom' : 'top']: `calc(100% + var(--space-2))`,
             [align === 'end' ? 'right' : 'left']: 0,
             zIndex: 'var(--z-dropdown)',
             width,

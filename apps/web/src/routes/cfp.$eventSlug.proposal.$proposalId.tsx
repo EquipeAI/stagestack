@@ -16,6 +16,7 @@ import {
   PageHeader,
   StatusPill,
 } from '~/ds'
+import { DisplayNameGate } from '~/components/DisplayNameGate'
 import { PageBody } from '~/components/PageBody'
 import { pushToast } from '~/components/toast'
 import { formatDateTime } from '~/lib/datetime'
@@ -47,6 +48,7 @@ import {
   fieldDomId,
   isBlankAnswer,
   missingAnswers,
+  proposalEditAccess,
   speakerName,
 } from '~/components/cfp/model'
 import { saveStatusLabel } from '~/components/cfp/useAutosave'
@@ -65,6 +67,20 @@ export const Route = createFileRoute('/cfp/$eventSlug/proposal/$proposalId')({
 })
 
 type MyProposalView = FunctionReturnType<typeof api.cfp.getMyProposal>
+
+/**
+ * A content-changing resubmit is the server's identity-reconciliation point:
+ * newly added speakers now have proposalSpeakerIds. Remount the local editor
+ * from that authoritative snapshot, but never on ordinary reactive metadata
+ * changes (which could discard unsent edits) or draft autosaves.
+ */
+export function manageProposalKey(data: MyProposalView): string {
+  const revision =
+    data.proposal.status === 'draft'
+      ? 'draft'
+      : `submitted-${data.proposal.contentVersion ?? 0}`
+  return `${data.proposal._id}:${revision}`
+}
 
 function ManageRoute() {
   const { eventSlug, proposalId } = Route.useParams()
@@ -125,18 +141,26 @@ function ManageRoute() {
             </p>
           </PageBody>
         ) : (
-          <ManageProposal
-            key={data.proposal._id}
-            eventSlug={eventSlug}
-            data={data}
-          />
+          // W5: attribution names are collected at FIRST ENTRY into a
+          // collaborative surface, not the first time an action needs one.
+          // Managing a proposal is collaborative — edits, withdrawals and
+          // resubmissions of an accepted proposal all reach organizer surfaces
+          // under this person's name — so the prompt belongs here, at the
+          // door, exactly as it already does for /app and the speaker portal.
+          <DisplayNameGate>
+            <ManageProposal
+              key={manageProposalKey(data)}
+              eventSlug={eventSlug}
+              data={data}
+            />
+          </DisplayNameGate>
         )}
       </Show>
     </>
   )
 }
 
-function ManageProposal({
+export function ManageProposal({
   eventSlug,
   data,
 }: {
@@ -156,7 +180,13 @@ function ManageProposal({
     reopenedUntil: data.proposal.reopenedUntil,
     now,
   })
-  const statusEditable = status === 'draft' || status === 'pending'
+  const editAccess = proposalEditAccess({
+    status,
+    reopenedUntil: data.proposal.reopenedUntil,
+    archivedAt: data.event.archivedAt,
+    now,
+  })
+  const statusEditable = editAccess === 'eligible'
   const editable = statusEditable && windowState === 'open'
 
   // Once the editor is up, the window expiring must not unmount it: in
@@ -165,7 +195,7 @@ function ManageProposal({
   // expired presentation instead.
   const [hadOpenWindow, setHadOpenWindow] = useState(editable)
   if (editable && !hadOpenWindow) setHadOpenWindow(true)
-  const keepEditorMounted = statusEditable && hadOpenWindow
+  const keepEditorMounted = editAccess !== 'locked' && hadOpenWindow
 
   // When the reopen grant is what holds the window open, it is also what ends
   // it — the countdown has to look at the deadline actually in force.
@@ -213,7 +243,9 @@ function ManageProposal({
             },
             {
               term: 'Last change',
-              value: <Mono>{formatDateTime(data.proposal.updatedAt, zone)}</Mono>,
+              value: (
+                <Mono>{formatDateTime(data.proposal.updatedAt, zone)}</Mono>
+              ),
             },
           ]}
         />
@@ -237,7 +269,10 @@ function ManageProposal({
           }
         />
       ) : (
-        <ReadOnlyProposal data={data} statusEditable={statusEditable} />
+        <ReadOnlyProposal
+          data={data}
+          statusEditable={editAccess !== 'locked'}
+        />
       )}
 
       <WithdrawCard
@@ -280,9 +315,13 @@ function ProposalEditor({
   const answersDraft = useAnswersDraft(proposalId, data.proposal.answers, {
     autosave,
   })
-  const speakersDraft = useSpeakersDraft(proposalId, data.speakers, { autosave })
+  const speakersDraft = useSpeakersDraft(proposalId, data.speakers, {
+    autosave,
+  })
   const submitProposal = useMutation(api.cfp.submitProposal)
+  const resubmitProposal = useMutation(api.cfp.resubmitProposal)
   const submit = usePending()
+  const [awaitingServerRevision, setAwaitingServerRevision] = useState(false)
   const [flagged, setFlagged] = useState<ReadonlySet<string>>(() => new Set())
 
   // Edits the server has not seen. In resubmit mode this is everything typed
@@ -315,9 +354,23 @@ function ProposalEditor({
     setFlagged(new Set(missing.map((m) => m.field.id)))
     if (blockers > 0) return
     void submit.run(async () => {
-      await answersDraft.saveNow()
-      await speakersDraft.saveNow()
-      await submitProposal({ proposalId })
+      if (isResubmit) {
+        await resubmitProposal({
+          proposalId,
+          expectedContentVersion: data.proposal.contentVersion ?? 0,
+          answers: answersDraft.answers,
+          speakers: speakersToInput(speakersDraft.speakers),
+        })
+        // A changed revision receives a new contentVersion and authoritative
+        // proposalSpeakerIds. Keep this stale editor frozen until the reactive
+        // result remounts it; otherwise a very fast second click can race the
+        // subscription and resend a new co-author without their server id.
+        if (unsent) setAwaitingServerRevision(true)
+      } else {
+        await answersDraft.saveNow()
+        await speakersDraft.saveNow()
+        await submitProposal({ proposalId })
+      }
       pushToast(
         isResubmit ? 'Proposal resubmitted' : 'Proposal submitted',
         'The organizers have been notified.',
@@ -338,10 +391,15 @@ function ProposalEditor({
     : answersDraft.autosave.status === 'idle'
       ? saveStatusLabel(speakersDraft.autosave.status)
       : saveStatusLabel(answersDraft.autosave.status)
+  const editorBusy = submit.pending || awaitingServerRevision
 
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-5)',
+      }}
     >
       <PageHeader
         title="Your submission"
@@ -351,9 +409,7 @@ function ProposalEditor({
             : 'Changes save as you type. Nothing reaches the organizers until you resubmit.'
         }
       />
-      {isResubmit &&
-      deadline !== null &&
-      deadline - now <= CLOSING_SOON_MS ? (
+      {isResubmit && deadline !== null && deadline - now <= CLOSING_SOON_MS ? (
         <Callout tone="attention" title="The window is about to close">
           Resubmit before{' '}
           <Mono>{formatDateTime(deadline, data.event.timezone)}</Mono>. Edits on
@@ -371,6 +427,7 @@ function ProposalEditor({
         answers={answersDraft.answers}
         onChange={answersDraft.setAnswer}
         proposalId={proposalId}
+        disabled={editorBusy}
         flagged={flagged}
         uploadedNames={answersDraft.uploadedNames}
         onUploaded={answersDraft.noteUpload}
@@ -388,6 +445,8 @@ function ProposalEditor({
       <SpeakersEditor
         speakers={speakersDraft.speakers}
         onChange={speakersDraft.setSpeakers}
+        disabled={editorBusy}
+        lockExistingRemoval={data.proposal.status === 'accepted'}
         self={self}
       />
 
@@ -448,6 +507,7 @@ function ProposalEditor({
         {isResubmit ? null : (
           <Button
             iconLeft="download"
+            disabled={editorBusy}
             onClick={() => {
               // The indicator already carries the outcome of these.
               void answersDraft.saveNow().catch(() => {})
@@ -474,16 +534,14 @@ function ProposalEditor({
                 : 'muted'
             }
           />
-          <Button
-            variant="primary"
-            onClick={doSubmit}
-            disabled={submit.pending}
-          >
-            {submit.pending
-              ? 'Sending…'
-              : isResubmit
-                ? 'Save & resubmit'
-                : 'Submit proposal'}
+          <Button variant="primary" onClick={doSubmit} disabled={editorBusy}>
+            {awaitingServerRevision
+              ? 'Refreshing…'
+              : submit.pending
+                ? 'Sending…'
+                : isResubmit
+                  ? 'Save & resubmit'
+                  : 'Submit proposal'}
           </Button>
         </div>
       </div>
@@ -550,23 +608,28 @@ function ExpiredLocalEdits({
   const copy = () => {
     void navigator.clipboard.writeText(copyText()).then(
       () => pushToast('Copied', 'Your unsent edits are on the clipboard.'),
-      () => pushToast('Copy failed', 'Select the text below and copy it by hand.'),
+      () =>
+        pushToast('Copy failed', 'Select the text below and copy it by hand.'),
     )
   }
 
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-5)',
+      }}
     >
       <Callout
         tone="blocked"
         title="The window closed with unsent edits"
         actions={<Button onClick={copy}>Copy my edits</Button>}
       >
-        The changes below were never sent — the organizers still see the
-        version you submitted before. They live only on this screen: copy what
-        you need, and ask the organizers to reopen the proposal if you want to
-        submit them. Leaving this page discards them.
+        The changes below were never sent — the organizers still see the version
+        you submitted before. They live only on this screen: copy what you need,
+        and ask the organizers to reopen the proposal if you want to submit
+        them. Leaving this page discards them.
       </Callout>
       <PageHeader title="Your unsent edits" />
       <CfpAnswersSummary
@@ -590,21 +653,32 @@ function ReadOnlyProposal({
   statusEditable: boolean
 }) {
   const speakers = speakersFromDocs(data.speakers)
+  const acceptedRevisionExpired =
+    data.proposal.status === 'accepted' &&
+    data.proposal.reopenedUntil !== undefined
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-5)',
+      }}
     >
       <Callout
         tone="neutral"
         title={
-          statusEditable
-            ? 'This proposal can no longer be edited'
-            : 'A decision has been recorded'
+          acceptedRevisionExpired
+            ? 'The revision window has closed'
+            : statusEditable
+              ? 'This proposal can no longer be edited'
+              : 'A decision has been recorded'
         }
       >
-        {statusEditable
-          ? 'The call for speakers is closed. Ask the organizers to reopen your proposal if you need to change something.'
-          : 'Editing is closed once organizers act on a proposal. Contact them directly if something needs to change.'}
+        {acceptedRevisionExpired
+          ? 'Your acceptance remains in place. Ask the organizers to reopen this proposal again if another revision is needed.'
+          : statusEditable
+            ? 'The call for speakers is closed. Ask the organizers to reopen your proposal if you need to change something.'
+            : 'Editing is closed once organizers act on a proposal. Contact them directly if something needs to change.'}
       </Callout>
       <PageHeader title="Your submission" />
       <CfpAnswersSummary form={data.form} answers={data.proposal.answers} />
@@ -631,7 +705,11 @@ function WithdrawCard({
   const { pending, error, run } = usePending()
   const [confirming, setConfirming] = useState(false)
 
-  if (status === 'withdrawn' || status === 'accepted' || status === 'declined') {
+  if (
+    status === 'withdrawn' ||
+    status === 'accepted' ||
+    status === 'declined'
+  ) {
     return null
   }
 
@@ -641,10 +719,7 @@ function WithdrawCard({
   const apply = () => {
     void run(async () => {
       await withdraw({ proposalId })
-      pushToast(
-        isDraft ? 'Draft deleted' : 'Proposal withdrawn',
-        title,
-      )
+      pushToast(isDraft ? 'Draft deleted' : 'Proposal withdrawn', title)
       setConfirming(false)
       onWithdrawn()
     })
@@ -660,7 +735,11 @@ function WithdrawCard({
       }
     >
       <div
-        style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
       >
         {error !== null ? <Callout tone="blocked">{error}</Callout> : null}
         <div>

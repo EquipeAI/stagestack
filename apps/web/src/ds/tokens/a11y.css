@@ -1,0 +1,39 @@
+/* ── Accessibility floor ──────────────────────────────────────────────────
+   Imported LAST on purpose. Everything here has to beat a component rule of
+   equal specificity (`.ss-tag__x{padding:0}`, `.ss-btn:focus-visible{outline:
+   none}`), and CSS resolves that tie by source order — so these live after the
+   component sheets rather than in base.css with the rest of the reset. */
+
+/* Target size, WCAG 2.2 2.5.8 (24x24 CSS px).
+   The `pointer:coarse` block in base.css already takes touch controls to 44px;
+   these are the fine-pointer floors for the controls that were under 24px with
+   a mouse too. In each case the <label> is the target, so a min-height grows
+   the hit area without moving the visible box; the two padded ones pull their
+   padding back with a negative margin so nothing around them reflows. */
+.ss-check,.ss-switch{min-height:24px}
+.ss-toast__action{min-height:24px;padding:0 6px;margin:0 -6px}
+.ss-crumbs a,.ss-crumbs__current{display:inline-flex;align-items:center;min-height:24px}
+.ss-tag__x{padding:7px;margin:-7px -5px -7px 0}
+
+/* Windows High Contrast / forced-colors discards backgrounds, borders and
+   box-shadows — which is exactly what `.ss-btn` and `.ss-iconbtn` traded their
+   outline for, so there the focused control would have no indicator at all. */
+@media (forced-colors:active){
+  :focus-visible,
+  .ss-btn:focus-visible,
+  .ss-iconbtn:focus-visible,
+  .ss-input:focus,
+  .ss-textarea:focus,
+  .ss-select:focus,
+  .ss-check input:focus-visible+.ss-check__box,
+  .ss-switch input:focus-visible+.ss-switch__track{outline:3px solid Highlight;outline-offset:2px}
+  /* FileButton's real control is the clipped input, so the ring is drawn on
+     the label via :focus-within. Forced-colors would otherwise discard that
+     box-shadow and leave the visible button with no indicator at all, since
+     the element that *is* focused has no pixels of its own. */
+  .file-button:focus-within{outline:3px solid Highlight;outline-offset:2px}
+}
+
+/* Text that only assistive tech reads: a per-row checkbox needs a name, and
+   that name must not print six times down the left edge of a table. */
+.ss-visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}

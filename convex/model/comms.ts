@@ -3,7 +3,8 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
-import { mailFrom, mailFromAddress, resend } from "../emails";
+import { mailFromAddress } from "../emails";
+import { internal } from "../_generated/api";
 import { logAudit } from "./audit";
 import {
   MAX_AUDIENCE,
@@ -74,25 +75,34 @@ export type LoggedEmail = {
   context?: unknown;
 };
 
-/** Send through Resend and record the send in the comms log. */
+/**
+ * Send through Resend and record the send in the comms log.
+ *
+ * The send runs in a SUBTRANSACTION (`ctx.runMutation` from a mutation): a
+ * component refusal — Resend test mode with a real address, a bad key —
+ * rolls back only the send's own writes, never the CALLER's. Three eval
+ * findings were exactly this bug class (submit/invite/release unwound by an
+ * email failure); now the business write always commits and the refused send
+ * is a visible `failed` row in the comms log instead of a lost mutation.
+ */
 export async function sendLoggedEmail(
   ctx: MutationCtx,
   args: LoggedEmail,
 ): Promise<Id<"messages">> {
   const replyTo = args.replyTo?.trim();
-  const emailId = await resend.sendEmail(ctx, {
-    from: mailFrom(),
-    // Sent to the address as the caller gave it: only the LOG is normalized.
-    to: args.toEmail,
-    subject: args.subject,
-    html: args.html,
-    ...(replyTo !== undefined && replyTo.length > 0
-      ? { replyTo: [replyTo] }
-      : {}),
-    // Bulk/nudge mail only, derived from `kind` here rather than at the six
-    // call sites — see `unsubscribeHeaders` (M15).
-    ...unsubscribeHeaders(args.kind, replyTo),
-  });
+  let emailId: string | undefined;
+  try {
+    emailId = await ctx.runMutation(internal.emails.trySend, {
+      // Sent to the address as the caller gave it: only the LOG is normalized.
+      toEmail: args.toEmail,
+      kind: args.kind,
+      subject: args.subject,
+      html: args.html,
+      replyTo,
+    });
+  } catch {
+    emailId = undefined;
+  }
   return await ctx.db.insert("messages", {
     orgId: args.orgId,
     eventId: args.eventId,
@@ -105,7 +115,7 @@ export async function sendLoggedEmail(
     kind: args.kind,
     subject: args.subject,
     resendEmailId: emailId,
-    deliveryStatus: "queued",
+    deliveryStatus: emailId === undefined ? "failed" : "queued",
     sentByUserId: args.sentByUserId,
     context: args.context,
   });
@@ -194,6 +204,7 @@ const BULK_KIND_PREFIXES = ["reminder."];
 export function isBulkKind(kind: string): boolean {
   return (
     kind === ONE_OFF_KIND ||
+    kind === "crm.bulkOutreach" ||
     BULK_KIND_PREFIXES.some((prefix) => kind.startsWith(prefix))
   );
 }
@@ -239,10 +250,14 @@ const MESSAGE_SCAN = 2000;
 
 export type OneOffTarget =
   | { kind: "contact"; eventContactId: Id<"eventContacts"> }
+  | { kind: "contacts"; eventContactIds: Array<Id<"eventContacts">> }
   | { kind: "audience"; audience: AudienceKind };
 
 export type OneOffResult = {
+  /** Messages the provider accepted for delivery. */
   sent: number;
+  /** Messages the provider refused before they left StageStack. */
+  failed: number;
   /** Speakers in the audience we had no reachable address for. */
   skipped: number;
 };
@@ -312,6 +327,33 @@ export async function sendOneOff(
   let skipped = 0;
   if (args.to.kind === "contact") {
     recipients = [await contactRecipient(ctx, event, args.to.eventContactId)];
+  } else if (args.to.kind === "contacts") {
+    const uniqueIds = [...new Set(args.to.eventContactIds)];
+    if (uniqueIds.length === 0 || uniqueIds.length > MAX_AUDIENCE) {
+      throw new ConvexError({
+        code: "invalid_audience",
+        message: `Choose between 1 and ${MAX_AUDIENCE} speakers.`,
+      });
+    }
+    recipients = [];
+    for (const eventContactId of uniqueIds) {
+      const contact = await ctx.db.get("eventContacts", eventContactId);
+      if (contact === null || contact.eventId !== event._id) {
+        notFound("contact", "No such contact on this event.");
+      }
+      const email = contact.email?.trim().toLowerCase();
+      if (email === undefined || email.length === 0) {
+        skipped += 1;
+        continue;
+      }
+      recipients.push({
+        email,
+        firstName: contact.firstName,
+        lastName: contact.lastName,
+        eventContactId: contact._id,
+        userId: contact.userId,
+      });
+    }
   } else {
     const resolved = await resolveAudience(
       ctx,
@@ -330,13 +372,26 @@ export async function sendOneOff(
     recipients = resolved.recipients;
     skipped = resolved.skipped;
   }
-  if (recipients.length === 0) {
+  if (recipients.length === 0 && args.to.kind !== "contacts") {
     throw new ConvexError({
       code: "empty_audience",
       message: "Nobody in this audience has a reachable email address.",
     });
   }
 
+  // A selected set can contain two event snapshots for the same real inbox.
+  // IDs are deduped above to protect the read, but delivery is deduped by the
+  // normalized address so that person still receives exactly one message.
+  const recipientsByEmail = new Map<string, AudienceRecipient>();
+  for (const recipient of recipients) {
+    const email = normalizeLogAddress(recipient.email);
+    if (recipientsByEmail.has(email)) continue;
+    recipientsByEmail.set(email, { ...recipient, email });
+  }
+  recipients = [...recipientsByEmail.values()];
+
+  let sent = 0;
+  let failed = 0;
   for (const recipient of recipients) {
     const vars = {
       event: { name: event.name },
@@ -353,21 +408,30 @@ export async function sendOneOff(
         ? undefined
         : ((await ctx.db.get("eventContacts", recipient.eventContactId))
             ?.contactId ?? undefined);
-    await sendLoggedEmail(ctx, {
+    const renderedSubject = substituteSubject(subject, vars);
+    const renderedBody = emailShell(substituteHtml(body, vars));
+    const messageId = await sendLoggedEmail(ctx, {
       orgId: event.orgId,
       eventId: event._id,
       contactId,
       toEmail: recipient.email,
       kind: ONE_OFF_KIND,
-      subject: substituteSubject(subject, vars),
-      html: emailShell(substituteHtml(body, vars)),
+      subject: renderedSubject,
+      html: renderedBody,
       sentByUserId: caller.user._id,
       replyTo: event.replyTo,
       context:
-        args.to.kind === "contact"
-          ? { eventContactId: args.to.eventContactId }
-          : { audience: args.to.audience },
+        args.to.kind === "audience"
+          ? { audience: args.to.audience, renderedSubject, renderedBody }
+          : {
+              eventContactId: recipient.eventContactId,
+              renderedSubject,
+              renderedBody,
+            },
     });
+    const logged = await ctx.db.get("messages", messageId);
+    if (logged?.deliveryStatus === "failed") failed += 1;
+    else sent += 1;
   }
 
   await logAudit(ctx, {
@@ -378,12 +442,61 @@ export async function sendOneOff(
     targetType: "event",
     targetId: event._id,
     meta: {
-      target: args.to.kind === "contact" ? "contact" : args.to.audience,
-      sent: recipients.length,
+      target:
+        args.to.kind === "audience"
+          ? args.to.audience
+          : args.to.kind === "contact"
+            ? "contact"
+            : "selectedContacts",
+      sent,
+      failed,
       skipped,
     },
   });
-  return { sent: recipients.length, skipped };
+  return { sent, failed, skipped };
+}
+
+// ── Delivery health (CFP-08) ─────────────────────────────────────────────
+//
+// `sendLoggedEmail` deliberately commits the caller's write even when the mail
+// service refuses the send — the refusal becomes a `failed` messages row. That
+// keeps mutations honest, but it also means a misconfigured deployment (no
+// Resend key, test mode with real recipients) fails EVERY send silently from
+// the organizer's point of view. This summary makes that state loud: the comms
+// page shows a banner whenever recent sends are failing.
+
+/** Newest rows examined for the health summary. A display bound like
+ * MESSAGE_SCAN, not a time window: "N of the last M sends failed" is the
+ * honest phrasing for what one indexed newest-first read can know. */
+const HEALTH_SCAN = 100;
+
+export type DeliveryHealth = {
+  /** Rows examined, newest first, so the UI can say "of the last N". */
+  scanned: number;
+  /** Sends the mail service refused — the email never left StageStack.
+   * Distinct from bounced/complained, which left and were rejected later. */
+  failed: number;
+  /** When the most recent refusal happened; null when none in the window. */
+  lastFailedAt: number | null;
+};
+
+/** Recent-send failure summary for the organizer-facing mail-health banner. */
+export async function deliveryHealth(
+  ctx: QueryCtx,
+  caller: EventCaller,
+): Promise<DeliveryHealth> {
+  requireOrganizer(caller);
+  const recent = await ctx.db
+    .query("messages")
+    .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+    .order("desc")
+    .take(HEALTH_SCAN);
+  const failed = recent.filter((m) => m.deliveryStatus === "failed");
+  return {
+    scanned: recent.length,
+    failed: failed.length,
+    lastFailedAt: failed.length === 0 ? null : failed[0]._creationTime,
+  };
 }
 
 export type ContactMessageRow = {
@@ -393,6 +506,9 @@ export type ContactMessageRow = {
   toEmail: string;
   deliveryStatus: Doc<"messages">["deliveryStatus"];
   sentAt: number;
+  /** The provider's own timestamp for the last delivery event, when one has
+   * arrived. Absent means no provider event has moved this row. */
+  deliveryUpdatedAt?: number;
 };
 
 /**
@@ -436,7 +552,9 @@ export async function contactLog(
       ? []
       : await ctx.db
           .query("messages")
-          .withIndex("by_contactId", (q) => q.eq("contactId", contact.contactId))
+          .withIndex("by_contactId", (q) =>
+            q.eq("contactId", contact.contactId),
+          )
           .order("desc")
           .take(MESSAGE_SCAN);
 
@@ -478,5 +596,8 @@ export async function contactLog(
       toEmail: message.toEmail,
       deliveryStatus: message.deliveryStatus,
       sentAt: message._creationTime,
+      ...(message.deliveryUpdatedAt === undefined
+        ? {}
+        : { deliveryUpdatedAt: message.deliveryUpdatedAt }),
     }));
 }

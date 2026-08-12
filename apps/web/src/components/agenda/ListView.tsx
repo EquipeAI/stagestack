@@ -17,7 +17,7 @@ import type {
   BoardTrack,
   PlacedBlock,
 } from './model'
-import { Badge, Card, DataTable, StatusPill } from '~/ds'
+import { Badge, Button, Card, DataTable, StatusPill } from '~/ds'
 
 // The chronological fallback. Always works — even with nothing scheduled — and
 // carries the same click-through to the detail dialog as the grid. Sessions and
@@ -37,6 +37,7 @@ export function ListView({
   tracksById,
   onOpenBlock,
   onOpenSession,
+  onPlace,
 }: {
   board: Board
   zone: string
@@ -44,6 +45,8 @@ export function ListView({
   tracksById: Map<string, BoardTrack>
   onOpenBlock: (block: PlacedBlock) => void
   onOpenSession: (session: BoardSession) => void
+  /** The visible non-drag path to a placement, on every unscheduled row. */
+  onPlace: (session: BoardSession) => void
 }) {
   const placed: Array<ListRow> = []
   for (const session of board.sessions) {
@@ -157,6 +160,27 @@ export function ListView({
             header: 'Status',
             width: '12rem',
             cell: (row: ListRow) => <StatusCell row={row} />,
+          },
+          {
+            key: 'actions',
+            header: '',
+            width: '7rem',
+            // Dragging is not the only way to schedule, and it was the only
+            // discoverable one — every unscheduled row now says so.
+            cell: (row: ListRow) =>
+              row.block === undefined && row.session !== undefined ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  iconLeft="calendar-days"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onPlace(row.session as BoardSession)
+                  }}
+                >
+                  Place…
+                </Button>
+              ) : null,
           },
         ]}
         rows={rows}

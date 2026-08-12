@@ -32,6 +32,22 @@ async function messageRows(t: TestT): Promise<Array<Doc<"messages">>> {
   return await t.run(async (ctx) => ctx.db.query("messages").collect());
 }
 
+function speakerInput(speaker: Doc<"proposalSpeakers">) {
+  return {
+    proposalSpeakerId: speaker._id,
+    firstName: speaker.firstName,
+    lastName: speaker.lastName,
+    email: speaker.email,
+    phone: speaker.phone,
+    tagline: speaker.tagline,
+    bio: speaker.bio,
+    headshotId: speaker.headshotId,
+    links: speaker.links,
+    isPrimary: speaker.isPrimary,
+    role: speaker.role,
+  };
+}
+
 // ── Substitution (pure) ──────────────────────────────────────────────────
 
 describe("substitution", () => {
@@ -297,6 +313,10 @@ describe("lifecycle sends render through templates", () => {
         email: "dana@example.com",
       },
     });
+    for (let i = 0; i < 3; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await t.finishInProgressScheduledFunctions();
+    }
 
     await alice.mutation(api.templates.upsert, {
       eventSlug,
@@ -328,6 +348,10 @@ describe("lifecycle sends render through templates", () => {
         email: "xss@example.com",
       },
     });
+    for (let i = 0; i < 3; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await t.finishInProgressScheduledFunctions();
+    }
 
     const invitation = (await messageRows(t)).find(
       (m) => m.kind === "invitation.direct",
@@ -374,8 +398,24 @@ describe("lifecycle sends render through templates", () => {
         },
       ],
     });
+    // Emails are deferred to runAfter(0); drain between submits so the two
+    // sends land in submission order.
+    const drain = async () => {
+      for (let i = 0; i < 3; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await t.finishInProgressScheduledFunctions();
+      }
+    };
     await bob.mutation(api.cfp.submitProposal, { proposalId });
-    await bob.mutation(api.cfp.submitProposal, { proposalId });
+    await drain();
+    const submitted = await bob.query(api.cfp.getMyProposal, { proposalId });
+    await bob.mutation(api.cfp.resubmitProposal, {
+      proposalId,
+      expectedContentVersion: submitted.proposal.contentVersion ?? 0,
+      answers: submitted.proposal.answers,
+      speakers: submitted.speakers.map(speakerInput),
+    });
+    await drain();
 
     const confirmations = (await messageRows(t)).filter(
       (m) => m.kind === "cfp.confirmation",

@@ -1,17 +1,23 @@
 import { v } from "convex/values";
-import { eventMemberMutation, eventMutation, eventQuery } from "./lib/functions";
+import {
+  eventMemberMutation,
+  eventMutation,
+  eventQuery,
+} from "./lib/functions";
 import { vv } from "./lib/validators";
 import { vAnswerValue } from "./shared/formDef";
+import { vReviewAnswers, vScorecard } from "./shared/scorecard";
 import * as Reviews from "./model/reviews";
 
 // ─────────────────────────────────────────────────────────────────────────
-// Public surface for review & evaluation (M2). Thin wrappers only; the rules
-// (and every authorization check) live in convex/model/reviews.ts.
+// Public surface for review & evaluation (M2, multi-round W2). Thin wrappers
+// only; the rules (and every authorization check) live in
+// convex/model/reviews.ts.
 //
 // Wrapper choice is itself part of the contract:
 //   * eventQuery       — organizers AND reviewers may read;
 //   * eventMemberMutation — reviewers write their OWN review;
-//   * eventMutation    — organizer-only writes (assignment).
+//   * eventMutation    — organizer-only writes (rounds, pools, assignment).
 // Model functions re-check the role regardless, so the agent adapter that
 // calls them directly gets the same answer.
 // ─────────────────────────────────────────────────────────────────────────
@@ -21,6 +27,7 @@ const vReviewStatus = v.union(
   v.literal("draft"),
   v.literal("submitted"),
   v.literal("locked"),
+  v.literal("conflict"),
 );
 
 const vRecommendation = v.union(
@@ -39,6 +46,7 @@ const vReviewerSpeaker = v.object({
 
 const vAggregate = v.object({
   count: v.number(),
+  conflictCount: v.number(),
   submittedCount: v.number(),
   avgScore: v.union(v.number(), v.null()),
   recommendations: v.object({
@@ -48,6 +56,15 @@ const vAggregate = v.object({
   }),
 });
 
+const vRoundInput = {
+  name: v.string(),
+  opensAt: v.optional(v.number()),
+  closesAt: v.optional(v.number()),
+  anonymized: v.boolean(),
+  reviewerCap: v.optional(v.number()),
+  scorecard: vScorecard,
+};
+
 // ── Reviewer ─────────────────────────────────────────────────────────────
 
 export const myAssignments = eventQuery({
@@ -55,10 +72,17 @@ export const myAssignments = eventQuery({
   returns: v.array(
     v.object({
       reviewId: vv.id("reviews"),
+      contentVersion: v.number(),
       status: vReviewStatus,
-      score: v.optional(v.number()),
-      recommendation: v.optional(vRecommendation),
-      comments: v.optional(v.string()),
+      answers: vReviewAnswers,
+      round: v.object({
+        roundId: v.union(vv.id("reviewRounds"), v.null()),
+        name: v.string(),
+        anonymized: v.boolean(),
+        opensAt: v.optional(v.number()),
+        closesAt: v.optional(v.number()),
+        scorecard: vScorecard,
+      }),
       proposal: v.object({
         _id: vv.id("proposals"),
         title: v.string(),
@@ -79,17 +103,20 @@ export const myAssignments = eventQuery({
 export const saveDraft = eventMemberMutation({
   args: {
     reviewId: v.id("reviews"),
-    score: v.optional(v.number()),
-    recommendation: v.optional(vRecommendation),
-    comments: v.optional(v.string()),
+    answers: vReviewAnswers,
+    // Optional only for deployed pre-fence clients. The model admits an
+    // omitted value exclusively for untouched v0 assignments.
+    expectedContentVersion: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await Reviews.saveReviewDraft(ctx, ctx.caller, args.reviewId, {
-      score: args.score,
-      recommendation: args.recommendation,
-      comments: args.comments,
-    });
+    await Reviews.saveReviewDraft(
+      ctx,
+      ctx.caller,
+      args.reviewId,
+      args.answers,
+      args.expectedContentVersion,
+    );
     return null;
   },
 });
@@ -97,27 +124,131 @@ export const saveDraft = eventMemberMutation({
 export const submit = eventMemberMutation({
   args: {
     reviewId: v.id("reviews"),
-    score: v.number(),
-    recommendation: vRecommendation,
-    comments: v.optional(v.string()),
+    answers: vReviewAnswers,
+    expectedContentVersion: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await Reviews.submitReview(ctx, ctx.caller, args.reviewId, {
-      score: args.score,
-      recommendation: args.recommendation,
-      comments: args.comments,
-    });
+    await Reviews.submitReview(
+      ctx,
+      ctx.caller,
+      args.reviewId,
+      args.answers,
+      args.expectedContentVersion,
+    );
     return null;
   },
 });
 
-// ── Organizer ────────────────────────────────────────────────────────────
+export const declareConflict = eventMemberMutation({
+  args: {
+    reviewId: v.id("reviews"),
+    expectedContentVersion: v.optional(v.number()),
+    note: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Reviews.declareConflict(
+      ctx,
+      ctx.caller,
+      args.reviewId,
+      args.expectedContentVersion,
+      args.note,
+    );
+    return null;
+  },
+});
+
+// ── Organizer: evaluation plan ───────────────────────────────────────────
+
+export const listRounds = eventQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      roundId: vv.id("reviewRounds"),
+      name: v.string(),
+      order: v.number(),
+      opensAt: v.optional(v.number()),
+      closesAt: v.optional(v.number()),
+      anonymized: v.boolean(),
+      reviewerCap: v.optional(v.number()),
+      scorecard: vScorecard,
+      /** True while the launch flow is still building this round (W11): it
+       * shows on this list as a draft and governs nothing until launched. */
+      draft: v.boolean(),
+      pool: v.array(
+        v.object({
+          userId: vv.id("users"),
+          name: v.union(v.string(), v.null()),
+          email: v.union(v.string(), v.null()),
+        }),
+      ),
+    }),
+  ),
+  handler: async (ctx) => {
+    return await Reviews.listRounds(ctx, ctx.caller);
+  },
+});
+
+export const createRound = eventMutation({
+  // `draft` is create-only: `updateRound` must never flip a live round back
+  // into a draft, and only `launchRound` clears the marker.
+  args: { ...vRoundInput, draft: v.optional(v.boolean()) },
+  returns: vv.id("reviewRounds"),
+  handler: async (ctx, args) => {
+    return await Reviews.createRound(ctx, ctx.caller, args);
+  },
+});
+
+export const updateRound = eventMutation({
+  args: { roundId: v.id("reviewRounds"), ...vRoundInput },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { roundId, ...input } = args;
+    await Reviews.updateRound(ctx, ctx.caller, roundId, input);
+    return null;
+  },
+});
+
+export const deleteRound = eventMutation({
+  args: { roundId: v.id("reviewRounds") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Reviews.deleteRound(ctx, ctx.caller, args.roundId);
+    return null;
+  },
+});
+
+export const addRoundReviewer = eventMutation({
+  args: { roundId: v.id("reviewRounds"), userId: v.id("users") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Reviews.addRoundReviewer(ctx, ctx.caller, args.roundId, args.userId);
+    return null;
+  },
+});
+
+export const removeRoundReviewer = eventMutation({
+  args: { roundId: v.id("reviewRounds"), userId: v.id("users") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await Reviews.removeRoundReviewer(
+      ctx,
+      ctx.caller,
+      args.roundId,
+      args.userId,
+    );
+    return null;
+  },
+});
+
+// ── Organizer: assignment ────────────────────────────────────────────────
 
 export const assign = eventMutation({
   args: {
     proposalIds: v.array(v.id("proposals")),
     reviewerUserId: v.id("users"),
+    roundId: v.optional(v.id("reviewRounds")),
   },
   returns: v.object({ assigned: v.number(), skipped: v.number() }),
   handler: async (ctx, args) => {
@@ -126,6 +257,146 @@ export const assign = eventMutation({
       ctx.caller,
       args.proposalIds,
       args.reviewerUserId,
+      args.roundId,
+    );
+  },
+});
+
+export const autoDistribute = eventMutation({
+  args: {
+    roundId: v.id("reviewRounds"),
+    proposalIds: v.optional(v.array(v.id("proposals"))),
+    perProposal: v.optional(v.number()),
+  },
+  returns: v.object({
+    assigned: v.number(),
+    unplaced: v.number(),
+    perReviewer: v.array(
+      v.object({
+        userId: vv.id("users"),
+        assigned: v.number(),
+        total: v.number(),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    return await Reviews.autoDistribute(ctx, ctx.caller, args.roundId, {
+      proposalIds: args.proposalIds,
+      perProposal: args.perProposal,
+    });
+  },
+});
+
+// ── Organizer: guided launch (W11) ───────────────────────────────────────
+//
+// The preview and the launch are one planner: `launchPreview` reads it,
+// `launchRound` re-derives it and refuses a stale plan. Both are
+// organizer-only inside the model, so the reviewer-readable `eventQuery`
+// wrapper on the preview is not the gate — `requireOrganizer` is.
+
+const vLaunchPerReviewer = v.object({
+  userId: vv.id("users"),
+  name: v.string(),
+  assigned: v.number(),
+  total: v.number(),
+});
+
+export const launchPreview = eventQuery({
+  args: {
+    roundId: v.id("reviewRounds"),
+    proposalIds: v.optional(v.array(v.id("proposals"))),
+    perProposal: v.optional(v.number()),
+  },
+  returns: v.object({
+    fingerprint: v.string(),
+    roundId: vv.id("reviewRounds"),
+    roundName: v.string(),
+    anonymized: v.boolean(),
+    reviewerCap: v.union(v.number(), v.null()),
+    perProposal: v.number(),
+    poolSize: v.number(),
+    candidateCount: v.number(),
+    newAssignments: v.number(),
+    unplaced: v.number(),
+    alreadyCovered: v.number(),
+    decidedCount: v.number(),
+    perReviewer: v.array(vLaunchPerReviewer),
+    sentences: v.array(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    return await Reviews.previewLaunch(ctx, ctx.caller, args);
+  },
+});
+
+export const launchRound = eventMutation({
+  args: {
+    roundId: v.id("reviewRounds"),
+    proposalIds: v.optional(v.array(v.id("proposals"))),
+    perProposal: v.optional(v.number()),
+    /** From the previewed plan; a mismatch refuses the write. */
+    fingerprint: v.string(),
+  },
+  returns: v.object({
+    assigned: v.number(),
+    unplaced: v.number(),
+    perReviewer: v.array(vLaunchPerReviewer),
+    sentences: v.array(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    return await Reviews.launchRound(ctx, ctx.caller, args);
+  },
+});
+
+export const eligibleProposals = eventQuery({
+  args: { roundId: v.id("reviewRounds") },
+  returns: v.array(
+    v.object({
+      proposalId: vv.id("proposals"),
+      title: v.string(),
+      status: v.string(),
+      assigned: v.number(),
+      decisionReleased: v.boolean(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Reviews.eligibleProposals(ctx, ctx.caller, args.roundId);
+  },
+});
+
+/** Preview as reviewer: the reviewer projection, run by the server, shown to
+ * an organizer. Blinding is never re-derived on the client. */
+export const reviewerPreview = eventQuery({
+  args: {
+    roundId: v.id("reviewRounds"),
+    proposalId: v.optional(v.id("proposals")),
+  },
+  returns: v.union(
+    v.null(),
+    v.object({
+      roundId: vv.id("reviewRounds"),
+      roundName: v.string(),
+      anonymized: v.boolean(),
+      scorecard: vScorecard,
+      proposal: v.object({
+        _id: vv.id("proposals"),
+        title: v.string(),
+        answers: v.record(v.string(), vAnswerValue),
+        fields: v.array(
+          v.object({ id: v.string(), label: v.string(), kind: v.string() }),
+        ),
+        fileUrls: v.record(v.string(), v.union(v.string(), v.null())),
+        speakers: v.array(vReviewerSpeaker),
+      }),
+      hiddenFieldLabels: v.array(v.string()),
+      hiddenSpeakerCount: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    return await Reviews.previewAsReviewer(
+      ctx,
+      ctx.caller,
+      args.roundId,
+      args.proposalId,
     );
   },
 });
@@ -139,6 +410,8 @@ export const unassign = eventMutation({
   },
 });
 
+// ── Organizer: results & progress ────────────────────────────────────────
+
 export const summary = eventQuery({
   args: { proposalId: v.id("proposals") },
   returns: v.object({
@@ -150,9 +423,15 @@ export const summary = eventQuery({
         reviewerName: v.union(v.string(), v.null()),
         reviewerEmail: v.union(v.string(), v.null()),
         status: vReviewStatus,
+        roundId: v.union(vv.id("reviewRounds"), v.null()),
+        roundName: v.string(),
+        scorecard: vScorecard,
+        answers: v.optional(vReviewAnswers),
+        weightedScore: v.optional(v.number()),
         score: v.optional(v.number()),
         recommendation: v.optional(vRecommendation),
         comments: v.optional(v.string()),
+        conflictNote: v.optional(v.string()),
         submittedAt: v.optional(v.number()),
       }),
     ),
@@ -171,10 +450,47 @@ export const progress = eventQuery({
     v.object({
       assigned: v.number(),
       submitted: v.number(),
+      conflicts: v.number(),
       avgScore: v.union(v.number(), v.null()),
     }),
   ),
   handler: async (ctx) => {
     return await Reviews.reviewProgress(ctx, ctx.caller);
+  },
+});
+
+/** Per-reviewer completion board (ABS-08). */
+export const reviewerProgress = eventQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      userId: vv.id("users"),
+      name: v.union(v.string(), v.null()),
+      email: v.union(v.string(), v.null()),
+      roundId: v.union(vv.id("reviewRounds"), v.null()),
+      roundName: v.string(),
+      assigned: v.number(),
+      submitted: v.number(),
+      conflicts: v.number(),
+    }),
+  ),
+  handler: async (ctx) => {
+    return await Reviews.reviewerProgress(ctx, ctx.caller);
+  },
+});
+
+/** Consolidated nudge to lagging reviewers (ABS-09). */
+export const remind = eventMutation({
+  args: { reviewerUserIds: v.array(v.id("users")) },
+  returns: v.object({
+    sent: v.number(),
+    failed: v.number(),
+    /** Total skipped, kept for clients written before the reasons existed. */
+    skipped: v.number(),
+    skippedNothingOutstanding: v.number(),
+    skippedNoAddress: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    return await Reviews.remindReviewers(ctx, ctx.caller, args.reviewerUserIds);
   },
 });

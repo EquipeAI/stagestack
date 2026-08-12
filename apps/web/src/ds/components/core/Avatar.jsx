@@ -11,6 +11,8 @@ function initials(name) {
 }
 
 export function Avatar({ name = "", src, size = 28, className = "", ...rest }) {
+  const [failedSrc, setFailedSrc] = React.useState(null);
+  const showImage = Boolean(src) && failedSrc !== src;
   return (
     <span
       className={["ss-avatar", className].filter(Boolean).join(" ")}
@@ -23,7 +25,7 @@ export function Avatar({ name = "", src, size = 28, className = "", ...rest }) {
           lazy+async keeps a wall of speaker avatars off the critical path.
           alt="" because the accessible name is on the wrapper's title: the
           image is decorative once the name is already announced. */}
-      {src ? (
+      {showImage ? (
         <img
           src={src}
           alt=""
@@ -31,6 +33,7 @@ export function Avatar({ name = "", src, size = 28, className = "", ...rest }) {
           height={size}
           loading="lazy"
           decoding="async"
+          onError={() => setFailedSrc(src)}
         />
       ) : (
         initials(name)

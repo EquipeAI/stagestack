@@ -1,9 +1,11 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
+import { useUser } from '@clerk/tanstack-react-start'
 import { api } from '@convex/_generated/api'
 import { allFields } from '@convex/shared/formDef'
 import type * as React from 'react'
-import { Button, Card, Icon } from '~/ds'
+import { Button, Card, Icon, StatusPill } from '~/ds'
+import { PROPOSAL_STATUS_LABEL, cfpWindowState } from '~/components/cfp/model'
 import { PageBody } from '~/components/PageBody'
 import { formatDateRange, formatDateTime } from '~/lib/datetime'
 import {
@@ -13,7 +15,6 @@ import {
   Mono,
   useNow,
 } from '~/components/cfp/CfpChrome'
-import { cfpWindowState } from '~/components/cfp/model'
 
 // The public landing page for a call for speakers. Unauthenticated, fast, and
 // the only page most submitters will ever link to.
@@ -27,6 +28,12 @@ function CfpLanding() {
   const { eventSlug } = Route.useParams()
   const cfp = useQuery(api.cfpPublic.get, { eventSlug })
   const now = useNow()
+  // Signed-in submitters get their proposals for THIS event right on the
+  // landing page — the one URL they were given (eval: "no unified submitter
+  // dashboard was found"; /app/home has the cross-event list).
+  const { isSignedIn } = useUser()
+  const mine = useQuery(api.cfp.myProposals, isSignedIn === true ? {} : 'skip')
+  const myRows = (mine ?? []).filter((row) => row.eventSlug === eventSlug)
 
   if (cfp === undefined) {
     return (
@@ -143,6 +150,46 @@ function CfpLanding() {
           </a>
         ) : null}
       </div>
+
+      {myRows.length > 0 ? (
+        <Card
+          title="Your proposals"
+          subtitle="Everything you have submitted or drafted for this event."
+        >
+          <ul
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 'var(--space-2)',
+              margin: 'var(--space-0)',
+              padding: 'var(--space-0)',
+              listStyle: 'none',
+            }}
+          >
+            {myRows.map(({ proposal }) => (
+              <li
+                key={proposal._id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 'var(--space-3)',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <Link
+                  to="/cfp/$eventSlug/proposal/$proposalId"
+                  params={{ eventSlug, proposalId: proposal._id }}
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  {proposal.title === '' ? '(untitled draft)' : proposal.title}
+                </Link>
+                <StatusPill status={PROPOSAL_STATUS_LABEL[proposal.status]} />
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
 
       <Card
         title="What the form asks"

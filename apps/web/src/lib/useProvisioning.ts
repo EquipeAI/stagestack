@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useConvexAuth, useMutation } from 'convex/react'
+import { useUser } from '@clerk/tanstack-react-start'
 import { api } from '@convex/_generated/api'
 import { errorMessage } from './errors'
 
@@ -21,6 +22,7 @@ export type Provisioning = {
  */
 export function useProvisioning(): Provisioning {
   const { isLoading, isAuthenticated } = useConvexAuth()
+  const { isLoaded: userLoaded, user } = useUser()
   const ensure = useMutation(api.users.ensure)
   const [provisioned, setProvisioned] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -32,8 +34,13 @@ export function useProvisioning(): Provisioning {
       setProvisioned(false)
       return
     }
+    if (!userLoaded) return
     let cancelled = false
-    ensure({})
+    const displayName =
+      user?.fullName?.trim() ||
+      [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim() ||
+      undefined
+    ensure({ displayName })
       .then(() => {
         if (!cancelled) setProvisioned(true)
       })
@@ -43,11 +50,17 @@ export function useProvisioning(): Provisioning {
     return () => {
       cancelled = true
     }
-  }, [isAuthenticated, ensure, attempt])
+  }, [isAuthenticated, userLoaded, user, ensure, attempt])
 
   const retry = useCallback(() => {
     setAttempt((n) => n + 1)
   }, [])
 
-  return { isLoading, isAuthenticated, provisioned, error, retry }
+  return {
+    isLoading: isLoading || (isAuthenticated && !userLoaded),
+    isAuthenticated,
+    provisioned,
+    error,
+    retry,
+  }
 }

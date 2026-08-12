@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import {
@@ -9,6 +10,7 @@ import {
   isStaged,
 } from './model'
 import { Modal } from './Modal'
+import type { FunctionReturnType } from 'convex/server'
 import type { Doc, Id } from '@convex/_generated/dataModel'
 import type { AnswerValue, FormDef } from '@convex/shared/formDef'
 import type * as React from 'react'
@@ -22,6 +24,7 @@ import {
   Field,
   Input,
   StatusPill,
+  Tag,
   Textarea,
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
@@ -32,6 +35,15 @@ import { formatDateTime, fromInputValue, toInputValue } from '~/lib/datetime'
 // One proposal, everything about it. Both queries mount with the dialog — the
 // table itself never subscribes to per-proposal detail or review content, so
 // opening a row is the only thing that costs anything.
+//
+// W9 KEPT this a dialog on purpose. A proposal is a different record class from
+// a speaker or a session: it is a submission, and everything an organizer does
+// with it — read the answers, read the reviews, stage and release a decision —
+// belongs to the CFP flow it is being reviewed in, not to a per-record page
+// with seven tabs. What it did owe the organizer is the hop onwards: once a
+// proposal is accepted it becomes a session, and that session has a workspace.
+// The dialog links to it, so there is still exactly one full detail surface for
+// the SESSION.
 
 const A_WEEK = 7 * 24 * 60 * 60 * 1000
 
@@ -49,11 +61,19 @@ export function ProposalDetailDialog({
   onClose: () => void
 }) {
   const detail = useQuery(api.cfp.getProposalDetail, { eventSlug, proposalId })
+  // The materialized session, if this proposal became one. Read off the list
+  // the table already subscribes to rather than a query of its own.
+  const sessions = useQuery(api.sessions.list, { eventSlug })
+  const session = (sessions ?? []).find(
+    (row) => row.session.proposalId === proposalId,
+  )
 
   if (detail === undefined) {
     return (
       <Modal title="Loading proposal…" width={860} onClose={onClose}>
-        <p style={{ color: 'var(--text-tertiary)' }}>Reading answers and reviews…</p>
+        <p style={{ color: 'var(--text-tertiary)' }}>
+          Reading answers and reviews…
+        </p>
       </Modal>
     )
   }
@@ -69,7 +89,13 @@ export function ProposalDetailDialog({
       onClose={onClose}
       footer={<Button onClick={onClose}>Close</Button>}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-5)',
+        }}
+      >
         <DescriptionList
           items={[
             {
@@ -106,6 +132,20 @@ export function ProposalDetailDialog({
           ]}
         />
 
+        {session === undefined ? null : (
+          <Callout tone="info" title="This proposal is now a session">
+            Its content, speakers, tasks, schedule, publication state and
+            history live in the session's workspace.{' '}
+            <Link
+              to="/app/e/$eventSlug/sessions/$sessionId"
+              params={{ eventSlug, sessionId: session.session._id }}
+            >
+              Open the session workspace
+            </Link>
+            .
+          </Callout>
+        )}
+
         <DecisionPanel
           eventSlug={eventSlug}
           proposal={proposal}
@@ -126,8 +166,14 @@ export function ProposalDetailDialog({
 
         <SpeakersPanel speakers={detail.speakers} />
 
-        {proposal.status === 'draft' || proposal.status === 'pending' ? (
-          <ReopenPanel eventSlug={eventSlug} event={event} proposal={proposal} />
+        {event.archivedAt === undefined &&
+        proposal.status !== 'declined' &&
+        proposal.status !== 'withdrawn' ? (
+          <ReopenPanel
+            eventSlug={eventSlug}
+            event={event}
+            proposal={proposal}
+          />
         ) : null}
       </div>
     </Modal>
@@ -150,12 +196,18 @@ function DecisionPanel({
   const correct = useMutation(api.sessions.correct)
   const [busy, setBusy] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
-  const [confirming, setConfirming] = useState<'release' | 'correct' | null>(null)
+  const [confirming, setConfirming] = useState<'release' | 'correct' | null>(
+    null,
+  )
   const [note, setNote] = useState('')
-  const released = proposal.status === 'accepted' || proposal.status === 'declined'
+  const released =
+    proposal.status === 'accepted' || proposal.status === 'declined'
   const correctTo = proposal.status === 'accepted' ? 'declined' : 'accepted'
 
-  const move = (to: 'pending' | 'acceptQueue' | 'declineQueue', verb: string) => {
+  const move = (
+    to: 'pending' | 'acceptQueue' | 'declineQueue',
+    verb: string,
+  ) => {
     setBusy(to)
     setProblem(null)
     void setStatus({ eventSlug, proposalIds: [proposal._id], to })
@@ -196,10 +248,24 @@ function DecisionPanel({
             : 'Staged decisions stay inside this event until you release them.'
         }
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-          {problem !== null ? <Callout tone="blocked">{problem}</Callout> : null}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-3)',
+          }}
+        >
+          {problem !== null ? (
+            <Callout tone="blocked">{problem}</Callout>
+          ) : null}
           {released ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--space-3)',
+              }}
+            >
               <Field
                 label="Correction note"
                 htmlFor="correct-note"
@@ -219,13 +285,18 @@ function DecisionPanel({
                   disabled={busy !== null || note.trim() === ''}
                   onClick={() => setConfirming('correct')}
                 >
-                  Correct to {correctTo === 'accepted' ? 'Accepted' : 'Declined'}
+                  Correct to{' '}
+                  {correctTo === 'accepted' ? 'Accepted' : 'Declined'}
                 </Button>
               </div>
             </div>
           ) : (
             <div
-              style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}
+              style={{
+                display: 'flex',
+                gap: 'var(--space-2)',
+                flexWrap: 'wrap',
+              }}
             >
               <Button
                 size="sm"
@@ -237,7 +308,9 @@ function DecisionPanel({
               <Button
                 size="sm"
                 disabled={busy !== null || proposal.status === 'declineQueue'}
-                onClick={() => move('declineQueue', 'moved to the decline queue')}
+                onClick={() =>
+                  move('declineQueue', 'moved to the decline queue')
+                }
               >
                 {busy === 'declineQueue' ? 'Moving…' : 'Decline queue'}
               </Button>
@@ -365,6 +438,7 @@ const REVIEW_STATUS_LABEL: Record<string, string> = {
   draft: 'Draft',
   submitted: 'Complete',
   locked: 'Complete',
+  conflict: 'Conflict',
 }
 
 function ReviewPanel({
@@ -388,15 +462,19 @@ function ReviewPanel({
 
   const { aggregate } = summary
   const recommendation = `${aggregate.recommendations.accept} accept · ${aggregate.recommendations.decline} decline · ${aggregate.recommendations.neutral} neutral`
+  const conflicts =
+    aggregate.conflictCount === 0
+      ? ''
+      : ` · ${aggregate.conflictCount} conflict${aggregate.conflictCount === 1 ? '' : 's'} excluded`
 
   return (
     <Card
       variant="flat"
       title="Reviews"
       subtitle={
-        aggregate.count === 0
+        aggregate.count === 0 && aggregate.conflictCount === 0
           ? 'Nobody is assigned to this proposal yet.'
-          : `${aggregate.submittedCount}/${aggregate.count} submitted${aggregate.avgScore === null ? '' : ` · avg ${aggregate.avgScore.toFixed(1)}`} · ${recommendation}`
+          : `${aggregate.submittedCount}/${aggregate.count} submitted${aggregate.avgScore === null ? '' : ` · avg ${aggregate.avgScore.toFixed(1)}`} · ${recommendation}${conflicts}`
       }
     >
       {summary.reviews.length === 0 ? (
@@ -433,11 +511,24 @@ function ReviewPanel({
                   flexWrap: 'wrap',
                 }}
               >
-                <strong>{review.reviewerName ?? review.reviewerEmail ?? 'Reviewer'}</strong>
+                <strong>
+                  {review.reviewerName ?? review.reviewerEmail ?? 'Reviewer'}
+                </strong>
                 <StatusPill
                   status={REVIEW_STATUS_LABEL[review.status] ?? review.status}
                 />
-                {review.score !== undefined ? (
+                <Tag>{review.roundName}</Tag>
+                {review.weightedScore !== undefined ? (
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 'var(--text-sm)',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    Weighted {review.weightedScore.toFixed(2)}
+                  </span>
+                ) : review.score !== undefined ? (
                   <span
                     style={{
                       fontFamily: 'var(--font-mono)',
@@ -462,21 +553,85 @@ function ReviewPanel({
                   </Badge>
                 ) : null}
                 {review.submittedAt !== undefined ? (
-                  <span style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
+                  <span
+                    style={{
+                      color: 'var(--text-tertiary)',
+                      font: 'var(--type-caption)',
+                    }}
+                  >
                     {formatDateTime(review.submittedAt, timezone)}
                   </span>
                 ) : null}
               </span>
-              {review.comments !== undefined && review.comments !== '' ? (
-                <span style={{ whiteSpace: 'pre-wrap', color: 'var(--text-secondary)' }}>
-                  {review.comments}
-                </span>
-              ) : null}
+              <ReviewBody review={review} />
             </li>
           ))}
         </ul>
       )}
     </Card>
+  )
+}
+
+type ReviewRow = FunctionReturnType<
+  typeof api.reviews.summary
+>['reviews'][number]
+
+/** One review's content: scorecard answers when the review carries them,
+ * the legacy comments column otherwise, and conflicts called out as such. */
+function ReviewBody({ review }: { review: ReviewRow }) {
+  if (review.status === 'conflict') {
+    return (
+      <span style={{ color: 'var(--text-danger)' }}>
+        <strong>Conflict declared</strong>
+        {review.conflictNote !== undefined && review.conflictNote !== '' ? (
+          <span style={{ whiteSpace: 'pre-wrap' }}>
+            {' — '}
+            {review.conflictNote}
+          </span>
+        ) : null}
+      </span>
+    )
+  }
+
+  if (review.answers === undefined) {
+    // Legacy review row — comments is the only body it ever had.
+    return review.comments !== undefined && review.comments !== '' ? (
+      <span style={{ whiteSpace: 'pre-wrap', color: 'var(--text-secondary)' }}>
+        {review.comments}
+      </span>
+    ) : null
+  }
+
+  const answered = review.scorecard.filter((field) => {
+    const value = review.answers?.[field.id]
+    return value !== undefined && value !== ''
+  })
+  if (answered.length === 0) return null
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-1)',
+      }}
+    >
+      {answered.map((field) => {
+        const value = review.answers?.[field.id]
+        return (
+          <span key={field.id} style={{ color: 'var(--text-secondary)' }}>
+            <span style={{ color: 'var(--text-tertiary)' }}>
+              {field.label}:
+            </span>{' '}
+            {typeof value === 'number' ? (
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{value}</span>
+            ) : (
+              <span style={{ whiteSpace: 'pre-wrap' }}>{value}</span>
+            )}
+          </span>
+        )
+      })}
+    </div>
   )
 }
 
@@ -589,7 +744,11 @@ function SpeakersPanel({
           {speakers.map((speaker) => (
             <li
               key={speaker._id}
-              style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-half)' }}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 'var(--space-half)',
+              }}
             >
               <span
                 style={{
@@ -599,16 +758,28 @@ function SpeakersPanel({
                   flexWrap: 'wrap',
                 }}
               >
-                <strong>{`${speaker.firstName} ${speaker.lastName}`.trim()}</strong>
+                <strong>
+                  {`${speaker.firstName} ${speaker.lastName}`.trim()}
+                </strong>
                 {speaker.isPrimary ? <Badge tone="info">Primary</Badge> : null}
+                {speaker.role !== undefined && speaker.role !== '' ? (
+                  <Tag>{speaker.role}</Tag>
+                ) : null}
               </span>
               {speaker.email !== undefined ? (
-                <span style={{ color: 'var(--text-tertiary)', font: 'var(--type-caption)' }}>
+                <span
+                  style={{
+                    color: 'var(--text-tertiary)',
+                    font: 'var(--type-caption)',
+                  }}
+                >
                   {speaker.email}
                 </span>
               ) : null}
               {speaker.tagline !== undefined ? (
-                <span style={{ color: 'var(--text-secondary)' }}>{speaker.tagline}</span>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  {speaker.tagline}
+                </span>
               ) : null}
             </li>
           ))}
@@ -655,14 +826,27 @@ function ReopenPanel({
       variant="flat"
       title="Reopen editing"
       subtitle={
-        closed
-          ? 'The CFP has closed. Grant this submitter a window to edit their proposal.'
-          : 'The CFP is still open — a grant only matters once it closes.'
+        proposal.status === 'accepted'
+          ? 'The released acceptance stays in place. Grant the submitter a window to revise this same proposal; newly added participants join its existing session when they resubmit.'
+          : closed
+            ? 'The CFP has closed. Grant this submitter a window to edit their proposal.'
+            : 'The CFP is still open — a grant only matters once it closes.'
       }
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-3)',
+        }}
+      >
         {proposal.reopenedUntil !== undefined ? (
-          <p style={{ color: 'var(--text-secondary)', font: 'var(--type-caption)' }}>
+          <p
+            style={{
+              color: 'var(--text-secondary)',
+              font: 'var(--type-caption)',
+            }}
+          >
             Currently editable until{' '}
             {formatDateTime(proposal.reopenedUntil, event.timezone)}.
           </p>
@@ -692,7 +876,9 @@ function ReopenPanel({
           </Button>
         </div>
         {error !== null ? (
-          <span style={{ color: 'var(--text-danger)', font: 'var(--type-caption)' }}>
+          <span
+            style={{ color: 'var(--text-danger)', font: 'var(--type-caption)' }}
+          >
             {error}
           </span>
         ) : null}

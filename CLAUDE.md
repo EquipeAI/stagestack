@@ -49,6 +49,7 @@ Several of our dependencies are **newer than any model's training data or move f
 | Target | What | How |
 |---|---|---|
 | **Convex** (backend) | dev deployment `scintillating-heron-597` (team equipeai, project stagestack) | `npx convex dev` while coding; `npx convex dev --once` to push once; env vars via `npx convex env set` |
+| **Convex** (staging) | `marvelous-snail-907` — backend of the **develop-branch Vercel preview** (`stagestack-git-develop-…vercel.app`), which is what killmysaas evals hit | code deploys via the Vercel preview build's `CONVEX_DEPLOY_KEY`; env vars are per-deployment and do NOT mirror from dev — new knobs (e.g. `RESEND_TEST_MODE=false`) must be set here (and on prod `healthy-lynx-620`) explicitly, or mail silently fails as `failed` comms-log rows |
 | **Vercel** (web) | scope `equipe-ai`, project `stagestack`, root dir `apps/web`, prod = **https://stagestack.dev** | git push to `main` auto-deploys; manual: `vercel deploy --prod --yes` from repo root. Requires `nitro()` in vite.config (already there) |
 | **exe.dev VM** (worker) | VM `stagestackdev` — `ssh -i ~/.ssh/pedro_exe_dev -o IdentitiesOnly=yes stagestackdev.exe.xyz` | `scripts/deploy-worker.sh` (pull → npm ci → restart). Service: `stagestack-worker.service` (systemd, Restart=always); logs: `journalctl -u stagestack-worker` |
 

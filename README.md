@@ -64,7 +64,8 @@ variable the code reads, with what breaks without it; the reference is in
 [ARCHITECTURE.md](docs/ARCHITECTURE.md):
 
 - **Root `.env.local`** (mirrored to `apps/web/.env.local` for Vite):
-  `VITE_CONVEX_URL`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`.
+  `VITE_CONVEX_URL`, `VITE_CONVEX_SITE_URL`, `VITE_CLERK_PUBLISHABLE_KEY`,
+  `CLERK_SECRET_KEY`.
 - **Convex deployment** (`npx convex env set`): `CLERK_JWT_ISSUER_DOMAIN`,
   `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `RESEND_TEST_MODE`, `MAIL_FROM`,
   `SITE_URL`, `WORKER_SECRET`.
@@ -125,8 +126,8 @@ else npm run build --workspace apps/web; fi
 > functions, concludes you deleted them all, and unmounts every component and
 > drops every index on the target backend. The build still reports success.
 
-Project env vars: `VITE_CONVEX_URL`, `VITE_CLERK_PUBLISHABLE_KEY`,
-`CLERK_SECRET_KEY`, and `CONVEX_DEPLOY_KEY` from
+Project env vars: `VITE_CONVEX_URL`, `VITE_CONVEX_SITE_URL`,
+`VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, and `CONVEX_DEPLOY_KEY` from
 `npx convex deployment token create ci --deployment prod`. Push, then confirm
 the build log says `Deployed Convex functions` and contains no
 `Unmounted component` line.

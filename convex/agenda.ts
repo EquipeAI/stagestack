@@ -82,6 +82,7 @@ const vBoard = v.object({
       sessionId: vv.id("sessions"),
       title: v.string(),
       format: v.optional(v.string()),
+      durationMinutes: v.number(),
       trackId: v.optional(vv.id("tracks")),
       // Absent = unscheduled, i.e. a card in the tray.
       startsAt: v.optional(v.number()),
@@ -144,8 +145,105 @@ export const board = eventQuery({
   },
 });
 
+// ── Assisted placement: suggest → review → apply → undo ──────────────────
+
+const vUnplaced = v.array(
+  v.object({
+    sessionId: vv.id("sessions"),
+    title: v.string(),
+    reason: v.union(
+      v.literal("outside_event_bounds"),
+      v.literal("speaker_double_booked"),
+      v.literal("no_free_room"),
+    ),
+    message: v.string(),
+  }),
+);
+
+/** What "Suggest schedule" would do. A query — it writes nothing, and it is
+ * the same planner `applySchedule` re-runs before writing. */
+export const suggestSchedule = eventQuery({
+  args: {},
+  returns: v.object({
+    placements: v.array(
+      v.object({
+        sessionId: vv.id("sessions"),
+        title: v.string(),
+        startsAt: v.number(),
+        endsAt: v.number(),
+        roomId: v.optional(vv.id("rooms")),
+        durationMinutes: v.number(),
+        why: v.string(),
+      }),
+    ),
+    unplaced: vUnplaced,
+    fingerprint: v.string(),
+  }),
+  handler: async (ctx) => {
+    return await Agenda.suggestSchedule(ctx, ctx.caller);
+  },
+});
+
+/** Apply exactly the plan that was previewed. Refuses (`plan_stale`) when the
+ * board moved underneath it rather than placing something else. */
+export const applySchedule = eventMutation({
+  args: {
+    fingerprint: v.string(),
+    placements: v.array(
+      v.object({
+        sessionId: v.id("sessions"),
+        startsAt: v.number(),
+        endsAt: v.number(),
+        roomId: v.optional(v.id("rooms")),
+      }),
+    ),
+  },
+  returns: v.object({
+    placed: v.array(
+      v.object({ sessionId: vv.id("sessions"), title: v.string() }),
+    ),
+    unplaced: vUnplaced,
+    runId: vv.id("auditLog"),
+  }),
+  handler: async (ctx, args) => {
+    return await Agenda.applySchedule(ctx, ctx.caller, args);
+  },
+});
+
+/** Revert exactly the placements one run wrote, skipping anything moved by
+ * hand since. `runId` is the audit row `applySchedule` returned. */
+export const undoPlacement = eventMutation({
+  args: { runId: v.id("auditLog") },
+  returns: v.object({
+    reverted: v.number(),
+    skipped: v.number(),
+    message: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    return await Agenda.undoPlacement(ctx, ctx.caller, args.runId);
+  },
+});
+
+/** Plan and apply in one call, for organizers who don't want the preview.
+ * Same planner; no second placement implementation. */
+export const autoPlace = eventMutation({
+  args: {},
+  returns: v.object({
+    placed: v.array(
+      v.object({ sessionId: vv.id("sessions"), title: v.string() }),
+    ),
+    unplaced: v.array(
+      v.object({ sessionId: vv.id("sessions"), title: v.string() }),
+    ),
+  }),
+  handler: async (ctx) => {
+    return await Agenda.autoPlace(ctx, ctx.caller);
+  },
+});
+
 /** Drag-and-drop placement. `slot: null` sends the session back to the tray.
  * Never notifies anyone: board edits are internal drafts (M6). */
+
 export const scheduleSession = eventMutation({
   args: { sessionId: v.id("sessions"), slot: v.union(vSlot, v.null()) },
   returns: v.null(),

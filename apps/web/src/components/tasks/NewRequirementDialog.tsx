@@ -181,9 +181,10 @@ export function NewRequirementDialog({
           </Field>
         ) : null}
 
-        <Field label="Due" htmlFor="req-due" hint={`Stated in ${timezone}.`}>
+        <Field label="Due" htmlFor="req-due" required hint={`Stated in ${timezone}.`}>
           <Input
             id="req-due"
+            required
             type="datetime-local"
             value={dueAt}
             disabled={pending}

@@ -8,16 +8,16 @@
    can't express). Scoped under .mkt-*. */
 @import './marketing.css';
 
-@layer base {
-  .using-mouse * {
-    outline: none !important;
-  }
-}
+/* A `.using-mouse * { outline: none !important }` rule used to live here. It
+   was dead — nothing in the app ever set that class — and it was a landmine:
+   the day anything put it on <html>, every focus indicator in the product
+   would disappear (WCAG 2.4.7). `:focus-visible`, which the DS uses, already
+   does the job it was written for. */
 
 /* ── Event shell ──────────────────────────────────────────────────────────
    Desktop: a sticky 236px nav rail beside a scrolling page.
-   Phone (<=860px): the rail becomes a sticky horizontal tab strip stacked
-   above the page. Same DOM either way — only the axis changes. */
+   Phone (<=860px): the rail is gone — .app-shell__bar (menu button + current
+   location) replaces it, and navigation happens in the NavDrawer (W7). */
 .app-shell {
   flex: 1;
   min-height: 0;
@@ -42,14 +42,50 @@
   min-width: 0;
 }
 
+/* The phone bar that replaces the rail: one row, sticky under the topbar,
+   holding the menu button and where-am-I. Hidden on desktop, where the rail
+   itself answers both. */
+.app-shell__bar {
+  display: none;
+}
+
 @media (max-width: 860px) {
   .app-shell {
     flex-direction: column;
   }
+  /* The rail is gone below 860px — not restyled into a strip. See the note in
+     ds/components/navigation/navigation.css: a horizontal strip cannot show
+     the lifecycle groups, and hiding them was what made fifteen entries a
+     memory test on a phone. The same rail is rendered in full inside the
+     drawer this bar opens, so nothing is unreachable and there is exactly one
+     nav implementation. */
   .app-shell__nav {
-    height: auto;
-    width: 100%;
-    align-self: stretch;
+    display: none;
+  }
+  .app-shell__bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    position: sticky;
+    top: calc(var(--topbar-height) + var(--safe-top));
+    z-index: var(--z-sticky);
+    padding: var(--space-2) var(--page-gutter);
+    background: var(--surface-card);
+    border-bottom: var(--space-px) solid var(--border-default);
+  }
+  /* Where you are, in the drawer's own words: group then entry. Truncates
+     rather than wrapping — the bar is one row at every width. */
+  .app-shell__where {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: var(--type-caption);
+    color: var(--text-tertiary);
+  }
+  .app-shell__where strong {
+    color: var(--text-primary);
+    font-weight: var(--weight-medium);
   }
 }
 
@@ -295,6 +331,34 @@
 .agenda-draggable {
   touch-action: none;
 }
+/* The tray card's drag handle. It exists so the card itself can stop being a
+   role="button" wrapped around three real buttons (nested interactive
+   controls); dnd-kit's activator lives here instead. 28px clears WCAG 2.2's
+   24px floor with a mouse, 44px with a finger. */
+.agenda-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: var(--space-0);
+  border: var(--space-px) solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-canvas);
+  color: var(--text-tertiary);
+  cursor: grab;
+}
+.agenda-drag-handle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+@media (pointer: coarse) {
+  .agenda-drag-handle {
+    width: 44px;
+    height: 44px;
+  }
+}
 @media (pointer: coarse) {
   .agenda-draggable {
     touch-action: manipulation;
@@ -404,4 +468,385 @@
   padding: var(--space-2);
   font: var(--type-caption);
   color: var(--text-tertiary);
+}
+
+/* ── File chooser ─────────────────────────────────────────────────────────
+   `FileButton` keeps the real `<input type="file">` in the tab order and only
+   hides it visually, because a `display:none` input is not focusable and the
+   `<label>` around it never was — between them there used to be no keyboard
+   path to "Choose a file" at all. Clipping rather than hiding is what keeps
+   the native control operable. */
+.file-button__input {
+  position: absolute;
+  width: var(--space-px);
+  height: var(--space-px);
+  padding: var(--space-0);
+  margin: calc(var(--space-px) * -1);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+/* The focus ring has to move to the thing that is actually on screen: the
+   input owns focus, the label owns the pixels. */
+.file-button:focus-within {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+/* Disabled styling comes from the DS's own `.ss-btn[aria-disabled=true]`
+   rule; FileButton sets that attribute rather than restating the treatment. */
+
+/* ── Event control center (W8) ────────────────────────────────────────────
+   One screen, four questions, one column. There is deliberately NO KPI grid:
+   the review's objection was that tiles shrink to unreadable numbers on a
+   phone and say nothing about what to do next, so every count here is a
+   full-width row carrying its own sentence and its own destination. */
+.cc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.cc-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* Counted rows. The whole row is the control — 44px minimum on every pointer,
+   full width on a phone, so there is no small target anywhere on this screen. */
+.cc-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cc-row {
+  width: 100%;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-standard);
+}
+.cc-row:hover {
+  border-color: var(--border-strong);
+}
+.cc-row__count {
+  flex: none;
+  min-width: 2.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xl);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-none);
+  color: var(--text-primary);
+}
+/* Tone tints the number only. The row's meaning is always in its sentence,
+   so removing colour removes nothing. */
+.cc-row[data-tone='success'] .cc-row__count {
+  color: var(--text-tertiary);
+}
+.cc-row[data-tone='attention'] .cc-row__count {
+  color: var(--text-warning, var(--text-primary));
+}
+.cc-row[data-tone='blocked'] .cc-row__count {
+  color: var(--text-danger);
+}
+.cc-row__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-half);
+  min-width: 0;
+}
+.cc-row__label {
+  font: var(--type-label);
+  color: var(--text-primary);
+}
+.cc-row__sentence {
+  font: var(--type-caption);
+  color: var(--text-secondary);
+}
+.cc-row__go {
+  margin-left: auto;
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+/* Session readiness list — reasons always on screen, never behind a hover. */
+.cc-sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cc-sessions__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-bottom: var(--space-px) solid var(--border-subtle);
+}
+.cc-sessions__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* Recent changes. Time first on a wide screen, above the sentence on a phone. */
+.cc-changes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cc-changes__item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: var(--space-px) solid var(--border-subtle);
+}
+.cc-changes__when {
+  flex: none;
+  width: 11rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+.cc-changes__what {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+/* Timeline — a labelled vertical list, never a horizontal stepper. */
+.cc-timeline,
+.cc-channels,
+.cc-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cc-timeline__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: var(--space-px) solid var(--border-subtle);
+}
+.cc-timeline__item[data-past='true'] {
+  color: var(--text-tertiary);
+}
+.cc-timeline__mark {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-tertiary);
+}
+.cc-timeline__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-half);
+  min-width: 0;
+}
+.cc-timeline__sentence {
+  color: var(--text-primary);
+}
+.cc-timeline__item[data-past='true'] .cc-timeline__sentence {
+  color: var(--text-secondary);
+}
+.cc-timeline__when {
+  font: var(--type-caption);
+  color: var(--text-tertiary);
+}
+
+.cc-channels__item,
+.cc-checklist__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) 0;
+  border-bottom: var(--space-px) solid var(--border-subtle);
+}
+.cc-channels__head,
+.cc-checklist__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.cc-checklist__label {
+  font: var(--type-label);
+  color: var(--text-primary);
+}
+.cc-channels__sentence,
+.cc-checklist__sentence {
+  font: var(--type-caption);
+  color: var(--text-secondary);
+}
+
+@media (max-width: 640px) {
+  /* The timestamp stops being a column and becomes a caption above the
+     sentence — an 11rem gutter costs half the width of a 375px screen. */
+  .cc-changes__item {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-half);
+  }
+  .cc-changes__when {
+    width: auto;
+  }
+  /* The count moves above its label so neither has to shrink. */
+  .cc-row {
+    align-items: flex-start;
+  }
+}
+
+/* ── Record workspaces (W9) ───────────────────────────────────────────────
+   A workspace has NO chrome of its own above the content: its title, crumb
+   and description are contributed to the event layout's single PageHeader
+   through the header slot (components/shell/EventHeader.tsx), so the page
+   still has exactly one title area and one sticky region at phone width.
+
+   What is left here is the tab strip and the record's primary action. */
+.ss-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.ss-workspace__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+/* The tab strip is the DS's own overflow-scroller; it must be the part that
+   gives up width, never the action beside it. */
+.ss-workspace__bar > .ss-tabs {
+  flex: 1;
+  min-width: 0;
+}
+.ss-workspace__actions {
+  flex: none;
+  display: flex;
+  gap: var(--space-2);
+}
+.ss-workspace__body {
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  /* Thumb reach. Above 640px the primary action sits beside the tabs, which
+     is where a mouse already is. Below it, the top of the screen is the one
+     place a thumb cannot get to one-handed, so the action detaches and
+     anchors to the bottom of the viewport.
+
+     Sticky rather than fixed, and inside the flow: a fixed bar would sit on
+     top of the last row of the panel, and a workspace's last row is routinely
+     the row the button acts on. */
+  .ss-workspace__bar {
+    display: contents;
+  }
+  /* The strip is a flex item of .ss-workspace now, and that is a COLUMN — a
+     `flex: 1` inherited from the desktop rule would stretch it vertically
+     instead of horizontally. */
+  .ss-workspace__bar > .ss-tabs {
+    flex: none;
+  }
+  .ss-workspace__actions {
+    order: 99;
+    position: sticky;
+    bottom: 0;
+    z-index: var(--z-sticky);
+    padding: var(--space-3) var(--page-gutter);
+    margin: 0 calc(var(--page-gutter) * -1) calc(var(--safe-bottom) * -1);
+    padding-bottom: calc(var(--space-3) + var(--safe-bottom));
+    background: var(--surface-card);
+    border-top: var(--space-px) solid var(--border-default);
+  }
+  /* One full-width target rather than a right-aligned pill: at 375px the
+     action is the point of the bar. */
+  .ss-workspace__actions > * {
+    flex: 1;
+    justify-content: center;
+  }
+}
+
+/* ── Review round launch flow (W11) ───────────────────────────────────────
+   One step per screen, and the two controls that move between steps pinned
+   where a thumb already is. Sticky rather than fixed, and inside the flow
+   container: the last row of a step is routinely the row Next acts on, so a
+   floating bar would sit on top of it. */
+.ss-launch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+/* The step list is orientation, not navigation — the flow validates forward,
+   so the steps are read, not clicked. */
+.ss-launch__steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ss-launch__step {
+  font: var(--type-caption);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.ss-launch__step[aria-current='step'] {
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+}
+/* The summary states consequences in sentences: they wrap, they never scroll
+   sideways, and they read as prose rather than as a table of counts. */
+.ss-launch__sentences {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 0 0 var(--space-4);
+  font: var(--type-body);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.ss-launch__nav {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--page-gutter);
+  margin: 0 calc(var(--page-gutter) * -1) calc(var(--safe-bottom) * -1);
+  padding-bottom: calc(var(--space-3) + var(--safe-bottom));
+  background: var(--surface-card);
+  border-top: var(--space-px) solid var(--border-default);
+}
+
+@media (max-width: 640px) {
+  /* The "Step 3 of 7 · Reviewers" line above the step carries the progress;
+     the full list would cost two rows of a phone screen to repeat it. */
+  .ss-launch__steps {
+    display: none;
+  }
+  .ss-launch__nav > * {
+    flex: 1;
+    justify-content: center;
+  }
 }

@@ -3,23 +3,118 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { Id } from '@convex/_generated/dataModel'
-import { Card, EmptyState, PageHeader } from '~/ds'
+import { Card, EmptyState, PageHeader, Tabs } from '~/ds'
+import { parseReviewsSearch } from '~/components/reviews/search'
 import { ReviewQueue } from '~/components/reviews/ReviewQueue'
 import { ReviewPanel } from '~/components/reviews/ReviewPanel'
 import { ProposalReadout } from '~/components/reviews/ProposalReadout'
-import { isUnfinished, submittedCount } from '~/components/reviews/model'
+import { RoundsPanel } from '~/components/reviews/RoundsPanel'
+import { ProgressPanel } from '~/components/reviews/ProgressPanel'
+import {
+  isUnfinished,
+  reviewPanelKey,
+  submittedCount,
+} from '~/components/reviews/model'
 
 // The single screen a reviewer works from: the queue on the left, the proposal
 // in the middle, the review panel on the right. Nothing here navigates away —
 // submitting advances to the next unfinished proposal in place.
+//
+// Organizers get two more views over the same URL: the evaluation plan
+// (rounds, scorecards, pools) and the per-reviewer progress board. Reviewers
+// see only their queue — no tabs.
 
 export const Route = createFileRoute('/app/e/$eventSlug/reviews')({
   component: Reviews,
+  // The tab is in the URL so the control center can link to Progress rather
+  // than to "Reviews, now find the tab".
+  validateSearch: parseReviewsSearch,
 })
 
 function Reviews() {
   const { eventSlug } = Route.useParams()
   const event = useQuery(api.events.get, { eventSlug })
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const tab = search.tab ?? 'queue'
+  // Switching tabs unmounts the launch flow, which is a way to lose work (and
+  // to orphan a draft round) without being asked. The flow registers an
+  // interceptor here; when it takes the navigation over it runs `go` itself,
+  // once the organizer has answered.
+  const leaveGuard = useRef<((proceed: () => void) => boolean) | null>(null)
+  const setTab = (next: string) => {
+    const go = () => {
+      // `flow` is deliberately not carried across tabs.
+      void navigate({
+        search: next === 'queue' ? {} : { tab: next as 'plan' | 'progress' },
+        replace: true,
+      })
+    }
+    if (leaveGuard.current !== null && leaveGuard.current(go)) return
+    go()
+  }
+  const isOrganizer = event !== undefined && event.role === 'organizer'
+
+  const view =
+    isOrganizer && tab === 'plan' ? (
+      <RoundsPanel
+        eventSlug={eventSlug}
+        timezone={event.event.timezone}
+        flow={search.flow}
+        onOpenFlow={(flow) => {
+          void navigate({
+            search: flow === undefined ? { tab: 'plan' } : { tab: 'plan', flow },
+            replace: true,
+          })
+        }}
+        onOpenProgress={() => {
+          void navigate({ search: { tab: 'progress' } })
+        }}
+        registerLeaveGuard={(guard) => {
+          leaveGuard.current = guard
+        }}
+      />
+    ) : isOrganizer && tab === 'progress' ? (
+      <ProgressPanel eventSlug={eventSlug} />
+    ) : (
+      <QueueView
+        eventSlug={eventSlug}
+        archived={event?.event.archivedAt !== undefined}
+      />
+    )
+
+  if (!isOrganizer) return view
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-5)',
+      }}
+    >
+      <Tabs
+        variant="underline"
+        tabs={[
+          { id: 'queue', label: 'My queue' },
+          { id: 'plan', label: 'Evaluation plan' },
+          { id: 'progress', label: 'Progress' },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      {view}
+    </div>
+  )
+}
+
+function QueueView({
+  eventSlug,
+  archived,
+}: {
+  eventSlug: string
+  archived: boolean
+}) {
   const assignments = useQuery(api.reviews.myAssignments, { eventSlug })
 
   const [selectedId, setSelectedId] = useState<Id<'reviews'> | null>(null)
@@ -50,9 +145,14 @@ function Reviews() {
     )
   }
 
-  const current = assignments.find((row) => row.reviewId === selectedId) ?? null
-  const unfinished = assignments.filter(isUnfinished)
-  const done = submittedCount(assignments)
+  const actionableAssignments = assignments.filter(
+    (row) => row.status !== 'conflict',
+  )
+  const conflictCount = assignments.length - actionableAssignments.length
+  const current =
+    actionableAssignments.find((row) => row.reviewId === selectedId) ?? null
+  const unfinished = actionableAssignments.filter(isUnfinished)
+  const done = submittedCount(actionableAssignments)
 
   const advance = ({ revised }: { revised: boolean }) => {
     if (revised) return
@@ -70,7 +170,7 @@ function Reviews() {
     >
       <PageHeader
         title="Reviews"
-        description={`${done} of ${assignments.length} submitted · ${unfinished.length} still waiting on you`}
+        description={`${done} of ${actionableAssignments.length} submitted · ${unfinished.length} still waiting on you${conflictCount === 0 ? '' : ` · ${conflictCount} conflict${conflictCount === 1 ? '' : 's'} excluded`}`}
       />
       <div
         style={{
@@ -113,10 +213,10 @@ function Reviews() {
           {current === null ? null : (
             <div style={{ position: 'sticky', top: 'var(--topbar-height)' }}>
               <ReviewPanel
-                key={current.reviewId}
+                key={reviewPanelKey(current)}
                 eventSlug={eventSlug}
                 assignment={current}
-                archived={event?.event.archivedAt !== undefined}
+                archived={archived}
                 isLastUnfinished={
                   unfinished.length <= 1 &&
                   unfinished[0]?.reviewId === current.reviewId

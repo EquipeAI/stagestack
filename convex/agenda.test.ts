@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { boardScheduledThings, conflictsFor } from "./shared/agenda";
 import {
   auditActions,
   createEvent,
@@ -185,6 +186,11 @@ describe("agenda.scheduleSession", () => {
       lastName: "Speaker",
       email: "bob@example.com",
     });
+    // Land the deferred invitation email so `before` is a settled baseline.
+    for (let i = 0; i < 3; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await t.finishInProgressScheduledFunctions();
+    }
     const before = (await messageKinds(t)).length;
 
     await place(alice, eventSlug, sessionId, {
@@ -423,6 +429,115 @@ describe("agenda.board conflicts", () => {
     board = await alice.query(api.agenda.board, { eventSlug });
     expect(board.agendaItems).toHaveLength(0);
     expect(board.sessions[0].conflicts).toEqual([]);
+  });
+
+  // W13. The phone board highlights eligible cells by running the SHARED
+  // conflict engine over the board projection it already subscribes to. That is
+  // only safe while the client's `BoardSession → ScheduledThing` adapter agrees
+  // with the server's `Doc → ScheduledThing` one — including the participant
+  // filter, which is the single rule the projection does not pre-apply. This is
+  // that agreement, asserted against the real board query rather than against a
+  // hand-written expectation.
+  test("the client adapter reproduces the server's conflict map exactly", async () => {
+    const { t, alice, eventSlug, mainStage, sideRoom, platformTrack } =
+      await setup();
+    const bob = {
+      firstName: "Bob",
+      lastName: "Speaker",
+      email: "bob@example.com",
+    };
+    // Room clash + same-track warning + a shared speaker, all at once.
+    const a = await directSession(alice, eventSlug, "Talk A", bob, platformTrack);
+    const b = await directSession(
+      alice,
+      eventSlug,
+      "Talk B",
+      { firstName: "Carol", lastName: "Speaker", email: "carol@example.com" },
+      platformTrack,
+    );
+    const c = await directSession(alice, eventSlug, "Talk C", {
+      firstName: "Cal",
+      lastName: "Speaker",
+      email: "cal@example.com",
+    });
+    // Unplaced: the adapter must skip it, exactly as `toScheduledThings` does.
+    await directSession(alice, eventSlug, "Talk D", {
+      firstName: "Dee",
+      lastName: "Speaker",
+      email: "dee@example.com",
+    });
+    await place(alice, eventSlug, a, {
+      startsAt: T10,
+      endsAt: T11,
+      roomId: mainStage,
+    });
+    await place(alice, eventSlug, b, {
+      startsAt: T1030,
+      endsAt: T12,
+      roomId: mainStage,
+    });
+    await place(alice, eventSlug, c, {
+      startsAt: T1030,
+      endsAt: T11,
+      roomId: sideRoom,
+    });
+    await alice.mutation(api.agenda.createAgendaItem, {
+      eventSlug,
+      title: "Lunch",
+      startsAt: T1030,
+      endsAt: T12,
+      roomId: sideRoom,
+    });
+    // A withdrawn co-speaker on both A and C: shared between two overlapping
+    // blocks, and therefore a speaker blocker if — and only if — the adapter
+    // forgets the withdrawn/declined filter.
+    for (const sessionId of [a, c]) {
+      await addCoSpeaker(t, sessionId, {
+        firstName: "Wanda",
+        lastName: "Withdrawn",
+        email: "wanda@example.com",
+      });
+    }
+    await t.run(async (ctx) => {
+      for (const sessionId of [a, c]) {
+        const rows = await ctx.db
+          .query("sessionParticipants")
+          .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+          .collect();
+        for (const row of rows) {
+          const contact = await ctx.db.get("eventContacts", row.eventContactId);
+          if (contact?.email === "wanda@example.com") {
+            await ctx.db.patch("sessionParticipants", row._id, {
+              state: "withdrawn",
+            });
+          }
+        }
+      }
+    });
+
+    const board = await alice.query(api.agenda.board, { eventSlug });
+    const fromClient = conflictsFor(boardScheduledThings(board));
+
+    // Every block the server annotated, and nothing more.
+    for (const session of board.sessions) {
+      expect(fromClient.get(session.sessionId) ?? []).toEqual(
+        session.conflicts,
+      );
+    }
+    for (const item of board.agendaItems) {
+      expect(fromClient.get(item.itemId) ?? []).toEqual(item.conflicts);
+    }
+    const serverIds = new Set([
+      ...board.sessions.filter((s) => s.conflicts.length > 0).map((s) => s.sessionId as string),
+      ...board.agendaItems.filter((i) => i.conflicts.length > 0).map((i) => i.itemId as string),
+    ]);
+    expect([...fromClient.keys()].sort()).toEqual([...serverIds].sort());
+    // The fixture is only meaningful if it really collides.
+    expect(serverIds.size).toBeGreaterThan(0);
+    // …and the withdrawn speaker is shared by two overlapping blocks without
+    // producing a speaker conflict on either side.
+    const rowA = board.sessions.find((s) => s.sessionId === a);
+    expect(rowA?.conflicts.some((x) => x.kind === "speaker")).toBe(false);
   });
 
   test("an agenda item's room can be cleared with roomId: null", async () => {
@@ -1478,5 +1593,613 @@ describe("archived events", () => {
     expect(
       (await calendarJobs(t)).filter((j) => j.ics.method === "CANCEL"),
     ).toHaveLength(0);
+  });
+});
+
+// ── Auto-place (W7: AIA-08) ──────────────────────────────────────────────
+
+describe("agenda.autoPlace", () => {
+  test("places every unscheduled session into conflict-free slots in one action", async () => {
+    const { t, alice, eventSlug } = await setup();
+    // Two sessions sharing a speaker: they must not land in overlapping
+    // slots; a third with its own speaker can share a time in another room.
+    const shared = {
+      firstName: "Grace",
+      lastName: "Hopper",
+      email: "grace@example.com",
+    };
+    const a = await directSession(alice, eventSlug, "Talk A", shared);
+    const b = await directSession(alice, eventSlug, "Talk B", shared);
+    const c = await directSession(alice, eventSlug, "Talk C", {
+      firstName: "Alan",
+      lastName: "Turing",
+      email: "alan@example.com",
+    });
+
+    const result = await alice.mutation(api.agenda.autoPlace, { eventSlug });
+    expect(result.placed.map((p) => p.title).sort()).toEqual([
+      "Talk A",
+      "Talk B",
+      "Talk C",
+    ]);
+    expect(result.unplaced).toEqual([]);
+
+    // The board must show zero blockers after auto-placement.
+    const board = await alice.query(api.agenda.board, { eventSlug });
+    const blocked = board.sessions.filter((s) =>
+      s.conflicts.some((conflict) => conflict.level === "blocker"),
+    );
+    expect(blocked).toEqual([]);
+    for (const id of [a, b, c]) {
+      const row = await sessionRow(t, id);
+      expect(row?.startsAt).toBeGreaterThan(0);
+      expect(row?.endsAt).toBe((row?.startsAt ?? 0) + 60 * 60 * 1000);
+    }
+    // Re-running places nothing new (idempotent over a full board).
+    const again = await alice.mutation(api.agenda.autoPlace, { eventSlug });
+    expect(again.placed).toEqual([]);
+  });
+});
+
+// ── Assisted placement: duration, packing, preview, undo (W2) ────────────
+//
+// The board's suggestion is a proposal an organizer reads before anything is
+// written, so what these tests defend is that the preview and the write agree,
+// that a short session takes a short slot, and that undo is exact.
+
+describe("agenda assisted placement", () => {
+  async function formatId(
+    as: TestUserT,
+    eventSlug: string,
+    name: string,
+    defaultDurationMinutes?: number,
+  ): Promise<Id<"formats">> {
+    return (await as.mutation(api.library.add, {
+      eventSlug,
+      table: "formats",
+      item: { name, defaultDurationMinutes },
+    })) as Id<"formats">;
+  }
+
+  async function oneRoomEvent(extra: { endsAt?: number } = {}) {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit", {
+      startsAt: EVENT_START,
+      ...extra,
+    });
+    const room = (await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "rooms",
+      item: { name: "Only Room" },
+    })) as Id<"rooms">;
+    return { t, alice, orgSlug, eventSlug, room };
+  }
+
+  function speaker(n: number) {
+    return {
+      firstName: "Bob",
+      lastName: `Speaker${n}`,
+      email: `bob${n}@example.com`,
+    };
+  }
+
+  test("block length resolves override → format default → 60 minutes", async () => {
+    const { t, alice, eventSlug } = await oneRoomEvent();
+    await formatId(alice, eventSlug, "Workshop (120 min)");
+
+    const fromFormat = await directSession(
+      alice,
+      eventSlug,
+      "Workshop session",
+      speaker(1),
+    );
+    const overridden = await directSession(
+      alice,
+      eventSlug,
+      "Shortened workshop",
+      speaker(2),
+    );
+    const bare = await directSession(alice, eventSlug, "Plain talk", speaker(3));
+    for (const sessionId of [fromFormat, overridden]) {
+      await alice.mutation(api.sessions.updateContent, {
+        eventSlug,
+        sessionId,
+        format: "Workshop (120 min)",
+      });
+    }
+    await alice.mutation(api.sessions.updateContent, {
+      eventSlug,
+      sessionId: overridden,
+      durationMinutes: 30,
+    });
+
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    const minutes = new Map(
+      plan.placements.map((p) => [p.sessionId, p.durationMinutes]),
+    );
+    expect(minutes.get(fromFormat)).toBe(120);
+    expect(minutes.get(overridden)).toBe(30);
+    expect(minutes.get(bare)).toBe(60);
+
+    await alice.mutation(api.agenda.applySchedule, {
+      eventSlug,
+      fingerprint: plan.fingerprint,
+      placements: plan.placements.map((p) => ({
+        sessionId: p.sessionId,
+        startsAt: p.startsAt,
+        endsAt: p.endsAt,
+        roomId: p.roomId,
+      })),
+    });
+    for (const [sessionId, expected] of minutes) {
+      const row = await sessionRow(t, sessionId);
+      expect((row.endsAt ?? 0) - (row.startsAt ?? 0)).toBe(
+        expected * 60 * 1000,
+      );
+    }
+  });
+
+  test("short sessions PACK: two 15-minute talks fit inside the same hour and the same room", async () => {
+    const { alice, eventSlug } = await oneRoomEvent();
+    await formatId(alice, eventSlug, "Lightning Talk (15 min)");
+    const ids: Array<Id<"sessions">> = [];
+    for (const n of [1, 2]) {
+      const sessionId = await directSession(
+        alice,
+        eventSlug,
+        `Lightning ${n}`,
+        speaker(n),
+      );
+      await alice.mutation(api.sessions.updateContent, {
+        eventSlug,
+        sessionId,
+        format: "Lightning Talk (15 min)",
+      });
+      ids.push(sessionId);
+    }
+
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    expect(plan.placements).toHaveLength(2);
+    const byId = new Map(plan.placements.map((p) => [p.sessionId, p]));
+    const first = byId.get(ids[0]);
+    const second = byId.get(ids[1]);
+    expect(first?.startsAt).toBe(EVENT_START);
+    expect(first?.endsAt).toBe(EVENT_START + 15 * 60 * 1000);
+    // The slot walk is a 15-minute lattice independent of block length, so
+    // the second talk starts where the first ends instead of an hour later.
+    expect(second?.startsAt).toBe(EVENT_START + 15 * 60 * 1000);
+    expect(second?.endsAt).toBe(EVENT_START + 30 * 60 * 1000);
+    expect(second?.roomId).toBe(first?.roomId);
+  });
+
+  test("scoring prefers keeping a track back-to-back in the room it already uses", async () => {
+    const { alice, eventSlug, sideRoom, platformTrack } = await setup();
+    const opener = await directSession(
+      alice,
+      eventSlug,
+      "Track Opener",
+      speaker(1),
+      platformTrack,
+    );
+    await place(alice, eventSlug, opener, {
+      startsAt: EVENT_START,
+      endsAt: EVENT_START + HOUR,
+      roomId: sideRoom,
+    });
+    const follower = await directSession(
+      alice,
+      eventSlug,
+      "Track Follower",
+      speaker(2),
+      platformTrack,
+    );
+
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    const placement = plan.placements.find((p) => p.sessionId === follower);
+    // The first non-blocking cell would have been Main Stage at 09:00; the
+    // scorer takes the 10:00 slot in the track's own room instead.
+    expect(placement?.roomId).toBe(sideRoom);
+    expect(placement?.startsAt).toBe(EVENT_START + HOUR);
+    expect(placement?.why).toBe(
+      'Runs back-to-back with "Track Opener" — the Platform track stays in Side Room.',
+    );
+  });
+
+  test("a plan is refused when the board moved under it, and applying is exactly what was previewed", async () => {
+    const { t, alice, eventSlug, mainStage } = await setup();
+    const a = await directSession(alice, eventSlug, "Talk A", speaker(1));
+    const b = await directSession(alice, eventSlug, "Talk B", speaker(2));
+
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    expect(plan.placements.map((p) => p.sessionId).sort()).toEqual(
+      [a, b].sort(),
+    );
+
+    // Someone else places one of them by hand.
+    await place(alice, eventSlug, a, {
+      startsAt: EVENT_START + 3 * HOUR,
+      endsAt: EVENT_START + 4 * HOUR,
+      roomId: mainStage,
+    });
+
+    await expectRejectedWith(
+      alice.mutation(api.agenda.applySchedule, {
+        eventSlug,
+        fingerprint: plan.fingerprint,
+        placements: plan.placements.map((p) => ({
+          sessionId: p.sessionId,
+          startsAt: p.startsAt,
+          endsAt: p.endsAt,
+          roomId: p.roomId,
+        })),
+      }),
+      "plan_stale",
+    );
+    // Nothing was written for the session the stale plan wanted to move.
+    expect((await sessionRow(t, b)).startsAt).toBeUndefined();
+
+    // A tampered plan is refused the same way, even with a valid fingerprint.
+    const fresh = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    await expectRejectedWith(
+      alice.mutation(api.agenda.applySchedule, {
+        eventSlug,
+        fingerprint: fresh.fingerprint,
+        placements: fresh.placements.map((p) => ({
+          sessionId: p.sessionId,
+          startsAt: p.startsAt + 7 * 60 * 1000,
+          endsAt: p.endsAt + 7 * 60 * 1000,
+          roomId: p.roomId,
+        })),
+      }),
+      "plan_stale",
+    );
+
+    const applied = await alice.mutation(api.agenda.applySchedule, {
+      eventSlug,
+      fingerprint: fresh.fingerprint,
+      placements: fresh.placements.map((p) => ({
+        sessionId: p.sessionId,
+        startsAt: p.startsAt,
+        endsAt: p.endsAt,
+        roomId: p.roomId,
+      })),
+    });
+    expect(applied.placed.map((p) => p.title)).toEqual(["Talk B"]);
+    const row = await sessionRow(t, b);
+    expect(row.startsAt).toBe(fresh.placements[0].startsAt);
+    expect(row.endsAt).toBe(fresh.placements[0].endsAt);
+  });
+
+  test("undo restores exactly what the run wrote and leaves a hand-edited session alone", async () => {
+    const { t, alice, eventSlug, mainStage } = await setup();
+    const a = await directSession(alice, eventSlug, "Talk A", speaker(1));
+    const b = await directSession(alice, eventSlug, "Talk B", speaker(2));
+
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    const applied = await alice.mutation(api.agenda.applySchedule, {
+      eventSlug,
+      fingerprint: plan.fingerprint,
+      placements: plan.placements.map((p) => ({
+        sessionId: p.sessionId,
+        startsAt: p.startsAt,
+        endsAt: p.endsAt,
+        roomId: p.roomId,
+      })),
+    });
+    expect(applied.placed).toHaveLength(2);
+
+    // The organizer moves one of them by hand afterwards.
+    await place(alice, eventSlug, b, {
+      startsAt: EVENT_START + 5 * HOUR,
+      endsAt: EVENT_START + 6 * HOUR,
+      roomId: mainStage,
+    });
+
+    const undone = await alice.mutation(api.agenda.undoPlacement, {
+      eventSlug,
+      runId: applied.runId,
+    });
+    expect(undone).toMatchObject({ reverted: 1, skipped: 1 });
+    expect(undone.message).toBe(
+      "1 session put back. 1 left alone — it was moved by hand after the suggestion was applied.",
+    );
+
+    // The suggested one is back in the tray; the manual placement survived.
+    const rowA = await sessionRow(t, a);
+    expect(rowA.startsAt).toBeUndefined();
+    expect(rowA.endsAt).toBeUndefined();
+    expect(rowA.roomId).toBeUndefined();
+    const rowB = await sessionRow(t, b);
+    expect(rowB.startsAt).toBe(EVENT_START + 5 * HOUR);
+    expect(rowB.roomId).toBe(mainStage);
+
+    expect(await auditActions(t)).toContain("agenda.autoPlace.undo");
+  });
+
+  test("leftovers say why: outside the event's dates, a double-booked speaker, no free room", async () => {
+    // A one-hour event: four candidate starts on the lattice, no more.
+    const { alice, eventSlug, room } = await oneRoomEvent({
+      endsAt: EVENT_START + HOUR,
+    });
+
+    // 1. Longer than any window the event's dates allow.
+    const marathon = await directSession(
+      alice,
+      eventSlug,
+      "Ten-hour marathon",
+      speaker(1),
+    );
+    await alice.mutation(api.sessions.updateContent, {
+      eventSlug,
+      sessionId: marathon,
+      durationMinutes: 600,
+    });
+
+    // 2. Its speaker is already booked across every candidate slot.
+    const grace = {
+      firstName: "Grace",
+      lastName: "Hopper",
+      email: "grace@example.com",
+    };
+    const booked = await directSession(alice, eventSlug, "Booked", grace);
+    await place(alice, eventSlug, booked, {
+      startsAt: EVENT_START,
+      endsAt: EVENT_START + 2 * HOUR,
+      roomId: room,
+    });
+    const clashing = await directSession(
+      alice,
+      eventSlug,
+      "Grace again",
+      grace,
+    );
+
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    const reasons = new Map(plan.unplaced.map((u) => [u.sessionId, u]));
+    expect(reasons.get(marathon)).toMatchObject({
+      reason: "outside_event_bounds",
+      message:
+        "The event's dates leave no 600-minute window for this session.",
+    });
+    expect(reasons.get(clashing)).toMatchObject({
+      reason: "speaker_double_booked",
+      message:
+        "Every free 60-minute slot collides with a speaker who is already booked elsewhere.",
+    });
+
+    // 3. The only room is taken for the whole window by a non-session block,
+    //    so a session with a free speaker has nowhere to go.
+    await alice.mutation(api.agenda.createAgendaItem, {
+      eventSlug,
+      title: "Room takeover",
+      startsAt: EVENT_START,
+      endsAt: EVENT_START + 2 * HOUR,
+      roomId: room,
+    });
+    const homeless = await directSession(
+      alice,
+      eventSlug,
+      "Nowhere to go",
+      speaker(9),
+    );
+    const second = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    expect(
+      second.unplaced.find((u) => u.sessionId === homeless),
+    ).toMatchObject({
+      reason: "no_free_room",
+      message: "No room is free for a 60-minute block at any remaining time.",
+    });
+  });
+
+  test("NEGATIVE: a reviewer can neither preview, apply, nor undo a placement", async () => {
+    const { t, alice, eventSlug } = await setup();
+    const rita = await signIn(t, "rita");
+    await grantEventRole(t, eventSlug, "rita", "reviewer");
+    const a = await directSession(alice, eventSlug, "Talk A", speaker(1));
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    const applied = await alice.mutation(api.agenda.applySchedule, {
+      eventSlug,
+      fingerprint: plan.fingerprint,
+      placements: plan.placements.map((p) => ({
+        sessionId: p.sessionId,
+        startsAt: p.startsAt,
+        endsAt: p.endsAt,
+        roomId: p.roomId,
+      })),
+    });
+    expect(applied.placed.map((p) => p.sessionId)).toEqual([a]);
+
+    await expectRejectedWith(
+      rita.query(api.agenda.suggestSchedule, { eventSlug }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      rita.mutation(api.agenda.applySchedule, {
+        eventSlug,
+        fingerprint: plan.fingerprint,
+        placements: [],
+      }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      rita.mutation(api.agenda.undoPlacement, {
+        eventSlug,
+        runId: applied.runId,
+      }),
+      "forbidden",
+    );
+  });
+
+  test("NEGATIVE: a run from another event cannot be undone through this one", async () => {
+    const { t, alice, orgSlug, eventSlug } = await setup();
+    const other = await createEvent(alice, orgSlug, "Other Summit", {
+      startsAt: EVENT_START,
+    });
+    await directSession(alice, eventSlug, "Talk A", speaker(1));
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    const applied = await alice.mutation(api.agenda.applySchedule, {
+      eventSlug,
+      fingerprint: plan.fingerprint,
+      placements: plan.placements.map((p) => ({
+        sessionId: p.sessionId,
+        startsAt: p.startsAt,
+        endsAt: p.endsAt,
+        roomId: p.roomId,
+      })),
+    });
+    await expectRejectedWith(
+      alice.mutation(api.agenda.undoPlacement, {
+        eventSlug: other,
+        runId: applied.runId,
+      }),
+      "not_found",
+    );
+    expect(await auditActions(t)).toContain("agenda.autoPlace");
+  });
+});
+
+// ── Event bounds and a defensively-read undo record (codex #4, #8) ───────
+
+describe("agenda placement bounds and undo integrity", () => {
+  async function oneRoomEvent(endsAt: number) {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit", {
+      startsAt: EVENT_START,
+      endsAt,
+    });
+    const room = (await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "rooms",
+      item: { name: "Only Room" },
+    })) as Id<"rooms">;
+    return { t, alice, eventSlug, room };
+  }
+
+  const bob = (n: number) => ({
+    firstName: "Bob",
+    lastName: `Speaker${n}`,
+    email: `bob${n}@example.com`,
+  });
+
+  test("a block that would overrun the event end is refused, not written half outside it", async () => {
+    // Exactly one hour of event: 09:00 → 10:00.
+    const { alice, eventSlug } = await oneRoomEvent(EVENT_START + HOUR);
+    const long = await directSession(alice, eventSlug, "Two hours", bob(1));
+    await alice.mutation(api.sessions.updateContent, {
+      eventSlug,
+      sessionId: long,
+      durationMinutes: 120,
+    });
+
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    expect(plan.placements).toEqual([]);
+    expect(plan.unplaced).toEqual([
+      {
+        sessionId: long,
+        title: "Two hours",
+        reason: "outside_event_bounds",
+        message:
+          "The event's dates leave no 120-minute window for this session.",
+      },
+    ]);
+  });
+
+  test("a block ending exactly at the event end is still placed", async () => {
+    const { t, alice, eventSlug, room } = await oneRoomEvent(
+      EVENT_START + HOUR,
+    );
+    const exact = await directSession(alice, eventSlug, "Exactly one", bob(1));
+
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    expect(plan.unplaced).toEqual([]);
+    expect(plan.placements).toHaveLength(1);
+    expect(plan.placements[0].startsAt).toBe(EVENT_START);
+    expect(plan.placements[0].endsAt).toBe(EVENT_START + HOUR);
+
+    await alice.mutation(api.agenda.applySchedule, {
+      eventSlug,
+      fingerprint: plan.fingerprint,
+      placements: plan.placements.map((p) => ({
+        sessionId: p.sessionId,
+        startsAt: p.startsAt,
+        endsAt: p.endsAt,
+        roomId: p.roomId,
+      })),
+    });
+    const row = await sessionRow(t, exact);
+    expect(row.endsAt).toBe(EVENT_START + HOUR);
+    expect(row.roomId).toBe(room);
+  });
+
+  test("a malformed audit record makes undo refuse cleanly instead of half-applying", async () => {
+    const { t, alice, eventSlug } = await oneRoomEvent(
+      EVENT_START + 8 * HOUR,
+    );
+    const a = await directSession(alice, eventSlug, "Talk A", bob(1));
+    const b = await directSession(alice, eventSlug, "Talk B", bob(2));
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    const applied = await alice.mutation(api.agenda.applySchedule, {
+      eventSlug,
+      fingerprint: plan.fingerprint,
+      placements: plan.placements.map((p) => ({
+        sessionId: p.sessionId,
+        startsAt: p.startsAt,
+        endsAt: p.endsAt,
+        roomId: p.roomId,
+      })),
+    });
+    const before = await Promise.all([sessionRow(t, a), sessionRow(t, b)]);
+
+    // `auditLog.meta` is v.any() at rest, so this is data, not a type. Doctor
+    // the SECOND record: a naive reader would patch the first and then throw.
+    await t.run(async (ctx) => {
+      const row = await ctx.db.get("auditLog", applied.runId);
+      const meta = row?.meta as { placements: Array<Record<string, unknown>> };
+      await ctx.db.patch("auditLog", applied.runId, {
+        meta: {
+          ...meta,
+          placements: [
+            meta.placements[0],
+            { ...meta.placements[1], startsAt: "not-a-time" },
+          ],
+        },
+      });
+    });
+
+    await expectRejectedWith(
+      alice.mutation(api.agenda.undoPlacement, {
+        eventSlug,
+        runId: applied.runId,
+      }),
+      "not_undoable",
+    );
+    // Nothing moved — the refusal is total, not partial.
+    const after = await Promise.all([sessionRow(t, a), sessionRow(t, b)]);
+    expect(after.map((r) => r.startsAt)).toEqual(
+      before.map((r) => r.startsAt),
+    );
+
+    // A record pointing at another table's id is refused the same way.
+    await t.run(async (ctx) => {
+      const row = await ctx.db.get("auditLog", applied.runId);
+      const meta = row?.meta as { placements: Array<Record<string, unknown>> };
+      await ctx.db.patch("auditLog", applied.runId, {
+        meta: {
+          ...meta,
+          placements: [{ ...meta.placements[0], sessionId: "not-an-id" }],
+        },
+      });
+    });
+    await expectRejectedWith(
+      alice.mutation(api.agenda.undoPlacement, {
+        eventSlug,
+        runId: applied.runId,
+      }),
+      "not_undoable",
+    );
   });
 });

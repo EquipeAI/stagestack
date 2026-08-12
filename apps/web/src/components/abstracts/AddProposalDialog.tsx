@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useMutation } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import { Modal } from './Modal'
@@ -22,6 +22,9 @@ export function AddProposalDialog({
   onClose: () => void
 }) {
   const create = useMutation(api.cfp.createManualProposal)
+  // Speaker inputs need ids to be labelable, and the dialog can be mounted
+  // beside other forms — a bare `speaker-0-first` would collide with them.
+  const uid = useId()
   const { pending, error, setError, run } = usePending()
   const [title, setTitle] = useState('')
   const [abstract, setAbstract] = useState('')
@@ -113,23 +116,46 @@ export function AddProposalDialog({
                 alignItems: 'end',
               }}
             >
-              <Field label={index === 0 ? 'First name' : undefined}>
+              {/* Only the first row carries visible column headings, so every
+                  later row names its own inputs instead. */}
+              <Field
+                label={index === 0 ? 'First name' : undefined}
+                htmlFor={`${uid}-${index}-first`}
+              >
                 <Input
+                  id={`${uid}-${index}-first`}
+                  aria-label={
+                    index === 0 ? undefined : `First name, speaker ${index + 1}`
+                  }
                   value={speaker.firstName}
                   placeholder="First"
                   onChange={(e) => patch(index, { firstName: e.target.value })}
                 />
               </Field>
-              <Field label={index === 0 ? 'Last name' : undefined}>
+              <Field
+                label={index === 0 ? 'Last name' : undefined}
+                htmlFor={`${uid}-${index}-last`}
+              >
                 <Input
+                  id={`${uid}-${index}-last`}
+                  aria-label={
+                    index === 0 ? undefined : `Last name, speaker ${index + 1}`
+                  }
                   value={speaker.lastName}
                   placeholder="Last"
                   onChange={(e) => patch(index, { lastName: e.target.value })}
                 />
               </Field>
-              <Field label={index === 0 ? 'Email' : undefined}>
+              <Field
+                label={index === 0 ? 'Email' : undefined}
+                htmlFor={`${uid}-${index}-email`}
+              >
                 <Input
+                  id={`${uid}-${index}-email`}
                   type="email"
+                  aria-label={
+                    index === 0 ? undefined : `Email, speaker ${index + 1}`
+                  }
                   value={speaker.email}
                   placeholder="speaker@example.com"
                   onChange={(e) => patch(index, { email: e.target.value })}
