@@ -77,21 +77,41 @@ function Nav() {
 }
 
 // In-app screenshot composed from the same components the product uses —
-// fixture numbers, not customer claims.
-const SHOT_NAV: Array<[string, string, string]> = [
-  ['layout-grid', 'Dashboard', ''],
-  ['file-text', 'Proposals', '512'],
-  ['list-checks', 'Reviews', '128'],
-  ['presentation', 'Sessions', '68'],
-  ['clock', 'Tasks', '17'],
-  ['calendar-days', 'Agenda', ''],
+// fixture numbers, not customer claims. The rail mirrors the real shell's
+// lifecycle grouping (components/shell/nav.ts) and the main pane is the
+// Decisions view: the staged queue is the most StageStack-shaped screen we
+// have, and it illustrates the "nothing leaks by accident" card directly.
+const SHOT_NAV: Array<[string, Array<[string, string, string]>]> = [
+  ['Setup', [['layout-grid', 'Overview', '']]],
+  ['Collect', [['mic-vocal', 'Call for speakers', '']]],
+  [
+    'Select',
+    [
+      ['inbox', 'Proposals', '512'],
+      ['star', 'Reviews', '128'],
+      ['check', 'Decisions', '12'],
+    ],
+  ],
+  [
+    'Prepare',
+    [
+      ['presentation', 'Sessions', '68'],
+      ['user-round', 'Speakers', '84'],
+      ['list-checks', 'Tasks', '17'],
+    ],
+  ],
+  ['Schedule', [['calendar-days', 'Agenda', '']]],
+  ['Publish', [['globe', 'Public page', '']]],
 ]
 
+// Staged decisions display as "Accept queue" / "Decline queue" — deliberately
+// neutral pills, because nothing has left the building yet.
 const SHOT_ROWS: Array<[string, string, string, string]> = [
-  ['Shipping agents at scale', 'Ana Ruiz · Latent Labs', 'Accepted', '4.6'],
-  ['Evals that survive contact with users', 'Kai Chen · Formal', 'Under Review', '4.1'],
-  ['Prompt caching at 40M tokens a day', 'Nadia Haq · Perch', 'Submitted', '—'],
-  ['Retrieval is not a vector database', 'Jo Park · Northwind', 'Declined', '2.8'],
+  ['Shipping agents at scale', 'Ana Ruiz · Latent Labs', 'Accept queue', '4.6'],
+  ['Evals that survive contact with users', 'Kai Chen · Formal', 'Accept queue', '4.1'],
+  ['Prompt caching at 40M tokens a day', 'Nadia Haq · Perch', 'Accept queue', '4.4'],
+  ['Retrieval is not a vector database', 'Jo Park · Northwind', 'Decline queue', '2.8'],
+  ['Multimodal RAG in production', 'Lena Fox · Argo', 'Decline queue', '2.4'],
 ]
 
 function ProductShot() {
@@ -102,21 +122,35 @@ function ProductShot() {
           <span className="mkt-shot__dot" style={{ background: 'var(--gray-300)' }} />
           <span className="mkt-shot__dot" style={{ background: 'var(--gray-200)' }} />
           <span className="mkt-shot__dot" style={{ background: 'var(--gray-200)' }} />
-          <span className="mkt-shot__url">stagestack.dev/app/e/wf26/proposals</span>
+          <span className="mkt-shot__url">
+            stagestack.dev/app/e/wf26/proposals?status=acceptQueue,declineQueue
+          </span>
         </div>
         <div className="mkt-shot__grid">
           <div className="mkt-shot__side">
-            {SHOT_NAV.map(([icon, label, count], i) => (
-              <span
-                key={label}
-                className="ss-navitem"
-                data-active={i === 1}
-                style={{ pointerEvents: 'none' }}
-              >
-                <Icon name={icon} size={14} />
-                {label}
-                {count === '' ? null : <span className="ss-navitem__count">{count}</span>}
-              </span>
+            {SHOT_NAV.map(([group, items]) => (
+              <React.Fragment key={group}>
+                <span
+                  className="ss-sidebar__group"
+                  // Tighter than the real rail's 14px top padding: the mock
+                  // shows six groups in a frame the height of one screen.
+                  style={{ padding: 'var(--space-2) var(--space-2) var(--space-1)' }}
+                >
+                  {group}
+                </span>
+                {items.map(([icon, label, count]) => (
+                  <span
+                    key={label}
+                    className="ss-navitem"
+                    data-active={label === 'Decisions'}
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    <Icon name={icon} size={14} />
+                    {label}
+                    {count === '' ? null : <span className="ss-navitem__count">{count}</span>}
+                  </span>
+                ))}
+              </React.Fragment>
             ))}
           </div>
           <div style={{ padding: 'var(--space-4)' }}>
@@ -125,22 +159,32 @@ function ProductShot() {
                 display: 'flex',
                 alignItems: 'center',
                 gap: 'var(--space-3)',
-                marginBottom: 'var(--space-3)',
+                marginBottom: 'var(--space-2)',
                 flexWrap: 'wrap',
               }}
             >
-              <span style={{ font: 'var(--type-title-3)' }}>Proposals</span>
-              <Badge>512</Badge>
+              <span style={{ font: 'var(--type-title-3)' }}>Decisions</span>
+              <Badge>12</Badge>
               <span style={{ flex: 1 }} />
               <span className="mkt-shot__actions" style={{ display: 'flex', gap: 'var(--space-2)' }}>
                 <Button size="sm" variant="secondary" iconLeft="download">
                   Export
                 </Button>
                 <Button size="sm" variant="primary">
-                  Release 12 decisions
+                  Release decisions
                 </Button>
               </span>
             </div>
+            <p
+              style={{
+                font: 'var(--type-caption)',
+                color: 'var(--text-secondary)',
+                margin: '0 0 var(--space-3)',
+              }}
+            >
+              9 acceptances and 3 declines are staged privately. Releasing makes them
+              visible to submitters and sends their emails.
+            </p>
             {SHOT_ROWS.map(([title, who, status, score]) => (
               <div
                 key={title}
@@ -174,6 +218,17 @@ function ProductShot() {
                 </span>
               </div>
             ))}
+            <div
+              style={{
+                font: 'var(--type-caption)',
+                fontFamily: 'var(--font-mono)',
+                color: 'var(--text-tertiary)',
+                paddingTop: 'var(--space-3)',
+                borderTop: 'var(--space-px) solid var(--border-subtle)',
+              }}
+            >
+              Showing 5 of 12
+            </div>
           </div>
         </div>
       </div>
@@ -225,8 +280,8 @@ function Hero() {
           </a>
         </div>
         <div className="mkt-hero__note">
-          Hosted and self-hosted run the same code. Self-hosting brings your own Clerk and
-          Resend keys.
+          Hosted and self-hosted run the same code. Self-hosting brings your own Convex,
+          Clerk and Resend accounts — free tiers work.
         </div>
       </div>
       <ProductShot />
@@ -306,6 +361,12 @@ type Step = {
 
 const STEPS: Array<Step> = [
   {
+    id: 'import',
+    label: 'Import',
+    body: 'Start from your last event’s spreadsheet. The agent reads the CSV and proposes records — flagging possible duplicates — and nothing is written until you approve the plan. Execution then runs through the same capabilities as the UI.',
+    statuses: ['Awaiting Review', 'Approved', 'Complete'],
+  },
+  {
     id: 'cfp',
     label: 'Call for speakers',
     body: 'Build the form with sections, conditional fields and a live preview, then publish a versioned copy. Submitters get an autosaving wizard with file uploads; drafts survive; the form locks itself at the deadline.',
@@ -338,7 +399,7 @@ const STEPS: Array<Step> = [
 ]
 
 function Workflow() {
-  const [stepId, setStepId] = React.useState('cfp')
+  const [stepId, setStepId] = React.useState(STEPS[0].id)
   const active = STEPS.find((s) => s.id === stepId) ?? STEPS[0]
   return (
     <section id="workflow" className="mkt-band">
@@ -442,12 +503,12 @@ function SelfHost() {
             <span style={{ color: 'var(--amber-500)' }}>$</span> git clone
             https://github.com/EquipeAI/stagestack
           </div>
+          <div style={{ color: 'var(--gray-500)' }}>
+            # set CLERK_SECRET_KEY, RESEND_API_KEY
+          </div>
           <div>
             <span style={{ color: 'var(--amber-500)' }}>$</span> npm install &amp;&amp; npm
             run dev
-          </div>
-          <div style={{ color: 'var(--gray-500)' }}>
-            # set CLERK_SECRET_KEY, RESEND_API_KEY
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
             <span style={{ color: 'var(--jade-500)', display: 'inline-flex' }}>
