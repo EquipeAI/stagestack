@@ -43,39 +43,68 @@ async function screen(role, path) {
 try {
   // Organizer first, so their screen is already sitting there doing nothing
   // by the time the speaker acts.
-  const organizer = await screen("organizer", `/app/e/${EV}`);
+  const organizer = await screen("organizer", `/app/e/${EV}/tasks`);
   const speaker = await screen("speaker", `/portal/${EV}`);
 
   await settle(organizer.page, 2500);
   await settle(speaker.page, 2500);
 
-  // The speaker marks one of their onboarding tasks done. That is the right
-  // action for this shot for two reasons: it is the everyday thing a speaker
-  // actually does, and it moves a counter the organizer can see from anywhere.
+  // The task the speaker will complete. Named explicitly rather than taking
+  // whatever sorts first, because the organizer has to be watching the same
+  // row — three earlier takes of this shot filmed a counter that had nothing
+  // to do with the click. Run capture/reopen-task.mjs first to reset it.
+  const TASK = process.env.REALTIME_TASK ?? "Complete bio and profile";
+  const SPEAKER = process.env.REALTIME_SPEAKER ?? "Priya Raman";
+
   const button = speaker.page
+    .locator(".ss-card")
+    .filter({ hasText: TASK })
     .getByRole("button", { name: /^Mark as done$/i })
     .first();
   if (!(await button.count())) {
-    throw new Error("no open task in the speaker portal to complete");
+    throw new Error(`"${TASK}" is not open in the speaker portal — reopen it first`);
   }
 
-  // Watch the organizer's Tasks badge — a single number in the sidebar, on
-  // screen the whole time, that nobody is going to touch.
-  const taskCount = async () => {
-    const nav = await organizer.page.getByRole("button", { name: /^Tasks/ }).first().innerText();
-    const m = nav.match(/(\d+)/);
-    return m ? Number(m[1]) : null;
+  // The organizer's own task table: one row per speaker per requirement, with
+  // a status. That row flipping is the beat — a sidebar badge counting down
+  // is chrome, not the organizer's screen.
+  for (let i = 0; i < 5; i++) {
+    await organizer.page.getByRole("tab", { name: /^Tasks$/ }).first().click();
+    await settle(organizer.page, 900);
+    const on = await organizer.page
+      .getByRole("tab", { name: /^Tasks$/ })
+      .first()
+      .getAttribute("aria-selected");
+    if (on === "true") break;
+  }
+
+  const row = organizer.page
+    .locator("tr")
+    .filter({ hasText: TASK })
+    .filter({ hasText: SPEAKER })
+    .first();
+  if (!(await row.count())) {
+    throw new Error(`organizer cannot see the row for "${TASK}" / ${SPEAKER}`);
+  }
+  await row.scrollIntoViewIfNeeded();
+  await settle(organizer.page, 800);
+
+  const status = async () => {
+    const text = await row.innerText();
+    return /Outstanding/.test(text) ? "Outstanding" : "Complete";
   };
-  const before = await taskCount();
-  if (before === null) throw new Error("no Tasks badge on the organizer's sidebar");
-  console.log(`  organizer is watching the Tasks badge: ${before}`);
+  const before = await status();
+  if (before !== "Outstanding") {
+    throw new Error("that row is already Complete — run capture/reopen-task.mjs");
+  }
+  console.log(`  organizer is watching: ${SPEAKER} / ${TASK} — ${before}`);
 
   await speaker.page.waitForTimeout(LEAD);
   const clickedAt = Date.now();
   await button.click();
 
   await organizer.page.waitForTimeout(HOLD);
-  const after = await taskCount();
+  const after = await status();
 
   const offsets = {
     // ms into each recording at which the click happened
@@ -99,7 +128,7 @@ try {
     JSON.stringify(offsets, null, 2) + "\n",
   );
 
-  console.log(`  Tasks badge: ${before} → ${after}`);
+  console.log(`  row status: ${before} → ${after}`);
   console.log(
     offsets.changed
       ? "  ✓ the organizer's screen changed with nobody touching it"

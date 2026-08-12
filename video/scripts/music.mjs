@@ -1,7 +1,9 @@
 // Generate the score with Lyria 3 Pro (Gemini Interactions API).
 //
-//   node scripts/music.mjs           # only if missing
-//   node scripts/music.mjs --force   # regenerate
+//   node scripts/music.mjs [track]           # only if missing
+//   node scripts/music.mjs [track] --force   # regenerate
+//
+// Tracks: "score" (the 2:43 film) and "shorts" (the social cut).
 //
 // The brief matters more than the model here. This is an underscore playing
 // beneath a voiceover for two and a half minutes, so what it must NOT do is
@@ -20,6 +22,7 @@ const ROOT = resolve(HERE, "..");
 const OUT = resolve(ROOT, "public/music");
 const MODEL = process.env.LYRIA_MODEL ?? "lyria-3-pro-preview";
 const force = process.argv.includes("--force");
+const which = process.argv.find((a) => !a.startsWith("--") && a !== process.argv[0] && a !== process.argv[1]) ?? "score";
 
 // Phrasing note: the safety filter false-positives on some perfectly ordinary
 // briefs — "A calm instrumental ambient piece with warm synth pads and soft
@@ -27,7 +30,9 @@ const force = process.argv.includes("--force");
 // Leading with the instrumentation rather than the mood seems to be what does
 // it. If a future edit starts returning content_blocked, change the words
 // before assuming the key or the model is wrong.
-const BRIEF = `Instrumental only, no vocals. Warm analog synth pads, a soft
+const BRIEFS = {};
+
+BRIEFS.score = `Instrumental only, no vocals. Warm analog synth pads, a soft
 felt piano playing a simple repeating four-note motif, a quiet pulsing bass
 note, and light arpeggios low in the mix. Steady 100 BPM throughout. About two
 minutes forty seconds long.
@@ -41,6 +46,25 @@ This plays underneath a spoken voiceover the whole way, so keep the mid-range
 open, the dynamics narrow and the texture even. Smooth transitions between
 sections. It should be understated enough to be almost boring on its own.`;
 
+// The social cut is a different film on purpose: forty seconds, fast, and it
+// has to survive an autoplaying feed. Same instruction to stay under a voice,
+// opposite energy.
+BRIEFS.shorts = `Instrumental only, no vocals. Upbeat modern jazz trio: brushed
+drums with a light swing, walking upright bass, and a bright electric piano
+playing a confident syncopated riff. Around 140 BPM, snappy and forward-leaning
+from the very first bar — no slow introduction. About forty five seconds long.
+
+[0:00 - 0:04] straight in on the full groove, no build up
+[0:04 - 0:30] the riff develops, bass walking, small piano fills between phrases
+[0:30 - 0:40] lifts a little brighter, then lands on a clean final chord
+
+A spoken voiceover sits on top the whole way, so keep the piano in its middle
+register, the drums light and brushed rather than loud, and the level even. End
+on a definite stop rather than a fade.`;
+
+const BRIEF = BRIEFS[which];
+if (!BRIEF) throw new Error(`unknown track "${which}" — try score or shorts`);
+
 function apiKey() {
   const raw = readFileSync(resolve(ROOT, "../.env.local"), "utf8");
   for (const line of raw.split("\n")) {
@@ -51,9 +75,9 @@ function apiKey() {
 }
 
 mkdirSync(OUT, { recursive: true });
-const file = resolve(OUT, "score.mp3");
+const file = resolve(OUT, `${which}.mp3`);
 if (existsSync(file) && !force) {
-  console.log("  · score.mp3 already exists (--force to regenerate)");
+  console.log(`  · ${which}.mp3 already exists (--force to regenerate)`);
   process.exit(0);
 }
 
@@ -98,7 +122,7 @@ function findAudio(node) {
 
 const b64 = findAudio(body);
 if (!b64) {
-  writeFileSync(resolve(OUT, "response.json"), JSON.stringify(body, null, 2));
+  writeFileSync(resolve(OUT, `${which}-response.json`), JSON.stringify(body, null, 2));
   throw new Error("no audio in the response — dumped to public/music/response.json");
 }
 
@@ -111,4 +135,4 @@ const seconds = Number(
     file,
   ]).toString().trim(),
 );
-console.log(`  ✓ public/music/score.mp3 — ${seconds.toFixed(1)}s`);
+console.log(`  ✓ public/music/${which}.mp3 — ${seconds.toFixed(1)}s`);

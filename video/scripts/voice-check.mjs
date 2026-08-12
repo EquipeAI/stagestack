@@ -1,6 +1,6 @@
 // Catch mispronunciations without having to listen to 28 files.
 //
-//   node scripts/voice-check.mjs
+//   node scripts/voice-check.mjs [script.json]
 //
 // Aura-2 supports no SSML, no phoneme tags and no IPA — the only lever is
 // spelling a word the way it should sound. That makes "did it say the word
@@ -90,7 +90,8 @@ function diff(want, got) {
   return out;
 }
 
-const script = JSON.parse(readFileSync(resolve(ROOT, "narration.json"), "utf8"));
+const SCRIPT = process.argv.slice(2).find((a) => a.endsWith(".json")) ?? "narration.json";
+const script = JSON.parse(readFileSync(resolve(ROOT, SCRIPT), "utf8"));
 const key = apiKey();
 let flagged = 0;
 

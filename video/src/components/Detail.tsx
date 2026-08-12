@@ -23,7 +23,10 @@ export const Detail: React.FC<{
   durationInFrames: number;
   /** how much of the safe area the element may occupy */
   scale?: number;
-}> = ({ shot, durationInFrames, scale = 1 }) => {
+  /** the padding reserves a caption band below; portrait cuts place the
+   *  caption outside this box and need the element to fill what it is given */
+  padding?: string;
+}> = ({ shot, durationInFrames, scale = 1, padding = "120px 160px 300px" }) => {
   const frame = useCurrentFrame();
   const t = [0, durationInFrames] as const;
   const opts = {
@@ -38,7 +41,7 @@ export const Detail: React.FC<{
         justifyContent: "center",
         alignItems: "center",
         // Leaves the lower band clear for the caption.
-        padding: "120px 160px 300px",
+        padding,
       }}
     >
       <Img

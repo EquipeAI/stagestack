@@ -1,50 +1,40 @@
-// 1080x1350 cut for X / LinkedIn.
+// 1080x1350 trailer for X / LinkedIn.
 //
-// Same source beats, re-laid out for a portrait feed: persistent brand bar at
-// the top, the browser card in the middle, and the caption in its own block
-// underneath where it stays readable at phone size.
+// Hard cuts, a jazz trio underneath, and a voice that is not the long cut's
+// voice. Everything here is arranged so the thing works with the sound off —
+// the captions alone tell the whole story, price to price — and rewards
+// turning it on.
 
 import React from "react";
-import { AbsoluteFill, Img, staticFile } from "remotion";
-import { TransitionSeries, linearTiming } from "@remotion/transitions";
-import { fade } from "@remotion/transitions/fade";
-import { ACTS, BEATS, Beat } from "./beats";
+import {
+  AbsoluteFill,
+  Easing,
+  Img,
+  Sequence,
+  interpolate,
+  staticFile,
+  useCurrentFrame,
+} from "remotion";
+import { Audio } from "@remotion/media";
+import { SOCIAL, JCUT, SocialBeat } from "./trailer";
 import { Screen } from "./components/Screen";
 import { Detail } from "./components/Detail";
 import { Clip } from "./components/Clip";
+import { Split } from "./components/Split";
 import { c, font, s } from "./theme";
 
 export const SOCIAL_W = 1080;
 export const SOCIAL_H = 1350;
-const XFADE = 8;
 
-/** The beats that read well small — detail-heavy tables are dropped. */
-const KEEP = [
-  "d-import-2-plan",
-  "d-cfp-conditional",
-  "19-reviewer-scoring",
-  "d-scorecard",
-  "12b-comms-log",
-  "agenda-drag",
-  "08-speaker-portal",
-  "d-ops-warning",
-  "28-public-event-page",
-];
+const EASE = Easing.bezier(0.16, 1, 0.3, 1);
+const FRAMES = SOCIAL.map((b) => s(b.seconds));
+/** Absolute start frame of each beat, for the audio J-cuts. */
+const STARTS = FRAMES.reduce<number[]>(
+  (acc, _f, i) => [...acc, (acc[i - 1] ?? 0) + (FRAMES[i - 1] ?? 0)],
+  [],
+);
 
-const REEL: Beat[] = KEEP.map(
-  (shot) => BEATS.find((b) => b.shot === shot) as Beat,
-).filter(Boolean);
-
-/** The lifecycle rail doesn't fit portrait, so the stage becomes the eyebrow —
- *  a scroller still sees the beats belong to stages of one job. */
-const stageOf = (shot: string) =>
-  ACTS.find((a) => a.beats.some((b) => b.shot === shot))?.stage;
-
-const EACH = s(3.6);
-const OUTRO = s(4);
-
-export const socialDuration = () =>
-  REEL.length * EACH + OUTRO - XFADE * REEL.length;
+export const socialDuration = () => FRAMES.reduce((a, b) => a + b, 0);
 
 const Ground: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
   <AbsoluteFill
@@ -56,162 +46,230 @@ const Ground: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
   </AbsoluteFill>
 );
 
-const BrandBar: React.FC = () => (
-  <div
-    style={{
-      position: "absolute",
-      top: 64,
-      left: 0,
-      right: 0,
-      display: "flex",
-      justifyContent: "center",
-    }}
-  >
-    <Img src={staticFile("brand/logo-inverse.svg")} style={{ width: 300 }} />
-  </div>
-);
-
-const SocialBeat: React.FC<{ beat: Beat }> = ({ beat }) => (
-  <Ground>
-    <BrandBar />
-    {/* Portrait plays on a phone, so start already pushed in — the wide
-        organizer layout is unreadable at this width otherwise. */}
-    <div style={{ position: "absolute", inset: 0, top: 200, bottom: 470 }}>
-      {beat.kind === "clip" ? (
-        <Clip
-          clip={beat.shot}
-          durationInFrames={EACH}
-          cardWidth={1000}
-          marginTop={0}
-        />
-      ) : beat.kind === "detail" ? (
-        <Detail shot={beat.shot} durationInFrames={EACH} scale={1} />
-      ) : (
-        <Screen
-          shot={beat.shot}
-          from={beat.to ?? beat.from}
-          url={beat.url}
-          durationInFrames={EACH}
-          cardWidth={1000}
-          marginTop={0}
-        />
-      )}
-    </div>
-    <div
+/** Big type on black. Used for the two ends of the film, which rhyme: it opens
+ *  on what the incumbent costs and closes on what this one costs. */
+const TypeCard: React.FC<{
+  lines: string[];
+  accent?: number;
+  footer?: string;
+}> = ({ lines, accent = 0, footer }) => {
+  const frame = useCurrentFrame();
+  return (
+    <AbsoluteFill
       style={{
-        position: "absolute",
-        left: 72,
-        right: 72,
-        top: 920,
-        display: "flex",
-        flexDirection: "column",
-        gap: 18,
+        justifyContent: "center",
+        alignItems: "center",
+        padding: "0 70px",
+        textAlign: "center",
+        gap: 8,
       }}
     >
-      {stageOf(beat.shot) ? (
+      {lines.map((line, i) => (
         <div
+          key={i}
           style={{
-            alignSelf: "flex-start",
-            fontFamily: font.mono,
-            fontSize: 22,
-            letterSpacing: 2.4,
-            textTransform: "uppercase",
-            color: c.gray950,
-            background: c.amber400,
-            padding: "7px 16px",
-            borderRadius: 6,
+            fontFamily: font.display,
             fontWeight: 600,
+            fontSize: i === accent ? 104 : 74,
+            lineHeight: 1.05,
+            letterSpacing: -3,
+            color: i === accent ? c.amber400 : c.gray0,
+            opacity: interpolate(frame, [i * 5, i * 5 + 7], [0, 1], {
+              extrapolateLeft: "clamp",
+              extrapolateRight: "clamp",
+              easing: EASE,
+            }),
+            // Snaps in rather than drifting: the long cut breathes, this one
+            // punches.
+            scale: interpolate(frame, [i * 5, i * 5 + 9], [1.12, 1], {
+              extrapolateLeft: "clamp",
+              extrapolateRight: "clamp",
+              easing: EASE,
+              output: "perceptual-scale",
+            }),
           }}
         >
-          {stageOf(beat.shot)}
+          {line}
+        </div>
+      ))}
+      {footer ? (
+        <div
+          style={{
+            marginTop: 30,
+            fontFamily: font.mono,
+            fontSize: 38,
+            color: c.gray0,
+            opacity: interpolate(frame, [16, 24], [0, 1], {
+              extrapolateLeft: "clamp",
+              extrapolateRight: "clamp",
+            }),
+          }}
+        >
+          {footer}
         </div>
       ) : null}
-      <div
-        style={{
-          fontFamily: font.display,
-          fontWeight: 600,
-          fontSize: 54,
-          lineHeight: 1.18,
-          letterSpacing: -1,
-          color: c.gray0,
-        }}
-      >
-        {beat.caption}
-      </div>
-    </div>
+    </AbsoluteFill>
+  );
+};
+
+const Caption: React.FC<{ text: string }> = ({ text }) => {
+  const frame = useCurrentFrame();
+  return (
     <div
       style={{
         position: "absolute",
-        left: 72,
-        bottom: 76,
-        fontFamily: font.mono,
-        fontSize: 30,
-        color: c.amber400,
+        left: 68,
+        right: 68,
+        top: 930,
+        fontFamily: font.display,
+        fontWeight: 600,
+        fontSize: 56,
+        lineHeight: 1.14,
+        letterSpacing: -1.4,
+        color: c.gray0,
+        opacity: interpolate(frame, [0, 6], [0, 1], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+          easing: EASE,
+        }),
+        translate: `0px ${interpolate(frame, [0, 9], [14, 0], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+          easing: EASE,
+        })}px`,
       }}
     >
-      stagestack.dev
+      {text}
     </div>
-  </Ground>
-);
+  );
+};
 
-const Outro: React.FC = () => (
-  <Ground>
-    <AbsoluteFill
-      style={{ justifyContent: "center", alignItems: "center", gap: 40 }}
-    >
-      <Img src={staticFile("brand/logo-inverse.svg")} style={{ width: 520 }} />
+const Beat: React.FC<{ beat: SocialBeat; durationInFrames: number }> = ({
+  beat,
+  durationInFrames,
+}) => {
+  if (beat.kind === "hook") {
+    return (
+      <Ground>
+        <TypeCard lines={beat.lines ?? []} />
+      </Ground>
+    );
+  }
+  if (beat.kind === "close") {
+    return (
+      <Ground>
+        <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+          <Img
+            src={staticFile("brand/logo-inverse.svg")}
+            style={{ width: 440, marginBottom: 380 }}
+          />
+        </AbsoluteFill>
+        <div style={{ position: "absolute", inset: 0, top: 150 }}>
+          <TypeCard lines={beat.lines ?? []} accent={1} footer="stagestack.dev" />
+        </div>
+      </Ground>
+    );
+  }
+
+  return (
+    <Ground>
       <div
         style={{
-          fontFamily: font.display,
-          fontSize: 44,
-          color: c.gray400,
-          textAlign: "center",
-          lineHeight: 1.35,
-          maxWidth: 820,
+          position: "absolute",
+          top: 66,
+          left: 0,
+          right: 0,
+          display: "flex",
+          justifyContent: "center",
         }}
       >
-        Open-source speaker &amp; program management.
+        <Img src={staticFile("brand/logo-inverse.svg")} style={{ width: 270 }} />
       </div>
+      <div style={{ position: "absolute", inset: 0, top: 200, bottom: 480 }}>
+        {beat.kind === "split" ? (
+          <Split durationInFrames={durationInFrames} />
+        ) : beat.kind === "clip" ? (
+          <Clip
+            clip={beat.shot as string}
+            durationInFrames={durationInFrames}
+            cardWidth={940}
+            marginTop={0}
+            // Portrait: show the grid where the blocks collide, not the page.
+            region={{ x: 0.58, y: 0.45, w: 0.5 }}
+          />
+        ) : beat.kind === "detail" ? (
+          <Detail
+            shot={beat.shot as string}
+            durationInFrames={durationInFrames}
+            scale={1}
+            // Portrait already reserves a caption band below this box, so the
+            // element gets the whole of it.
+            padding="0px 40px"
+          />
+        ) : (
+          <Screen
+            shot={beat.shot as string}
+            durationInFrames={durationInFrames}
+            cardWidth={940}
+            marginTop={0}
+          />
+        )}
+      </div>
+      {beat.caption ? <Caption text={beat.caption} /> : null}
       <div
-        style={{ fontFamily: font.mono, fontSize: 38, color: c.amber400 }}
+        style={{
+          position: "absolute",
+          left: 68,
+          bottom: 66,
+          fontFamily: font.mono,
+          fontSize: 30,
+          color: c.amber400,
+        }}
       >
         stagestack.dev
       </div>
-    </AbsoluteFill>
-  </Ground>
-);
+    </Ground>
+  );
+};
 
 export const Social: React.FC = () => (
   <AbsoluteFill style={{ background: c.gray950 }}>
-    <TransitionSeries>
-      {REEL.flatMap((beat, i) => {
-        const seq = (
-          <TransitionSeries.Sequence
-            key={`b${i}`}
-            durationInFrames={EACH}
-            name={beat.shot}
-          >
-            <SocialBeat beat={beat} />
-          </TransitionSeries.Sequence>
-        );
-        return i === 0
-          ? [seq]
-          : [
-              <TransitionSeries.Transition
-                key={`t${i}`}
-                presentation={fade()}
-                timing={linearTiming({ durationInFrames: XFADE })}
-              />,
-              seq,
-            ];
-      })}
-      <TransitionSeries.Transition
-        presentation={fade()}
-        timing={linearTiming({ durationInFrames: XFADE })}
-      />
-      <TransitionSeries.Sequence durationInFrames={OUTRO} name="Outro">
-        <Outro />
-      </TransitionSeries.Sequence>
-    </TransitionSeries>
+    {/* Jazz trio, brushed and mid-register, under the voice the whole way. */}
+    <Audio
+      src={staticFile("music/shorts.mp3")}
+      volume={(f) =>
+        0.16 *
+        interpolate(
+          f,
+          [0, 8, socialDuration() - s(1.2), socialDuration()],
+          [0, 1, 1, 0],
+          { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+        )
+      }
+    />
+
+    {/* Narration sits on the composition timeline rather than inside each
+        beat, so a line can start slightly BEFORE its picture — the J-cut that
+        keeps hard cuts from feeling like a slide advance. */}
+    {SOCIAL.map((beat, i) => (
+      <Sequence
+        key={`vo-${beat.id}`}
+        from={Math.max(0, STARTS[i] - (i === 0 ? 0 : JCUT))}
+        layout="none"
+      >
+        <Audio src={staticFile(`voice/${beat.id}.mp3`)} />
+      </Sequence>
+    ))}
+
+    {SOCIAL.map((beat, i) => (
+      <Sequence
+        key={beat.id}
+        from={STARTS[i]}
+        durationInFrames={FRAMES[i]}
+        name={beat.id}
+      >
+        <Beat beat={beat} durationInFrames={FRAMES[i]} />
+      </Sequence>
+    ))}
   </AbsoluteFill>
 );

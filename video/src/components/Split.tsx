@@ -107,17 +107,18 @@ export const Split: React.FC<{ durationInFrames: number }> = ({
         trimBefore={ms(offsets.speaker - LEAD * 1000)}
         durationInFrames={durationInFrames}
         delay={0}
-        // The task list, where the box gets ticked.
-        region={{ x: 0.5, y: 0.54, w: 0.62 }}
+        // The one task card being ticked.
+        region={{ x: 0.5, y: 0.46, w: 0.46 }}
       />
       <Panel
         clip="realtime-organizer"
-        label="The organizer — untouched"
+        label="The organizer — nobody here"
         trimBefore={ms(offsets.organizer - LEAD * 1000)}
         durationInFrames={durationInFrames}
         delay={6}
-        // The sidebar, where the Tasks badge counts down.
-        region={{ x: 0.2, y: 0.45, w: 0.42 }}
+        // The organizer's task table: the column header row down through
+        // Priya's row, so the STATUS badge that flips is readable.
+        region={{ x: 0.52, y: 0.62, w: 0.6 }}
       />
     </div>
   </AbsoluteFill>

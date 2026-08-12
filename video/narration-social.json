@@ -1,0 +1,26 @@
+{
+  "_readme": [
+    "The trailer script. Deliberately a different film from narration.json:",
+    "the long cut walks the lifecycle, this one throws punches.",
+    "",
+    "Same two rules as the long cut — never read the on-screen caption aloud,",
+    "and no unusual compound words — plus a third: every line has to survive",
+    "being heard once, at speed, on a phone, possibly muted. The captions in",
+    "src/social.ts carry the story on their own; these lines add the swagger.",
+    "",
+    "Generate with: node scripts/voice.mjs narration-social.json",
+    "It uses a different, higher-energy voice than the long cut (see VOICES in",
+    "scripts/voice.mjs) — same script, same measurement, different delivery."
+  ],
+
+  "social-1-hook": "Forty grand a year, and the customer said it was slow. On camera. Watch this.",
+  "social-2-import": "Day one. The mess goes in as-is, and comes back as an event.",
+  "social-3-drag": "Try to double book a room. Go ahead. Try.",
+  "social-4-cfp": "You put the call for speakers together yourself. This afternoon.",
+  "social-5-comms": "Sixty decisions, one release, and proof that every message landed.",
+  "social-6-gmail": "That's not our app. That's Gmail, already offering the calendar.",
+  "social-7-warning": "You never told it to check. It checked.",
+  "social-8-realtime": "Left screen, right screen, same instant. Nobody touched anything.",
+  "social-9-publish": "And the whole program goes public in one click.",
+  "social-10-close": "StageStack. Open source, runs on your own servers, and never charges you per event."
+}
