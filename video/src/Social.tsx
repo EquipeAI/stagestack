@@ -11,6 +11,7 @@ import { fade } from "@remotion/transitions/fade";
 import { ACTS, BEATS, Beat } from "./beats";
 import { Screen } from "./components/Screen";
 import { Detail } from "./components/Detail";
+import { Clip } from "./components/Clip";
 import { c, font, s } from "./theme";
 
 export const SOCIAL_W = 1080;
@@ -24,7 +25,7 @@ const KEEP = [
   "19-reviewer-scoring",
   "d-scorecard",
   "12b-comms-log",
-  "d-conflicts",
+  "agenda-drag",
   "08-speaker-portal",
   "d-ops-warning",
   "28-public-event-page",
@@ -76,7 +77,14 @@ const SocialBeat: React.FC<{ beat: Beat }> = ({ beat }) => (
     {/* Portrait plays on a phone, so start already pushed in — the wide
         organizer layout is unreadable at this width otherwise. */}
     <div style={{ position: "absolute", inset: 0, top: 200, bottom: 470 }}>
-      {beat.kind === "detail" ? (
+      {beat.kind === "clip" ? (
+        <Clip
+          clip={beat.shot}
+          durationInFrames={EACH}
+          cardWidth={1000}
+          marginTop={0}
+        />
+      ) : beat.kind === "detail" ? (
         <Detail shot={beat.shot} durationInFrames={EACH} scale={1} />
       ) : (
         <Screen

@@ -8,5 +8,12 @@ out
 
 # Captured app screenshots — regenerate with `node capture/shots.mjs`
 # rather than carrying ~300KB retina PNGs per shot in git.
-public/shots
+public/shots/*
 public/clips
+
+# Generated narration (regenerate with node scripts/voice.mjs)
+public/voice
+
+# The one shot that cannot be regenerated from the app: it comes from a real
+# mailbox. Cropped to the message and the fixture address painted out.
+!public/shots/40-gmail-invite.png

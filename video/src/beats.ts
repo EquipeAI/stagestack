@@ -15,6 +15,21 @@
 
 import type { Focus } from "./components/Screen";
 import type { Stage } from "./components/Rail";
+import durations from "../public/voice/durations.json";
+
+// Timing is driven by the narration, not by taste. Each segment lasts as long
+// as its own recorded line plus a beat of air; the hand-written `seconds` is
+// only a floor, for the few beats whose line is shorter than the thing on
+// screen needs to be looked at. Guessed timings are how a narrated demo ends
+// up talking over its own cut.
+const AIR = 1.15;
+const voice = (id: string): number =>
+  (durations as Record<string, { seconds: number }>)[id]?.seconds ?? 0;
+/** Segment length in seconds: the line, plus air, but never below `floor`. */
+export const timed = (id: string, floor: number): number => {
+  const line = voice(id);
+  return line > 0 ? Math.max(floor, line + AIR) : floor;
+};
 
 // Regions of the 1920x1080 organizer layout, in 0..1 source coords.
 //
@@ -35,8 +50,9 @@ export const F = {
 export type Beat = {
   shot: string;
   seconds: number;
-  /** "screen" = full page in browser chrome; "detail" = one framed element */
-  kind?: "screen" | "detail";
+  /** "screen" = full page in browser chrome; "detail" = one framed element;
+   *  "clip" = a screen recording of the real UI in that same window */
+  kind?: "screen" | "detail" | "clip";
   from?: Focus;
   to?: Focus;
   /** detail only: fraction of the safe area to fill */
@@ -66,18 +82,18 @@ export const ACTS: Act[] = [
     stage: "Import",
     title: "Day one: you inherit a spreadsheet.",
     usually: "Usually: a week of copy-paste, and three mistakes you find in May.",
-    cardSeconds: 3.6,
+    cardSeconds: timed("act-Import", 3.6),
     beats: [
       {
         shot: "d-import-2-plan",
-        seconds: 4.4,
+        seconds: timed("beat-d-import-2-plan", 4.4),
         url: `${APP}/import`,
         caption: "Hand it the file. An agent reads it and proposes the import.",
       },
       {
         shot: "d-import-record",
         kind: "detail",
-        seconds: 4.4,
+        seconds: timed("beat-d-import-record", 4.4),
         scale: 0.95,
         caption:
           "Every row mapped and explained, every one of them yours to uncheck. Nothing is written until you approve.",
@@ -90,24 +106,24 @@ export const ACTS: Act[] = [
     stage: "Call",
     title: "Now open the call for speakers.",
     usually: "Usually: a form that can't ask workshops a different question.",
-    cardSeconds: 3.4,
+    cardSeconds: timed("act-Call", 3.4),
     beats: [
       {
         shot: "03-cfp-builder",
-        seconds: 4,
+        seconds: timed("beat-03-cfp-builder", 4),
         url: `${APP}/cfp`,
         caption: "Build the form your event actually needs. No developer.",
       },
       {
         shot: "d-cfp-conditional",
         kind: "detail",
-        seconds: 4.2,
+        seconds: timed("beat-d-cfp-conditional", 4.2),
         caption:
           "Workshop questions appear only for workshops. One form, not four.",
       },
       {
         shot: "06-public-cfp",
-        seconds: 3.8,
+        seconds: timed("beat-06-public-cfp", 3.8),
         url: `${PUB}/submit`,
         caption:
           "Speakers get a wizard that saves drafts — so they finish instead of giving up.",
@@ -120,11 +136,11 @@ export const ACTS: Act[] = [
     stage: "Review",
     title: "Then read all of it. Fairly.",
     usually: "Usually: a shared spreadsheet, and hoping nobody peeks at names.",
-    cardSeconds: 3.4,
+    cardSeconds: timed("act-Review", 3.4),
     beats: [
       {
         shot: "19-reviewer-scoring",
-        seconds: 4.6,
+        seconds: timed("beat-19-reviewer-scoring", 4.6),
         url: `${APP}/reviews`,
         caption:
           "Reviewers open a queue, not a spreadsheet. Speaker names are hidden.",
@@ -132,7 +148,7 @@ export const ACTS: Act[] = [
       {
         shot: "d-scorecard",
         kind: "detail",
-        seconds: 4.2,
+        seconds: timed("beat-d-scorecard", 4.2),
         caption:
           "You set the weights once. Every score lands on the same scale.",
       },
@@ -144,27 +160,36 @@ export const ACTS: Act[] = [
     stage: "Decide",
     title: "Decide — then tell 60 people.",
     usually: "Usually: a mail merge, and the one person you forgot.",
-    cardSeconds: 3.4,
+    cardSeconds: timed("act-Decide", 3.4),
     beats: [
       {
         shot: "16-proposals-table",
-        seconds: 3.8,
+        seconds: timed("beat-16-proposals-table", 3.8),
         url: `${APP}/proposals`,
         caption: "Sort by weighted score. Stage every decision, release together.",
       },
       {
         shot: "12-comms",
-        seconds: 3.8,
+        seconds: timed("beat-12-comms", 3.8),
         url: `${APP}/comms`,
         caption:
           "Accepted, declined, waitlisted — 17 templates already written for you.",
       },
       {
         shot: "12b-comms-log",
-        seconds: 4.2,
+        seconds: timed("beat-12b-comms-log", 4.2),
         url: `${APP}/comms`,
         caption:
           "And every message keeps its receipt: queued, accepted, delivered.",
+      },
+      {
+        // Captured from the maintainer's own mailbox: the one claim in this
+        // video that the product cannot prove about itself.
+        shot: "40-gmail-invite",
+        kind: "detail",
+        seconds: timed("beat-40-gmail-invite", 5.5),
+        scale: 0.92,
+        caption: "It arrives as a calendar invite they can accept.",
       },
     ],
   },
@@ -174,35 +199,24 @@ export const ACTS: Act[] = [
     stage: "Schedule",
     title: "Fit it into three rooms and three days.",
     usually: "Usually: a wall of sticky notes, and one speaker in two places.",
-    cardSeconds: 3.4,
+    cardSeconds: timed("act-Schedule", 3.4),
     beats: [
+      // The two beats that only work as video: the drag IS the feature, and
+      // a still of a conflict badge can't show that it appeared without a
+      // reload. Both are real recordings — see capture/clips.mjs.
       {
-        shot: "d-conflicts",
-        kind: "detail",
-        seconds: 4.4,
-        caption:
-          "Drag a talk into a slot. It refuses to put one speaker in two rooms.",
+        shot: "agenda-drag",
+        kind: "clip",
+        seconds: timed("beat-agenda-drag", 9.5),
+        url: `${APP}/agenda`,
+        caption: "Two sessions, one room. Both cards go red the moment it lands.",
       },
       {
-        shot: "25a-agenda-list",
-        seconds: 2.2,
-        from: F.content,
+        shot: "agenda-views",
+        kind: "clip",
+        seconds: timed("beat-agenda-views", 8.4),
         url: `${APP}/agenda`,
-        caption: "List for the program committee…",
-      },
-      {
-        shot: "25b-agenda-track",
-        seconds: 2.2,
-        from: F.content,
-        url: `${APP}/agenda`,
-        caption: "…tracks for the attendees…",
-      },
-      {
-        shot: "25c-agenda-week",
-        seconds: 2.8,
-        from: F.content,
-        url: `${APP}/agenda`,
-        caption: "…week for you. Same program, nobody re-typing it.",
+        caption: "List, day, week, track, room — one program, nobody re-typing it.",
       },
     ],
   },
@@ -212,11 +226,11 @@ export const ACTS: Act[] = [
     stage: "Prep",
     title: "Now stop chasing people for bios.",
     usually: "Usually: 200 emails, and a checklist you maintain by hand.",
-    cardSeconds: 3.4,
+    cardSeconds: timed("act-Prep", 3.4),
     beats: [
       {
         shot: "08-speaker-portal",
-        seconds: 4,
+        seconds: timed("beat-08-speaker-portal", 4),
         url: "stagestack.dev/portal/devflow-conf-2027",
         caption:
           "Speakers get their own page — sessions, deadlines, what's still missing.",
@@ -224,7 +238,7 @@ export const ACTS: Act[] = [
       {
         shot: "d-speaker-slot",
         kind: "detail",
-        seconds: 3.8,
+        seconds: timed("beat-d-speaker-slot", 3.8),
         scale: 0.82,
         caption:
           "Their slot, in their timezone. They flag a clash instead of emailing you.",
@@ -232,14 +246,14 @@ export const ACTS: Act[] = [
       {
         shot: "d-ops-warning",
         kind: "detail",
-        seconds: 4,
+        seconds: timed("beat-d-ops-warning", 4),
         scale: 0.78,
         caption:
           "“1 accepted speaker is missing a bio or headshot.” Derived, not a box you tick.",
       },
       {
         shot: "26-speaker-tasks",
-        seconds: 3.6,
+        seconds: timed("beat-26-speaker-tasks", 3.6),
         url: `${APP}/tasks`,
         caption: "The reminders go out on their own. You go do something else.",
       },
@@ -251,17 +265,17 @@ export const ACTS: Act[] = [
     stage: "Publish",
     title: "Then put the program in front of the world.",
     usually: "Usually: exporting to a designer, and a schedule that goes stale.",
-    cardSeconds: 3.4,
+    cardSeconds: timed("act-Publish", 3.4),
     beats: [
       {
         shot: "28-public-event-page",
-        seconds: 3.6,
+        seconds: timed("beat-28-public-event-page", 3.6),
         url: PUB,
         caption: "Publish once. The public page is the program you just built.",
       },
       {
         shot: "29-embed-widget",
-        seconds: 3.4,
+        seconds: timed("beat-29-embed-widget", 3.4),
         url: "stagestack.dev/embed/w/…",
         caption:
           "Drop it into your own site — five widgets, plus JSON and iCal feeds.",

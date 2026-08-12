@@ -10,9 +10,12 @@ import React from "react";
 import { AbsoluteFill, staticFile, Img } from "remotion";
 import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
-import { ACTS } from "./beats";
+import { Audio } from "@remotion/media";
+import { staticFile as sf } from "remotion";
+import { ACTS, timed } from "./beats";
 import { Screen } from "./components/Screen";
 import { Detail } from "./components/Detail";
+import { Clip } from "./components/Clip";
 import { Caption, Statement } from "./components/Caption";
 import { ActCard } from "./components/ActCard";
 import { Rail, STAGES } from "./components/Rail";
@@ -20,8 +23,8 @@ import { c, font, s } from "./theme";
 
 const XFADE = 8; // frames of crossfade between beats
 
-export const OPEN = s(6.5);
-export const CLOSE = s(6);
+export const OPEN = s(timed("open", 6.5));
+export const CLOSE = s(timed("close", 6));
 
 /** Every sequence length in order, so the total accounts for overlap. */
 const SEGMENTS = () => [
@@ -35,6 +38,12 @@ const SEGMENTS = () => [
 
 export const fullDuration = () =>
   SEGMENTS().reduce((a, b) => a + b, 0) - XFADE * (SEGMENTS().length - 1);
+
+/** The recorded line for one segment, started a beat after the cut so it does
+ *  not begin under the outgoing crossfade. */
+const Line: React.FC<{ id: string }> = ({ id }) => (
+  <Audio src={sf(`voice/${id}.mp3`)} from={XFADE} />
+);
 
 const Ground: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
   <AbsoluteFill
@@ -105,6 +114,7 @@ export const Full: React.FC = () => (
     <TransitionSeries>
       <TransitionSeries.Sequence durationInFrames={OPEN} name="Cold open">
         <OpenCard />
+        <Line id="open" />
       </TransitionSeries.Sequence>
 
       {ACTS.flatMap((act, ai) => {
@@ -127,6 +137,7 @@ export const Full: React.FC = () => (
                 usually={act.usually}
                 durationInFrames={cardDur}
               />
+              <Line id={`act-${act.stage}`} />
             </Ground>
           </TransitionSeries.Sequence>,
           ...act.beats.flatMap((beat, bi) => {
@@ -144,7 +155,13 @@ export const Full: React.FC = () => (
               >
                 <Ground>
                   <Rail active={act.stage} />
-                  {beat.kind === "detail" ? (
+                  {beat.kind === "clip" ? (
+                    <Clip
+                      clip={beat.shot}
+                      durationInFrames={dur}
+                      url={beat.url}
+                    />
+                  ) : beat.kind === "detail" ? (
                     <Detail
                       shot={beat.shot}
                       durationInFrames={dur}
@@ -170,6 +187,7 @@ export const Full: React.FC = () => (
                     durationInFrames={dur}
                     delay={6}
                   />
+                  <Line id={`beat-${beat.shot}`} />
                 </Ground>
               </TransitionSeries.Sequence>,
             ];
@@ -183,6 +201,7 @@ export const Full: React.FC = () => (
       />
       <TransitionSeries.Sequence durationInFrames={CLOSE} name="Close">
         <CloseCard />
+        <Line id="close" />
       </TransitionSeries.Sequence>
     </TransitionSeries>
   </AbsoluteFill>

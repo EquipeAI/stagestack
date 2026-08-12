@@ -144,7 +144,8 @@ export const Screen: React.FC<{
   );
 };
 
-const Chrome: React.FC<{ url: string }> = ({ url }) => (
+/** Exported so <Clip> can wear the identical browser window. */
+export const Chrome: React.FC<{ url: string }> = ({ url }) => (
   <div
     style={{
       height: 52,
