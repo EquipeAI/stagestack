@@ -5,8 +5,8 @@ import { api } from '@convex/_generated/api'
 import { checkBrandColor } from '@convex/shared/brandColor'
 import type { PublicProgram } from '@convex/model/publish'
 import type { Id } from '@convex/_generated/dataModel'
+import type { PublicationRow } from '~/components/publish/model'
 import {
-  ActionResult,
   Badge,
   Button,
   Callout,
@@ -18,7 +18,6 @@ import {
   Icon,
   Input,
   Select,
-  StatusPill,
   Switch,
 } from '~/ds'
 import { usePending } from '~/lib/usePending'
@@ -26,7 +25,9 @@ import { copyToClipboard } from '~/lib/clipboard'
 import { pushToast } from '~/components/toast'
 import { CopyLinkRow } from '~/components/CopyLinkRow'
 import { BrandColorField } from '~/components/publish/BrandColorField'
+import { ChannelCard } from '~/components/publish/ChannelCard'
 import { formatDateTime } from '~/lib/datetime'
+import { useNow } from '~/components/tasks/useNow'
 import {
   ProgramView,
   embedSnippet,
@@ -35,12 +36,19 @@ import {
 import { distinct } from '~/components/public/widgets/shared'
 import { siteOrigin } from '~/lib/origin'
 
-// The organizer's publication console (M7). Two independent master switches
-// (lineup / agenda), per-session and per-item controls, share links, and a
-// live preview rendered from api.publish.preview — the exact projection the
-// public read path would serve given the current flags, so the organizer sees
-// the page before the public does. Every toggle is a mutation with its own
-// pending state and surfaces the backend's ConvexError message.
+// The publish center (W10). LINEUP AND SCHEDULE ARE TWO DECISIONS, so they are
+// two cards — each with its own state sentence, its own blockers, its own diff
+// preview, its own publish/unpublish, and the per-entry toggles that belong to
+// it. One route still (the nav's Publish entry); the restructure is information
+// architecture, not new URLs.
+//
+// The strings are not written here. The channel sentence and its "last
+// published by …" attribution come from convex/model/controlCenter.ts (the same
+// producer the control center prints), the blockers from convex/model/
+// readiness.ts, the diff and the eligibility arithmetic from convex/model/
+// publish.ts + publishBulk.ts — which is the code the publish mutation
+// enforces. A publish console that re-derives publication state in TSX is the
+// bug this workstream removes.
 
 export const Route = createFileRoute('/app/e/$eventSlug/publish')({
   component: PublishConsole,
@@ -50,21 +58,21 @@ function PublishConsole() {
   const { eventSlug } = Route.useParams()
   const data = useQuery(api.events.get, { eventSlug })
   const isOrganizer = data?.role === 'organizer'
-  const state = useQuery(
-    api.publish.state,
-    isOrganizer ? { eventSlug } : 'skip',
-  )
-  const preview = useQuery(
-    api.publish.preview,
-    isOrganizer ? { eventSlug } : 'skip',
-  )
-  const board = useQuery(api.agenda.board, isOrganizer ? { eventSlug } : 'skip')
+  const skip = isOrganizer ? { eventSlug } : 'skip'
+  const now = useNow()
+  const state = useQuery(api.publish.state, skip)
+  const preview = useQuery(api.publish.preview, skip)
+  const board = useQuery(api.agenda.board, skip)
+  const diff = useQuery(api.publish.diff, skip)
   // W4: publication state is composed once in convex/model/readiness.ts and
   // printed verbatim here. This console must never re-derive "is it public"
   // from flags and slots in TSX — that is how the surfaces drifted apart.
-  const publication = useQuery(
-    api.readiness.publication,
-    isOrganizer ? { eventSlug } : 'skip',
+  const publication = useQuery(api.readiness.publication, skip)
+  // W8 owns the "last published by … at …" sentence. CONSUMED, not re-composed:
+  // there is exactly one producer of that line in the repository.
+  const upNext = useQuery(
+    api.readiness.upNext,
+    isOrganizer ? { eventSlug, now } : 'skip',
   )
 
   if (data === undefined) {
@@ -82,7 +90,9 @@ function PublishConsole() {
     state === undefined ||
     preview === undefined ||
     board === undefined ||
-    publication === undefined
+    publication === undefined ||
+    diff === undefined ||
+    upNext === undefined
   ) {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>
   }
@@ -90,6 +100,9 @@ function PublishConsole() {
   const slug = data.event.slug
   const zone = data.event.timezone
   const links = publicLinks(slug, import.meta.env.VITE_CONVEX_URL)
+  const rows = publication as Array<PublicationRow>
+  const sentenceFor = (id: 'lineup' | 'agenda') =>
+    upNext.channels.find((channel) => channel.id === id)?.sentence ?? ''
 
   return (
     <div
@@ -99,268 +112,49 @@ function PublishConsole() {
         gap: 'var(--space-6)',
       }}
     >
-      <MastersCard eventSlug={eventSlug} state={state} zone={zone} />
+      <ChannelCard
+        eventSlug={eventSlug}
+        channel="lineup"
+        label="Lineup"
+        subtitle="Accepted sessions and confirmed speaker profiles on the public page. No slots required — the schedule is a separate decision."
+        published={state.lineupPublished}
+        stateSentence={sentenceFor('lineup')}
+        version={state.version}
+        stale={state.stale}
+        diff={diff.lineup}
+        rows={rows}
+      >
+        <SessionsSection
+          eventSlug={eventSlug}
+          sessions={board.sessions}
+          publishedIds={new Set(state.publishedSessionIds)}
+          summaries={new Map(rows.map((row) => [row.sessionId, row.publication]))}
+        />
+      </ChannelCard>
+
+      <ChannelCard
+        eventSlug={eventSlug}
+        channel="agenda"
+        label="Schedule"
+        subtitle="Released, scheduled sessions and the agenda items around them. Publishing it exposes times and rooms; the lineup is unaffected."
+        published={state.agendaPublished}
+        stateSentence={sentenceFor('agenda')}
+        version={state.version}
+        stale={state.stale}
+        diff={diff.agenda}
+        rows={rows}
+      >
+        <AgendaItemsSection
+          eventSlug={eventSlug}
+          items={board.agendaItems}
+          publishedIds={new Set(state.publishedAgendaItemIds)}
+          zone={zone}
+        />
+      </ChannelCard>
+
       <ShareCard slug={slug} links={links} />
       <EmbedsCard eventSlug={eventSlug} preview={preview} />
-      <SessionsCard
-        eventSlug={eventSlug}
-        sessions={board.sessions}
-        publishedIds={new Set(state.publishedSessionIds)}
-        lineupPublished={state.lineupPublished}
-        summaries={
-          new Map(publication.map((row) => [row.sessionId, row.publication]))
-        }
-      />
-      <AgendaItemsCard
-        eventSlug={eventSlug}
-        items={board.agendaItems}
-        publishedIds={new Set(state.publishedAgendaItemIds)}
-        agendaPublished={state.agendaPublished}
-        zone={zone}
-      />
       <PreviewCard program={preview} />
-    </div>
-  )
-}
-
-// ── master switches ───────────────────────────────────────────────────────
-function MastersCard({
-  eventSlug,
-  state,
-  zone,
-}: {
-  eventSlug: string
-  state: {
-    lineupPublished: boolean
-    agendaPublished: boolean
-    version: number | null
-    publishedAt: number | null
-    acceptedSessions: number
-    releasedSessions: number
-  }
-  zone: string
-}) {
-  const setLineup = useMutation(api.publish.setLineup)
-  const setAgenda = useMutation(api.publish.setAgenda)
-  // Silent here on purpose: the catch inside each run() writes the failure
-  // into the ActionResult below, which is a polite live region already.
-  const lineup = usePending({ announce: false })
-  const agenda = usePending({ announce: false })
-  // W5: publishing is not a low-risk confirmation — it is the moment the
-  // outside world sees (or stops seeing) the program. The outcome stays on the
-  // card, with what it exposed and a retry when it did not land.
-  const [result, setResult] = useState<{
-    status: 'success' | 'failed'
-    title: string
-    lines: Array<string>
-    retry: () => void
-  } | null>(null)
-
-  const publishLineup = (next: boolean) => {
-    setResult(null)
-    void lineup.run(async () => {
-      try {
-        await setLineup({ eventSlug, enabled: next })
-        setResult({
-          status: 'success',
-          title: next ? 'Public page published' : 'Public page unpublished',
-          lines: [
-            next
-              ? `${state.acceptedSessions} accepted session${state.acceptedSessions === 1 ? '' : 's'} can now appear — each still needs its own toggle below.`
-              : 'The public page no longer serves the lineup. Embeds and the read API follow the same projection.',
-          ],
-          retry: () => publishLineup(next),
-        })
-      } catch (error) {
-        setResult({
-          status: 'failed',
-          title: next ? 'Publish failed' : 'Unpublish failed',
-          lines: [
-            'Nothing changed for the public page.',
-            error instanceof Error ? error.message : 'The call did not run.',
-          ],
-          retry: () => publishLineup(next),
-        })
-        throw error
-      }
-    })
-  }
-
-  const publishAgenda = (next: boolean) => {
-    setResult(null)
-    void agenda.run(async () => {
-      try {
-        await setAgenda({ eventSlug, enabled: next })
-        setResult({
-          status: 'success',
-          title: next ? 'Agenda published' : 'Agenda unpublished',
-          lines: [
-            next
-              ? `${state.releasedSessions} released session${state.releasedSessions === 1 ? '' : 's'} and the agenda items are now on the public page.`
-              : 'The schedule is no longer public; the lineup is unaffected.',
-          ],
-          retry: () => publishAgenda(next),
-        })
-      } catch (error) {
-        setResult({
-          status: 'failed',
-          title: next ? 'Publish failed' : 'Unpublish failed',
-          lines: [
-            'Nothing changed for the public agenda.',
-            error instanceof Error ? error.message : 'The call did not run.',
-          ],
-          retry: () => publishAgenda(next),
-        })
-        throw error
-      }
-    })
-  }
-
-  return (
-    <Card
-      title="Publication"
-      subtitle="The public page, read API and embeds are read-only copies of one published program. Lineup and agenda publish independently."
-      actions={
-        state.version !== null ? (
-          <span
-            style={{
-              display: 'inline-flex',
-              flexDirection: 'column',
-              alignItems: 'flex-end',
-              gap: 'var(--space-1)',
-            }}
-          >
-            <Badge tone="neutral">Version {state.version}</Badge>
-            {state.publishedAt !== null ? (
-              <span
-                style={{
-                  font: 'var(--type-caption)',
-                  color: 'var(--text-tertiary)',
-                }}
-              >
-                Published {formatDateTime(state.publishedAt, zone)}
-              </span>
-            ) : null}
-          </span>
-        ) : (
-          <Badge tone="neutral">Never published</Badge>
-        )
-      }
-    >
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 'var(--space-5)',
-        }}
-      >
-        {result === null ? null : (
-          <ActionResult
-            status={result.status}
-            title={result.title}
-            details={result.lines}
-            onRetry={result.status === 'failed' ? result.retry : undefined}
-            onDismiss={() => setResult(null)}
-          />
-        )}
-        <MasterRow
-          title="Public event page"
-          published={state.lineupPublished}
-          pending={lineup.pending}
-          error={lineup.error}
-          description={`Exposes accepted sessions and confirmed speaker profiles. ${state.acceptedSessions} session${state.acceptedSessions === 1 ? '' : 's'} accepted. Each session still needs its own toggle below.`}
-          onToggle={publishLineup}
-        />
-        <MasterRow
-          title="Public agenda / schedule"
-          published={state.agendaPublished}
-          pending={agenda.pending}
-          error={agenda.error}
-          description={`Adds released, scheduled sessions and agenda items to the page. ${state.releasedSessions} session${state.releasedSessions === 1 ? '' : 's'} released.`}
-          onToggle={publishAgenda}
-        />
-      </div>
-    </Card>
-  )
-}
-
-function MasterRow({
-  title,
-  description,
-  published,
-  pending,
-  error,
-  onToggle,
-}: {
-  title: string
-  description: string
-  published: boolean
-  pending: boolean
-  error: string | null
-  onToggle: (next: boolean) => void
-}) {
-  // The switch is named by the channel it publishes, not by its own state:
-  // pointing at the title that is already on screen keeps one producer for the
-  // name and avoids a second, drifting copy of it.
-  const titleId = useId()
-  return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 'var(--space-4)',
-        alignItems: 'flex-start',
-        justifyContent: 'space-between',
-        flexWrap: 'wrap',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 'var(--space-1)',
-          maxWidth: 'var(--content-max-prose)',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--space-3)',
-          }}
-        >
-          <span
-            id={titleId}
-            style={{ font: 'var(--type-label)', color: 'var(--text-primary)' }}
-          >
-            {title}
-          </span>
-          <StatusPill
-            status={published ? 'Published' : 'Unpublished'}
-            size="sm"
-          />
-        </div>
-        <span
-          style={{
-            font: 'var(--type-caption)',
-            color: 'var(--text-secondary)',
-          }}
-        >
-          {description}
-        </span>
-        {error !== null ? (
-          <span
-            style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}
-          >
-            {error}
-          </span>
-        ) : null}
-      </div>
-      <Switch
-        aria-labelledby={titleId}
-        checked={published}
-        disabled={pending}
-        onChange={(e) => onToggle(e.target.checked)}
-      />
     </div>
   )
 }
@@ -918,7 +712,7 @@ function NewEmbedDialog({
   )
 }
 
-// ── per-session controls ─────────────────────────────────────────────────────
+// ── per-entry controls, nested in their channel ─────────────────────────────
 type BoardSession = {
   sessionId: string
   title: string
@@ -931,44 +725,50 @@ type PublicationSummary = {
   reasons: Array<{ sentence: string }>
 }
 
-function SessionsCard({
+/**
+ * The per-session toggles, INSIDE the lineup card (W10).
+ *
+ * They used to be their own card halfway down the page, which made "publish
+ * this session" look like a third decision alongside the two channels. It is
+ * not: it is the fine-grained control of one channel, so it lives in that
+ * channel's card, under that channel's blockers and diff.
+ */
+function SessionsSection({
   eventSlug,
   sessions,
   publishedIds,
-  lineupPublished,
   summaries,
 }: {
   eventSlug: string
   sessions: Array<BoardSession>
   publishedIds: Set<string>
-  lineupPublished: boolean
   summaries: Map<string, PublicationSummary>
 }) {
+  const [open, setOpen] = useState(false)
+  if (sessions.length === 0) {
+    return (
+      <EmptyState
+        icon="presentation"
+        title="No accepted sessions yet"
+        description="Accept proposals and build sessions first; they become publishable here."
+      />
+    )
+  }
   return (
-    <Card
-      title="Sessions in the lineup"
-      subtitle="A session appears on the public page only when its toggle is on and the public page is published. With no Confirmed speaker it still publishes, shown as Speaker to be announced."
-    >
-      {!lineupPublished ? (
-        <Callout tone="info" title="The public page is off">
-          These toggles take effect once you publish the public event page
-          above.
-        </Callout>
-      ) : null}
-      {sessions.length === 0 ? (
-        <EmptyState
-          icon="presentation"
-          title="No accepted sessions yet"
-          description="Accept proposals and build sessions first; they become publishable here."
-        />
-      ) : (
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            marginTop: lineupPublished ? 'var(--space-0)' : 'var(--space-4)',
-          }}
-        >
+    <div>
+      <Button
+        variant="ghost"
+        size="sm"
+        iconLeft={open ? 'chevron-down' : 'chevron-right'}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open
+          ? 'Hide the per-session toggles'
+          : `Per-session toggles (${publishedIds.size} of ${sessions.length} on)`}
+      </Button>
+      {open ? (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
           {sessions.map((session) => (
             <SessionRow
               key={session.sessionId}
@@ -979,8 +779,8 @@ function SessionsCard({
             />
           ))}
         </div>
-      )}
-    </Card>
+      ) : null}
+    </div>
   )
 }
 
@@ -1058,7 +858,7 @@ function SessionRow({
   )
 }
 
-// ── per-item controls ────────────────────────────────────────────────────────
+// ── agenda items, inside the schedule card ──────────────────────────────────
 type BoardItem = {
   itemId: string
   title: string
@@ -1066,48 +866,46 @@ type BoardItem = {
   endsAt: number
 }
 
-function AgendaItemsCard({
+function AgendaItemsSection({
   eventSlug,
   items,
   publishedIds,
-  agendaPublished,
   zone,
 }: {
   eventSlug: string
   items: Array<BoardItem>
   publishedIds: Set<string>
-  agendaPublished: boolean
   zone: string
 }) {
+  const [open, setOpen] = useState(false)
   if (items.length === 0) return null
   return (
-    <Card
-      title="Agenda items"
-      subtitle="Breaks, keynotes and other non-session blocks. They appear on the public agenda only when the agenda is published and the item's toggle is on."
-    >
-      {!agendaPublished ? (
-        <Callout tone="info" title="The agenda is off">
-          These items appear once you publish the agenda above.
-        </Callout>
-      ) : null}
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          marginTop: agendaPublished ? 'var(--space-0)' : 'var(--space-4)',
-        }}
+    <div>
+      <Button
+        variant="ghost"
+        size="sm"
+        iconLeft={open ? 'chevron-down' : 'chevron-right'}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
       >
-        {items.map((item) => (
-          <AgendaItemRow
-            key={item.itemId}
-            eventSlug={eventSlug}
-            item={item}
-            published={publishedIds.has(item.itemId)}
-            zone={zone}
-          />
-        ))}
-      </div>
-    </Card>
+        {open
+          ? 'Hide the agenda items'
+          : `Agenda items (${publishedIds.size} of ${items.length} on)`}
+      </Button>
+      {open ? (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {items.map((item) => (
+            <AgendaItemRow
+              key={item.itemId}
+              eventSlug={eventSlug}
+              item={item}
+              published={publishedIds.has(item.itemId)}
+              zone={zone}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

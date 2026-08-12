@@ -405,6 +405,21 @@ export async function dashboard(
  * a UI can deep-link a blocker without inventing routes. */
 export type PublicationTab = "sessions" | "agenda" | "publish";
 
+/**
+ * The session WORKSPACE tab a per-session repair is actually made on (W10).
+ *
+ * W9 shipped the workspace (`…/sessions/$id?tab=…`) after this vocabulary was
+ * written, so a session-scoped repair could only say "go to Sessions" and hand
+ * over an id with nowhere to put it. It now names the destination properly, and
+ * it names only destinations that can REPAIR the blocker: content approval
+ * lives on the content tab, so `content_draft` points there. A cancelled
+ * session's status is on the overview tab. `slot_not_released` deliberately
+ * keeps pointing at the agenda board — the workspace's schedule tab reports the
+ * placement, it does not make it — and the two publish-toggle codes keep
+ * pointing at the publish center, which is where their switches are.
+ */
+export type SessionWorkspaceTab = "overview" | "content";
+
 export type PublicationReasonCode =
   /** Cancelled sessions never reach public output. */
   | "session_cancelled"
@@ -431,7 +446,12 @@ export type PublicationReason = {
   blocks: "both" | "lineup" | "agenda";
   /** Rendered here, printed verbatim by every surface. */
   sentence: string;
-  repair: { tab: PublicationTab; params?: { sessionId?: Id<"sessions"> } };
+  repair: {
+    tab: PublicationTab;
+    params?: { sessionId?: Id<"sessions"> };
+    /** Present only with a `sessionId`: the workspace tab that repairs it. */
+    sessionTab?: SessionWorkspaceTab;
+  };
 };
 
 export type Publication = {
@@ -486,6 +506,14 @@ const PER_SESSION: ReadonlySet<PublicationReasonCode> = new Set([
   "slot_not_released",
 ]);
 
+/** Of those, the ones the session workspace itself can repair, and where. */
+const WORKSPACE_TAB: Partial<
+  Record<PublicationReasonCode, SessionWorkspaceTab>
+> = {
+  session_cancelled: "overview",
+  content_draft: "content",
+};
+
 function capitalize(clause: string): string {
   return clause.charAt(0).toUpperCase() + clause.slice(1);
 }
@@ -501,6 +529,9 @@ function reasonFor(
     repair: {
       tab: REPAIR[code],
       ...(PER_SESSION.has(code) ? { params: { sessionId } } : {}),
+      ...(WORKSPACE_TAB[code] === undefined
+        ? {}
+        : { sessionTab: WORKSPACE_TAB[code] }),
     },
   };
 }

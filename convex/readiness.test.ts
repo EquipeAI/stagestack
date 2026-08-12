@@ -124,9 +124,11 @@ describe("publication reasons — one case per code", () => {
     const publication = await publicationFor(alice, eventSlug, sessionId);
     expect(codes(publication)).toEqual(["session_cancelled"]);
     expect(publication.reasons[0].sentence).toBe("The session is cancelled.");
+    // W10: the repair now names the workspace tab that shows the status.
     expect(publication.reasons[0].repair).toEqual({
       tab: "sessions",
       params: { sessionId },
+      sessionTab: "overview",
     });
     expect(publication.inLineup).toBe(false);
   });
@@ -144,9 +146,11 @@ describe("publication reasons — one case per code", () => {
     const publication = await publicationFor(alice, eventSlug, sessionId);
     expect(codes(publication)).toEqual(["content_draft"]);
     expect(publication.reasons[0].sentence).toBe("Content is Draft.");
+    // W10: content approval is repaired on the workspace's content tab.
     expect(publication.reasons[0].repair).toEqual({
       tab: "sessions",
       params: { sessionId },
+      sessionTab: "content",
     });
     // The exact sentence the plan asked for, composed by one producer.
     expect(publication.summary).toBe(

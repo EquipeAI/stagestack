@@ -610,7 +610,7 @@ than by keeping the table on screen.
 
 ## W10 — Publish Center
 
-- [ ] Rebuild `apps/web/src/routes/app.e.$eventSlug.publish.tsx` (1123 lines
+- [x] Rebuild `apps/web/src/routes/app.e.$eventSlug.publish.tsx` (1123 lines
       today) around **lineup and schedule as separate decisions**, each with its
       own state, blockers, and history. History caveat: `publishedPrograms` is
       one row/one `version` per event and any rebuild rewrites both halves
@@ -618,18 +618,18 @@ than by keeping the table on screen.
       from the combined blob (`program.lineup` / `program.agenda`); independent
       per-channel *version history* needs a schema change — decide which this
       means before building.
-- [ ] **Blocker list** straight from W4, each row linking to the repair.
-- [ ] **Diff preview before publishing**: what will be added, changed, removed.
+- [x] **Blocker list** straight from W4, each row linking to the repair.
+- [x] **Diff preview before publishing**: what will be added, changed, removed.
       The published blob already exists (`convex/model/publish.ts`) — the
       comparison is against the last published projection, not a new store.
       (Verified feasible in one query: `publishState` at `publish.ts:711-714`
       already loads the blob and recomputes fresh in the same query to derive
       `stale`; the diff is that read pattern with a structural diff instead of
       a boolean. Two ~900KiB guarded blobs are far under read limits.)
-- [ ] **"Last published by Jordan Alvarez at …"** attribution on both channels.
-- [ ] **Bulk publish everything eligible**, with the eligibility arithmetic from
+- [x] **"Last published by Jordan Alvarez at …"** attribution on both channels.
+- [x] **Bulk publish everything eligible**, with the eligibility arithmetic from
       W5 stated before and after.
-- [ ] Keep the embed console; it moves under Publish in the new grouping and
+- [x] Keep the embed console; it moves under Publish in the new grouping and
       inherits the brand-colour work from W5.
 
 ## W11 — Review round launch flow

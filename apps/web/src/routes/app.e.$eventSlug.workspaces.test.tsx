@@ -17,13 +17,6 @@ import { getFunctionName } from 'convex/server'
 //     asserted against the source, because a promotion that leaves the old
 //     surface behind still renders perfectly well.
 
-type State = {
-  pathname: string
-  search: Record<string, unknown>
-  role: string
-  speakerLoaded: boolean
-}
-
 const { state, navigate, mutations } = vi.hoisted(() => ({
   state: {
     pathname: '/app/e/devconf/sessions/s1',
@@ -431,13 +424,13 @@ describe('the profile form never opens on a placeholder', () => {
     )
 
     // Every field carries the stored value — not a blank waiting to be saved.
-    expect((screen.getByLabelText(/First name/)).value).toBe(
+    expect(screen.getByLabelText<HTMLInputElement>(/First name/).value).toBe(
       'Grace',
     )
-    expect((screen.getByLabelText(/Bio/)).value).toBe(
+    expect(screen.getByLabelText<HTMLInputElement>(/Bio/).value).toBe(
       'Invented the compiler.',
     )
-    expect((screen.getByLabelText(/Company/)).value).toBe(
+    expect(screen.getByLabelText<HTMLInputElement>(/Company/).value).toBe(
       'US Navy',
     )
 

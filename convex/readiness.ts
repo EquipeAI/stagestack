@@ -34,7 +34,11 @@ const vPublicationTab = v.union(
   v.literal("publish"),
 );
 
-const vPublicationReason = v.object({
+/** The wire shape of one publication reason. Exported so convex/workspaces.ts
+ * describes the same rows with the same validator — it kept a byte-copy of this
+ * object, and W10's `sessionTab` is exactly the kind of field one copy gets and
+ * the other does not. */
+export const vPublicationReason = v.object({
   code: vPublicationReasonCode,
   // "both" is the common case; "lineup" alone exists because the public page
   // toggle empties the lineup while a published schedule keeps serving.
@@ -43,6 +47,12 @@ const vPublicationReason = v.object({
   repair: v.object({
     tab: vPublicationTab,
     params: v.optional(v.object({ sessionId: v.optional(vv.id("sessions")) })),
+    // W10: the session workspace tab that actually repairs this blocker, for
+    // the codes a workspace can repair. Absent means "the tab above is the
+    // destination" — an event-level switch or the agenda board.
+    sessionTab: v.optional(
+      v.union(v.literal("overview"), v.literal("content")),
+    ),
   }),
 });
 

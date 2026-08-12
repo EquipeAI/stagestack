@@ -633,6 +633,8 @@ const ACTION_CLAUSE: Record<string, string> = {
   "publish.lineup": "published or unpublished the lineup",
   "publish.agenda": "published or unpublished the schedule",
   "publish.session": "changed a session's publish toggle",
+  "publish.bulkLineup": "published everything eligible to the lineup",
+  "publish.bulkAgenda": "published everything eligible to the schedule",
   "review.assign": "assigned a review",
   "review.autoDistribute": "auto-distributed review assignments",
   "review.conflict": "declared a conflict of interest",

@@ -27,6 +27,7 @@ import {
   activeWorkspaceTab,
   parseSessionWorkspaceSearch,
 } from '~/components/workspace/tabs'
+import { repairTarget } from '~/components/workspace/repair'
 import { SessionContentCell } from '~/components/sessions/SessionContentCell'
 import { ContentHistoryPanel } from '~/components/sessions/ContentHistoryPanel'
 import { InstanceActions } from '~/components/tasks/InstanceActions'
@@ -46,16 +47,6 @@ import { useNow } from '~/components/tasks/useNow'
 // `tasks.listInstances` / `tasks.listUploads`. The workspace query supplies
 // only the spine — the session, its speakers, its room, its source proposal
 // and its publication state.
-
-/** Where a publication reason says the repair is made. */
-const REPAIR: Record<
-  'sessions' | 'agenda' | 'publish',
-  { to: string; label: string }
-> = {
-  sessions: { to: '/app/e/$eventSlug/sessions', label: 'Open Sessions' },
-  agenda: { to: '/app/e/$eventSlug/agenda', label: 'Open Agenda' },
-  publish: { to: '/app/e/$eventSlug/publish', label: 'Open the public page' },
-}
 
 export const Route = createFileRoute('/app/e/$eventSlug/sessions/$sessionId')({
   component: SessionWorkspaceRoute,
@@ -425,20 +416,26 @@ function SessionWorkspace({
               padded={false}
             >
               <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-                {publication.reasons.map((reason) => (
-                  <li key={reason.code} style={row}>
-                    <span style={{ flex: 1, minWidth: '12rem' }}>
-                      {reason.sentence}
-                    </span>
-                    <Link
-                      to={REPAIR[reason.repair.tab].to}
-                      params={{ eventSlug }}
-                      style={{ textDecoration: 'none' }}
-                    >
-                      <Button size="sm">{REPAIR[reason.repair.tab].label}</Button>
-                    </Link>
-                  </li>
-                ))}
+                {publication.reasons.map((reason) => {
+                  // One mapping, shared with the publish center
+                  // (components/workspace/repair.ts).
+                  const target = repairTarget(eventSlug, reason.repair)
+                  return (
+                    <li key={reason.code} style={row}>
+                      <span style={{ flex: 1, minWidth: '12rem' }}>
+                        {reason.sentence}
+                      </span>
+                      <Link
+                        to={target.to}
+                        params={target.params}
+                        search={target.search}
+                        style={{ textDecoration: 'none' }}
+                      >
+                        <Button size="sm">{target.label}</Button>
+                      </Link>
+                    </li>
+                  )
+                })}
               </ul>
             </Card>
           )}

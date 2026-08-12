@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { eventQuery } from "./lib/functions";
 import { vv } from "./lib/validators";
+import { vPublicationReason } from "./readiness";
 import * as Workspaces from "./model/workspaces";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -25,41 +26,12 @@ const vAck = v.union(
   v.literal("conflict"),
 );
 
-const vPublicationReasonCode = v.union(
-  v.literal("session_cancelled"),
-  v.literal("content_draft"),
-  v.literal("session_not_published"),
-  v.literal("lineup_not_published"),
-  v.literal("slot_not_released"),
-  v.literal("agenda_not_published"),
-);
-
-/** Tab ids from the app shell's TAB_PATHS — the deep-link vocabulary. */
-const vPublicationTab = v.union(
-  v.literal("sessions"),
-  v.literal("agenda"),
-  v.literal("publish"),
-);
-
 const vPublication = v.object({
   inLineup: v.boolean(),
   inAgenda: v.boolean(),
   toBeAnnounced: v.boolean(),
-  reasons: v.array(
-    v.object({
-      code: vPublicationReasonCode,
-      blocks: v.union(
-        v.literal("both"),
-        v.literal("lineup"),
-        v.literal("agenda"),
-      ),
-      sentence: v.string(),
-      repair: v.object({
-        tab: vPublicationTab,
-        params: v.optional(v.object({ sessionId: v.optional(vv.id("sessions")) })),
-      }),
-    }),
-  ),
+  // One producer for the wire shape too (convex/readiness.ts).
+  reasons: v.array(vPublicationReason),
   summary: v.string(),
 });
 

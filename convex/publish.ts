@@ -1,7 +1,9 @@
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import { eventMutation, eventQuery, publicQuery } from "./lib/functions";
+import { vv } from "./lib/validators";
 import * as Publish from "./model/publish";
+import * as PublishBulk from "./model/publishBulk";
 
 // Organizer publication console (M7). Public read path is convex/publicProgram
 // + convex/http.ts. The served projection is privacy-filtered in model/publish.
@@ -33,6 +35,106 @@ export const preview = eventQuery({
   returns: v.any(),
   handler: async (ctx) => {
     return await Publish.computeProgram(ctx, ctx.caller.event);
+  },
+});
+
+// ── Diff preview (W10) ────────────────────────────────────────────────────
+//
+// "What will publishing change?" answered per channel, from the same read
+// pattern `state` uses (served blob + fresh recompute) with a structural diff
+// instead of a boolean. Organizer-only, and read-only: the 1MiB guard still
+// lives in the publish mutation, where a refusal can roll a flag flip back.
+
+const vChangeField = v.union(
+  v.literal("title"),
+  v.literal("format"),
+  v.literal("track"),
+  v.literal("description"),
+  v.literal("speakers"),
+  v.literal("slot"),
+  v.literal("details"),
+);
+
+const vDiffEntry = v.object({
+  id: v.string(),
+  title: v.string(),
+  changes: v.array(vChangeField),
+});
+
+const vChannelDiff = v.object({
+  added: v.array(vDiffEntry),
+  changed: v.array(vDiffEntry),
+  removed: v.array(vDiffEntry),
+  empty: v.boolean(),
+  // Empty diff ≠ nothing to do: turning an empty channel ON is a real action.
+  doesNothing: v.boolean(),
+  servedCount: v.number(),
+  wouldBeCount: v.number(),
+  sentence: v.string(),
+  unpublishSentence: v.string(),
+});
+
+export const diff = eventQuery({
+  args: {},
+  returns: v.object({
+    neverPublished: v.boolean(),
+    lineup: vChannelDiff,
+    agenda: vChannelDiff,
+  }),
+  handler: async (ctx) => {
+    return await Publish.programDiff(ctx, ctx.caller);
+  },
+});
+
+// ── Bulk publish (W10) ────────────────────────────────────────────────────
+//
+// The plan query and the mutation call the SAME model producer, so the
+// arithmetic stated before the click is the arithmetic the click enforces.
+
+const vChannel = v.union(v.literal("lineup"), v.literal("agenda"));
+
+export const bulkPlan = eventQuery({
+  args: { channel: vChannel },
+  returns: v.object({
+    channel: vChannel,
+    enablesChannel: v.boolean(),
+    targets: v.array(
+      v.object({
+        kind: v.union(v.literal("session"), v.literal("agendaItem")),
+        id: v.string(),
+        title: v.string(),
+        alreadyPublished: v.boolean(),
+      }),
+    ),
+    eligible: v.number(),
+    alreadyPublished: v.number(),
+    excluded: v.array(
+      v.object({
+        sessionId: vv.id("sessions"),
+        title: v.string(),
+        sentence: v.string(),
+      }),
+    ),
+    sentence: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    return await PublishBulk.channelPlan(ctx, ctx.caller, args.channel);
+  },
+});
+
+export const bulkPublish = eventMutation({
+  args: { channel: vChannel },
+  returns: v.object({
+    channel: vChannel,
+    status: v.union(v.literal("success"), v.literal("noop")),
+    title: v.string(),
+    lines: v.array(v.string()),
+    published: v.number(),
+    alreadyPublished: v.number(),
+    excluded: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    return await PublishBulk.bulkPublishChannel(ctx, ctx.caller, args.channel);
   },
 });
 
