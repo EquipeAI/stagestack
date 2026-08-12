@@ -1,7 +1,8 @@
 // Generate the narration with Deepgram Aura-2, and measure it.
 //
-//   node scripts/voice.mjs          # only what's missing or changed
-//   node scripts/voice.mjs --force  # everything
+//   node scripts/voice.mjs                          # the long cut
+//   node scripts/voice.mjs narration-social.json     # the trailer
+//   node scripts/voice.mjs [script] --force          # regenerate regardless
 //
 // The measurement is the important half. Remotion needs to know how long each
 // line is BEFORE it renders, so this writes public/voice/durations.json and
@@ -17,8 +18,18 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
 const OUT = resolve(ROOT, "public/voice");
-const MODEL = process.env.DEEPGRAM_MODEL ?? "aura-2-thalia-en";
 const force = process.argv.includes("--force");
+const SCRIPT = process.argv.slice(2).find((a) => a.endsWith(".json")) ?? "narration.json";
+
+// One voice per cut. The long cut is a documentary and thalia reads it
+// straight; the trailer is a different film and gets a different mouth —
+// atlas is the enthusiastic one. Voices are per-script rather than global so
+// the two never drift into sounding like the same video.
+const VOICES = {
+  "narration.json": "aura-2-thalia-en",
+  "narration-social.json": "aura-2-atlas-en",
+};
+const MODEL = process.env.DEEPGRAM_MODEL ?? VOICES[SCRIPT] ?? "aura-2-thalia-en";
 
 function apiKey() {
   const raw = readFileSync(resolve(ROOT, "../.env.local"), "utf8");
@@ -29,7 +40,7 @@ function apiKey() {
   throw new Error("DEEPGRAM_API_KEY missing from the repo-root .env.local");
 }
 
-const script = JSON.parse(readFileSync(resolve(ROOT, "narration.json"), "utf8"));
+const script = JSON.parse(readFileSync(resolve(ROOT, SCRIPT), "utf8"));
 const lines = Object.entries(script).filter(([id]) => !id.startsWith("_"));
 
 mkdirSync(OUT, { recursive: true });
@@ -39,7 +50,7 @@ const previous = existsSync(manifestPath)
   : {};
 
 const key = apiKey();
-const manifest = {};
+const manifest = { ...previous };
 let generated = 0;
 
 for (const [id, text] of lines) {

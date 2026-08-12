@@ -185,6 +185,13 @@ export const Full: React.FC = () => (
                       clip={beat.shot}
                       durationInFrames={dur}
                       url={beat.url}
+                      cardWidth={1520}
+                      marginTop={122}
+                      region={
+                        beat.shot === "agenda-drag"
+                          ? { x: 0.58, y: 0.46, w: 0.72 }
+                          : undefined
+                      }
                     />
                   ) : beat.kind === "detail" ? (
                     <Detail

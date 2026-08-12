@@ -9,7 +9,8 @@ import React from "react";
 import { AbsoluteFill, Easing, interpolate, staticFile, useCurrentFrame } from "remotion";
 import { Video } from "@remotion/media";
 import { Chrome } from "./Screen";
-import { c } from "../theme";
+import inPoints from "../../public/clips/clips.json";
+import { c, FPS } from "../theme";
 
 const EASE = Easing.bezier(0.16, 1, 0.3, 1);
 
@@ -19,7 +20,13 @@ export const Clip: React.FC<{
   url?: string;
   cardWidth?: number;
   marginTop?: number;
-  /** seconds into the recording to start from */
+  /** region of the 1920x1080 recording to show, 0..1 source coords. A whole
+   *  page shrunk into a portrait card is unreadable — the drag beat needs the
+   *  grid, not the chrome around it. */
+  region?: { x: number; y: number; w: number };
+  /** seconds into the recording to start from; defaults to the in-point the
+   *  capture measured for this clip (recording begins during sign-in, so the
+   *  first several seconds are a login page, not the product) */
   startFrom?: number;
 }> = ({
   clip,
@@ -27,9 +34,15 @@ export const Clip: React.FC<{
   url,
   cardWidth = 1520,
   marginTop = 122,
-  startFrom = 0,
+  startFrom,
+  region,
 }) => {
   const frame = useCurrentFrame();
+  const measured =
+    (inPoints as Record<string, { startAt: number }>)[clip]?.startAt ?? 0;
+  const trimBefore = Math.round(
+    (startFrom !== undefined ? startFrom : measured / 1000) * FPS,
+  );
   const CARD_W = cardWidth;
   const IMG_H = (CARD_W / 16) * 9;
 
@@ -55,7 +68,7 @@ export const Clip: React.FC<{
         <div style={{ height: IMG_H, overflow: "hidden", position: "relative" }}>
           <Video
             src={staticFile(`clips/${clip}.mp4`)}
-            trimBefore={startFrom}
+            trimBefore={trimBefore}
             durationInFrames={durationInFrames}
             style={{
               position: "absolute",
@@ -63,6 +76,12 @@ export const Clip: React.FC<{
               width: "100%",
               height: "100%",
               objectFit: "fill",
+              ...(region
+                ? {
+                    scale: 1 / region.w,
+                    translate: `${(0.5 - Math.min(Math.max(region.x, region.w / 2), 1 - region.w / 2)) * 100 * (1 / region.w)}% ${(0.5 - Math.min(Math.max(region.y, region.w / 2), 1 - region.w / 2)) * 100 * (1 / region.w)}%`,
+                  }
+                : {}),
             }}
           />
         </div>

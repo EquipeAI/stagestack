@@ -12,7 +12,7 @@
 // refusing the illegal slot — happens *during* the drag, so cancelling gets
 // the whole shot without writing anything to the event the judges look at.
 
-import { rename } from "node:fs/promises";
+import { rename, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { open, signIn, settle, CLIPS, BASE } from "./lib.mjs";
 
@@ -21,6 +21,19 @@ const which = process.argv[2] ?? "drag";
 const app = (p = "") => `${BASE}/app/e/${EV}${p}`;
 
 const { browser, context, page } = await open({ video: true });
+// Recording starts when the context is created, which means the first several
+// seconds are sign-in and page load. The cut needs to know where the useful
+// part begins — guessing it by eye put the marketing homepage under a caption
+// about room conflicts — so each clip writes its own in-point.
+const startedAt = Date.now();
+
+async function markStart(name, preroll = 900) {
+  const file = resolve(CLIPS, "clips.json");
+  const all = JSON.parse(await readFile(file, "utf8").catch(() => "{}"));
+  all[name] = { startAt: Math.max(0, Date.now() - startedAt - preroll) };
+  await writeFile(file, JSON.stringify(all, null, 2) + "\n");
+  console.log(`  · ${name} in-point: ${all[name].startAt}ms`);
+}
 
 /** Playwright names the file by internal page id; give it the clip's name. */
 async function save(name) {
@@ -37,6 +50,7 @@ try {
   await settle(page, 3000);
 
   if (which === "views") {
+    await markStart("agenda-views");
     // Let each view breathe long enough to read before the next one.
     for (const view of ["List", "Day", "Week", "Track", "Room"]) {
       await page.getByRole("tab", { name: view, exact: true }).first().click();
@@ -56,6 +70,7 @@ try {
     if (!(await block.count())) throw new Error("no Lightning block to drag");
 
     await page.waitForTimeout(1200); // don't open mid-paint
+    await markStart("agenda-drag");
     await block.scrollIntoViewIfNeeded();
     // focus(), not click(): a click on a block opens its detail dialog.
     await block.focus();
