@@ -54,6 +54,36 @@ export type ParsedTable = {
   truncated: boolean;
 };
 
+/**
+ * Decode an uploaded text file to a string.
+ *
+ * UTF-8 first, strictly: if the bytes are not valid UTF-8 the file is almost
+ * certainly a legacy Windows export, so fall back to CP1252 rather than
+ * littering the abstracts with U+FFFD. Doing it in this order matters — every
+ * CP1252 byte sequence is *some* UTF-8-invalid input, but the reverse is not
+ * true, so trying UTF-8 first is the only way to tell them apart.
+ */
+export function decodeTextFile(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  // UTF-16 has to be checked by BOM first: its bytes are invalid UTF-8, so it
+  // would otherwise fall through to CP1252 and come back full of NULs. Excel's
+  // "Unicode Text (*.txt)" export is UTF-16LE TSV, and .txt/.tsv are both
+  // accepted here — SheetJS used to sniff this for us when it read the bytes.
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder("utf-16le").decode(bytes);
+  }
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder("utf-16be").decode(bytes);
+  }
+  try {
+    // TextDecoder strips a leading UTF-8 BOM itself, so Excel's CSV export
+    // can't glue one to the first header name.
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return new TextDecoder("windows-1252").decode(bytes);
+  }
+}
+
 export function parseImportFile(
   buffer: ArrayBuffer,
   filename: string,
@@ -61,7 +91,12 @@ export function parseImportFile(
   const lower = filename.toLowerCase();
   let aoa: unknown[][];
   if (lower.endsWith(".csv") || lower.endsWith(".txt") || lower.endsWith(".tsv")) {
-    const wb = XLSX.read(new Uint8Array(buffer), { type: "array", raw: true });
+    // Decode ourselves rather than handing bytes to SheetJS: given a text file
+    // as an array it guesses CP1252, so a UTF-8 em-dash (E2 80 94) arrives as
+    // "â€”" — and that corruption is what gets stored and published, since the
+    // agent plans from the decoded string. Excel and Sheets both export UTF-8,
+    // Excel with a BOM, which would otherwise glue itself to the first header.
+    const wb = XLSX.read(decodeTextFile(buffer), { type: "string", raw: true });
     const sheet = wb.Sheets[wb.SheetNames[0]];
     aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false }) as unknown[][];
   } else {

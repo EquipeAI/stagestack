@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
@@ -313,6 +313,53 @@ function UploadView({
   )
 }
 
+/**
+ * The agent is still planning.
+ *
+ * This state used to be a spinner and nothing else, which made it the one
+ * dead end in the flow: the page auto-resumes the most recent job, so leaving
+ * and coming back returns here, and only the job itself reaching done/failed
+ * could release you. When the worker was wedged, that was a fourteen-minute
+ * wait with no way to start a different import. The escape hatch the failed
+ * branch already offers belongs here too.
+ */
+function PlanningView({ onRestart }: { onRestart: () => void }) {
+  const [seconds, setSeconds] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setSeconds((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
+  // We promise "under a minute" — so once that promise is broken, say so
+  // rather than showing the same reassuring copy indefinitely.
+  const overdue = seconds >= 75
+
+  return (
+    <Card
+      title="Planning your import…"
+      subtitle="The agent is reading the file and matching it against this event."
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <p style={{ color: 'var(--text-tertiary)' }}>
+          This usually takes under a minute. You can leave this page; the plan
+          will be waiting on your return.
+        </p>
+        {overdue ? (
+          // role="status" so someone parked on the spinner with a screen
+          // reader hears the wait explained, rather than nothing at all.
+          <Callout role="status" tone="attention" title="This is taking longer than usual">
+            The file is still queued with the import agent. You can keep
+            waiting, or start over with another file — nothing has been written
+            to your event either way.
+          </Callout>
+        ) : null}
+        <div>
+          <Button onClick={onRestart}>Start over</Button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 function PlanView({
   eventSlug,
   jobId,
@@ -363,14 +410,7 @@ function PlanView({
     )
   }
   if (plan === null) {
-    return (
-      <Card title="Planning your import…" subtitle="The agent is reading the file and matching it against this event.">
-        <p style={{ color: 'var(--text-tertiary)' }}>
-          This usually takes under a minute. You can leave this page; the plan
-          will be waiting on your return.
-        </p>
-      </Card>
-    )
+    return <PlanningView onRestart={onRestart} />
   }
 
   const toggle = (id: string) => {
