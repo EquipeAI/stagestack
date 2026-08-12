@@ -8,44 +8,57 @@
     "sentence you are simultaneously reading is the fastest way to make a demo",
     "feel like a slideshow.",
     "",
+    "This rule is easy to write and easy to break — the first draft broke it in",
+    "half the beats, because the obvious thing to say about a shot is the thing",
+    "already written on it. Before changing a line, open src/beats.ts and read",
+    "the caption it plays under. If the two sentences share a phrase, one of",
+    "them is wasted.",
+    "",
+    "Second rule, learned from the voice itself: no unusual compound words.",
+    "Aura-2 read \"self-hostable\" with the stress of \"hostage\". It has no SSML",
+    "and no phoneme tags, so the fix is different words, not clever spelling —",
+    "\"it runs on your own servers\". Check with: node scripts/voice-check.mjs",
+    "",
     "Regenerate audio with: node scripts/voice.mjs"
   ],
 
   "open": "Running a conference is six spreadsheets, four hundred emails, and a forty thousand dollar tool the customer called slow. Twice. On camera. So here is the same job, start to finish, in one product.",
 
   "act-Import": "It starts the way it always starts. Somebody hands you a spreadsheet.",
-  "beat-d-import-2-plan": "So hand it straight to StageStack. An agent reads the file, works out what each row is, and writes back a plan.",
-  "beat-d-import-record": "Every row is accounted for, and nothing touches your event until you say so.",
+  "beat-d-import-2-plan": "Don't clean it up first. Drop it in as-is, and watch what comes back.",
+  "beat-d-import-record": "And if it guessed wrong about a row, you fix that one row — not the whole file.",
 
-  "act-Call": "Now you need submissions.",
-  "beat-03-cfp-builder": "The call for speakers is yours to shape. Sections, questions, what's required.",
+  "act-Call": "Now you need talks.",
+  "beat-03-cfp-builder": "You build the form yourself, in the app, in an afternoon.",
   "beat-d-cfp-conditional": "And it can ask a workshop something it would never ask a lightning talk.",
-  "beat-06-public-cfp": "Publish it, and speakers get a form that remembers where they left off.",
+  "beat-06-public-cfp": "Because the best talk you'll get this year is one that someone almost didn't finish submitting.",
 
   "act-Review": "Then the reading starts.",
-  "beat-19-reviewer-scoring": "Reviewers get a queue instead of a spreadsheet, and they cannot see whose talk they're scoring.",
-  "beat-d-scorecard": "You decide once what matters, and every reviewer's score lands on that same scale.",
+  "beat-19-reviewer-scoring": "Every committee promises blind review. This one can't cheat.",
+  "beat-d-scorecard": "So when two reviewers disagree, you can see by how much.",
 
   "act-Decide": "Which makes the decision the easy part.",
-  "beat-16-proposals-table": "Sort, stage every outcome, and release them together.",
-  "beat-12-comms": "The messages are already written.",
-  "beat-12b-comms-log": "And every one of them keeps its receipt. This is real mail, with a real calendar invite attached.",
+  "beat-16-proposals-table": "Nobody hears yes before everybody's decided. When you release, it all goes at once.",
+  "beat-12-comms": "You didn't write any of these.",
+  "beat-12b-comms-log": "And when a speaker says they never got it, you don't have to guess.",
 
-  "beat-40-gmail-invite": "That is not a screenshot of our own app. That is a real inbox, and Google has already read the invitation and offered to put it on her calendar.",
+  "beat-40-gmail-invite": "This is not our app. That is a real inbox, and Google has already understood the invitation and offered to put it on her calendar.",
 
   "act-Schedule": "Then the puzzle.",
-  "beat-agenda-drag": "Drag a session where you want it. Put two things in one room and it tells you immediately, on both cards, without reloading anything.",
+  "beat-agenda-drag": "Drag a session wherever you want it. If it can't live there, it says so on the spot. No save, no refresh.",
   "beat-agenda-views": "And the same program reads five different ways, because the committee, the attendees and you are not looking for the same thing.",
 
   "act-Prep": "Now the part that usually eats your month.",
-  "beat-08-speaker-portal": "Speakers get their own page, so they stop asking you what they're missing.",
-  "beat-d-speaker-slot": "They see their slot in their own timezone, and can flag a clash without emailing you.",
-  "beat-d-ops-warning": "And you get told what's outstanding. Not from a checklist you maintain, but from the data itself.",
-  "beat-26-speaker-tasks": "The reminders go out on their own.",
+  "beat-08-speaker-portal": "Give the speakers somewhere to look, and they stop looking at you.",
+  "beat-d-speaker-slot": "Half your inbox used to be this one question. Now it answers itself.",
+  "beat-d-ops-warning": "You didn't tell it that someone's headshot was missing. It noticed.",
+  "beat-26-speaker-tasks": "And the chasing? You never do it again.",
 
-  "act-Publish": "And then you're done.",
-  "beat-28-public-event-page": "One click, and the program you just built is the program the world sees.",
-  "beat-29-embed-widget": "On your own site too, with feeds for everything else.",
+  "beat-realtime": "That is why it is built the way it is. You find out at the same moment they do, without asking, and without looking.",
 
-  "close": "StageStack. One event, end to end. Open source, self hostable, and no per-event pricing."
+  "act-Publish": "And then — the part nobody believes — you're done.",
+  "beat-28-public-event-page": "One click. No export, no designer, no version that's three weeks stale.",
+  "beat-29-embed-widget": "And if you already have a website, the program lives there too.",
+
+  "close": "That was the job the forty thousand dollar tool was doing. StageStack. It's open source, it runs on your own servers, and it never charges you per event."
 }

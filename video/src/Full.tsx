@@ -11,11 +11,12 @@ import { AbsoluteFill, staticFile, Img } from "remotion";
 import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { Audio } from "@remotion/media";
-import { staticFile as sf } from "remotion";
+import { staticFile as sf, interpolate } from "remotion";
 import { ACTS, timed } from "./beats";
 import { Screen } from "./components/Screen";
 import { Detail } from "./components/Detail";
 import { Clip } from "./components/Clip";
+import { Split } from "./components/Split";
 import { Caption, Statement } from "./components/Caption";
 import { ActCard } from "./components/ActCard";
 import { Rail, STAGES } from "./components/Rail";
@@ -43,6 +44,27 @@ export const fullDuration = () =>
  *  not begin under the outgoing crossfade. */
 const Line: React.FC<{ id: string }> = ({ id }) => (
   <Audio src={sf(`voice/${id}.mp3`)} from={XFADE} />
+);
+
+/** The score, well under the narration. Lyria was briefed to stay even and
+ *  undramatic precisely so a single low gain works for the whole cut — see
+ *  scripts/music.mjs. Raise VOLUME if you want it more present; there is
+ *  nothing else to balance. */
+const VOLUME = 0.12;
+
+const Score: React.FC<{ durationInFrames: number }> = ({ durationInFrames }) => (
+  <Audio
+    src={sf("music/score.mp3")}
+    volume={(f) =>
+      VOLUME *
+      interpolate(
+        f,
+        [0, s(2), durationInFrames - s(3), durationInFrames],
+        [0, 1, 1, 0],
+        { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+      )
+    }
+  />
 );
 
 const Ground: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
@@ -111,6 +133,7 @@ const CloseCard: React.FC = () => (
 
 export const Full: React.FC = () => (
   <AbsoluteFill style={{ background: c.gray950 }}>
+    <Score durationInFrames={fullDuration()} />
     <TransitionSeries>
       <TransitionSeries.Sequence durationInFrames={OPEN} name="Cold open">
         <OpenCard />
@@ -155,7 +178,9 @@ export const Full: React.FC = () => (
               >
                 <Ground>
                   <Rail active={act.stage} />
-                  {beat.kind === "clip" ? (
+                  {beat.kind === "split" ? (
+                    <Split durationInFrames={dur} />
+                  ) : beat.kind === "clip" ? (
                     <Clip
                       clip={beat.shot}
                       durationInFrames={dur}

@@ -51,8 +51,9 @@ export type Beat = {
   shot: string;
   seconds: number;
   /** "screen" = full page in browser chrome; "detail" = one framed element;
-   *  "clip" = a screen recording of the real UI in that same window */
-  kind?: "screen" | "detail" | "clip";
+   *  "clip" = a screen recording of the real UI in that same window;
+   *  "split" = two recordings side by side, time-aligned */
+  kind?: "screen" | "detail" | "clip" | "split";
   from?: Focus;
   to?: Focus;
   /** detail only: fraction of the safe area to fill */
@@ -256,6 +257,14 @@ export const ACTS: Act[] = [
         seconds: timed("beat-26-speaker-tasks", 3.6),
         url: `${APP}/tasks`,
         caption: "The reminders go out on their own. You go do something else.",
+      },
+      {
+        // Two recordings, not one: the claim is simultaneity, so cutting
+        // between the screens would destroy the thing being shown.
+        shot: "realtime",
+        kind: "split",
+        seconds: timed("beat-realtime", 8.5),
+        caption: "The speaker ticks one box. Nobody pressed refresh on the right.",
       },
     ],
   },
