@@ -77,10 +77,10 @@ export const ACTS: Act[] = [
       {
         shot: "d-import-record",
         kind: "detail",
-        seconds: 4.2,
-        scale: 0.9,
+        seconds: 4.4,
+        scale: 0.95,
         caption:
-          "Row by row, with its reasoning — and nothing is written until you approve.",
+          "Every row mapped and explained, every one of them yours to uncheck. Nothing is written until you approve.",
       },
     ],
   },

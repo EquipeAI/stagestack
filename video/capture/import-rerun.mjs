@@ -4,9 +4,9 @@
 // clicked. Nothing is ever approved — the plan is an un-written proposal, which
 // is exactly the state the video shows.
 //
-// The fixture CSV is deliberately ASCII: the parser currently decodes UTF-8 as
-// latin-1, so an em-dash arrives as "â€". Real product bug, reported
-// separately — but the demo should not ship a screenshot of it.
+// The fixture CSV deliberately contains em-dashes. The parser used to decode
+// UTF-8 as CP1252, so they arrived as "â€" and the corruption was what got
+// stored; this file is now the demo's own regression test for that fix.
 
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
