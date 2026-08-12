@@ -3,6 +3,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { requireOrganizer } from "../lib/functions";
 import { isPublished, publicationFlags } from "./publish";
+import { isDraftRound } from "./reviews";
 import { isOpen, isOverdue } from "./tasks";
 import { eventUserDisplayName } from "./userDisplay";
 import { takeCapped } from "./validation";
@@ -296,10 +297,14 @@ export async function attentionPanel(
   // "Late" is a property of the ROUND (its closesAt), so an event with no
   // round deadlines reports incompleteness without ever calling anyone
   // overdue — which is the truth, not a softened version of it.
+  // Rounds the launch flow is still building govern nothing yet (W11), so
+  // their windows never make anyone overdue and they never stand in as the
+  // default round legacy review rows read through.
+  const liveRounds = rounds.rows.filter((r) => !isDraftRound(r));
   const roundClosesAt = new Map<Id<"reviewRounds">, number | undefined>(
-    rounds.rows.map((r) => [r._id, r.closesAt]),
+    liveRounds.map((r) => [r._id, r.closesAt]),
   );
-  const defaultRound = [...rounds.rows].sort((a, b) => a.order - b.order)[0];
+  const defaultRound = [...liveRounds].sort((a, b) => a.order - b.order)[0];
   let incompleteReviews = 0;
   const overdueReviewers = new Set<Id<"users">>();
   for (const review of reviews.rows) {

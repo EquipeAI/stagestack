@@ -509,6 +509,16 @@ export default defineSchema({
     /** Per-reviewer assignment ceiling for auto-distribute; no cap when unset. */
     reviewerCap: v.optional(v.number()),
     scorecard: vScorecard,
+    /**
+     * Set while the launch flow is still building the round (W11).
+     *
+     * Polarity is deliberate: ABSENCE means launched, so every row written
+     * before this field existed keeps exactly today's behavior with no
+     * migration. A draft round is visible only on the organizer's plan list
+     * (as a draft) — it assigns nothing, reaches no reviewer, and counts
+     * toward no readiness number until `launchRound` clears the marker.
+     */
+    draft: v.optional(v.boolean()),
     updatedAt: v.number(),
   }).index("by_eventId", ["eventId"]),
 

@@ -37,17 +37,43 @@ function Reviews() {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const tab = search.tab ?? 'queue'
+  // Switching tabs unmounts the launch flow, which is a way to lose work (and
+  // to orphan a draft round) without being asked. The flow registers an
+  // interceptor here; when it takes the navigation over it runs `go` itself,
+  // once the organizer has answered.
+  const leaveGuard = useRef<((proceed: () => void) => boolean) | null>(null)
   const setTab = (next: string) => {
-    void navigate({
-      search: next === 'queue' ? {} : { tab: next as 'plan' | 'progress' },
-      replace: true,
-    })
+    const go = () => {
+      // `flow` is deliberately not carried across tabs.
+      void navigate({
+        search: next === 'queue' ? {} : { tab: next as 'plan' | 'progress' },
+        replace: true,
+      })
+    }
+    if (leaveGuard.current !== null && leaveGuard.current(go)) return
+    go()
   }
   const isOrganizer = event !== undefined && event.role === 'organizer'
 
   const view =
     isOrganizer && tab === 'plan' ? (
-      <RoundsPanel eventSlug={eventSlug} timezone={event.event.timezone} />
+      <RoundsPanel
+        eventSlug={eventSlug}
+        timezone={event.event.timezone}
+        flow={search.flow}
+        onOpenFlow={(flow) => {
+          void navigate({
+            search: flow === undefined ? { tab: 'plan' } : { tab: 'plan', flow },
+            replace: true,
+          })
+        }}
+        onOpenProgress={() => {
+          void navigate({ search: { tab: 'progress' } })
+        }}
+        registerLeaveGuard={(guard) => {
+          leaveGuard.current = guard
+        }}
+      />
     ) : isOrganizer && tab === 'progress' ? (
       <ProgressPanel eventSlug={eventSlug} />
     ) : (

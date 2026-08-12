@@ -634,18 +634,18 @@ than by keeping the table on screen.
 
 ## W11 — Review round launch flow
 
-- [ ] Turn round setup (`apps/web/src/components/reviews/RoundsPanel.tsx`, 807
+- [x] Turn round setup (`apps/web/src/components/reviews/RoundsPanel.tsx`, 807
       lines) into a guided flow: basics → scorecard → reviewers and pools →
       eligible proposals → assignment policy → blind preview → launch summary.
-- [ ] **The summary states consequences in sentences**: "2 proposals will be
+- [x] **The summary states consequences in sentences**: "2 proposals will be
       assigned to Sam Whitfield. Both already have released decisions; those
       decisions will not change. Reviewer identities are hidden. Cap: 2."
-- [ ] **Outcomes explain themselves**: replace `Assigned 0 · unplaced 0` with
+- [x] **Outcomes explain themselves**: replace `Assigned 0 · unplaced 0` with
       "No new assignments: both selected proposals are already assigned."
-- [ ] **"Preview as reviewer"** on every blind round — demonstrate anonymity
+- [x] **"Preview as reviewer"** on every blind round — demonstrate anonymity
       rather than asking the organizer to reason about which custom fields carry
       identity. This is also the cheapest guard against a blind-round leak.
-- [ ] Post-launch dashboard: per-reviewer progress and overdue state (exists —
+- [x] Post-launch dashboard: per-reviewer progress and overdue state (exists —
       wire it as the flow's destination).
 - *Mobile*: one step per screen, sticky Back/Next, the summary readable without
   horizontal scroll.

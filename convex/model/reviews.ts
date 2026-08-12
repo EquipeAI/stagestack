@@ -110,6 +110,8 @@ export type RoundInfo = {
   anonymized: boolean;
   reviewerCap?: number;
   scorecard: ScorecardField[];
+  /** True only while the launch flow is still building this round (W11). */
+  draft: boolean;
 };
 
 /** The events that predate rounds behave as one implicit round carrying the
@@ -121,6 +123,7 @@ function virtualLegacyRound(): RoundInfo {
     order: 0,
     anonymized: false,
     scorecard: legacyScorecard(),
+    draft: false,
   };
 }
 
@@ -136,6 +139,37 @@ export async function listRoundDocs(
   return rounds.sort((a, b) => a.order - b.order);
 }
 
+/**
+ * A round the launch flow is still building (W11). ABSENCE of the marker
+ * means launched, so every row written before the field existed reads as a
+ * live round and nothing had to be migrated.
+ */
+export function isDraftRound(round: Doc<"reviewRounds">): boolean {
+  return round.draft === true;
+}
+
+/** Every round that actually governs review work. This is what the reviewer
+ * queue, the progress board, auto-distribute and the legacy-row fallback all
+ * read; the organizer's plan list is the ONE surface that also sees drafts. */
+export async function launchedRoundDocs(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Array<Doc<"reviewRounds">>> {
+  return (await listRoundDocs(ctx, eventId)).filter(
+    (round) => !isDraftRound(round),
+  );
+}
+
+/** A draft round is a plan, not a policy — nothing may assign through it
+ * until the flow launches it. */
+function assertLaunchedRound(round: Doc<"reviewRounds">): void {
+  if (isDraftRound(round)) {
+    invalidStatus(
+      `"${round.name}" has not been launched yet — finish its launch flow before assigning to it.`,
+    );
+  }
+}
+
 function roundInfo(round: Doc<"reviewRounds">): RoundInfo {
   return {
     roundId: round._id,
@@ -146,6 +180,7 @@ function roundInfo(round: Doc<"reviewRounds">): RoundInfo {
     anonymized: round.anonymized,
     reviewerCap: round.reviewerCap,
     scorecard: round.scorecard,
+    draft: isDraftRound(round),
   };
 }
 
@@ -168,7 +203,7 @@ async function defaultRound(
   ctx: MutationCtx,
   event: Doc<"events">,
 ): Promise<Doc<"reviewRounds">> {
-  const rounds = await listRoundDocs(ctx, event._id);
+  const rounds = await launchedRoundDocs(ctx, event._id);
   if (rounds.length > 0) return rounds[0];
   const id = await ctx.db.insert("reviewRounds", {
     eventId: event._id,
@@ -240,6 +275,10 @@ export type RoundInput = {
   anonymized: boolean;
   reviewerCap?: number;
   scorecard: ScorecardField[];
+  /** Create it as a draft: the launch flow materializes the round before the
+   * organizer has decided anything, and a half-built round must not govern
+   * review work. Only `launchRound` clears it. */
+  draft?: boolean;
 };
 
 function assertRoundInput(input: RoundInput): void {
@@ -295,6 +334,7 @@ export async function createRound(
     anonymized: input.anonymized,
     reviewerCap: input.reviewerCap,
     scorecard: input.scorecard,
+    draft: input.draft === true ? true : undefined,
     updatedAt: Date.now(),
   });
   await logAudit(ctx, {
@@ -374,7 +414,7 @@ export async function deleteRound(
   // A round with review rows is history, not clutter. Legacy rows (no
   // roundId) read through the FIRST round, so deleting that round would
   // silently reinterpret them under another scorecard — refuse that too.
-  const rounds = await listRoundDocs(ctx, caller.event._id);
+  const rounds = await launchedRoundDocs(ctx, caller.event._id);
   const isFirst = rounds.length > 0 && rounds[0]._id === roundId;
   const anyReview = await ctx.db
     .query("reviews")
@@ -567,6 +607,7 @@ export async function assignReviewers(
     roundId === undefined
       ? await defaultRound(ctx, caller.event)
       : await requireRound(ctx, caller, roundId);
+  assertLaunchedRound(round);
   // Assignment implies pool membership — the pool is the source of truth for
   // auto-distribute and the progress board.
   await ensurePoolMembership(ctx, caller.event._id, round._id, reviewerUserId);
@@ -575,7 +616,7 @@ export async function assignReviewers(
   // Legacy rows (no roundId) belong to the FIRST round only — attributing
   // them to whichever round is being processed would corrupt later rounds'
   // dedupe (codex W2 review).
-  const allRounds = await listRoundDocs(ctx, caller.event._id);
+  const allRounds = await launchedRoundDocs(ctx, caller.event._id);
   const firstRoundId = allRounds[0]?._id;
   const existing = await ctx.db
     .query("reviews")
@@ -636,6 +677,241 @@ export async function assignReviewers(
   return { assigned, skipped };
 }
 
+// ── The assignment planner (W11) ─────────────────────────────────────────
+//
+// ONE implementation of "who gets what". The launch summary reads it through
+// a query, the launch mutation re-derives it before writing, and
+// auto-distribute is the same planner with the preview step skipped — so the
+// sentences an organizer approved and the rows that get inserted can never
+// come from two different pieces of arithmetic (the W2 suggest/apply
+// contract, including its stale-plan refusal).
+
+export type PlannerInput = {
+  round: Doc<"reviewRounds">;
+  /** Pool membership, in pool order — the planner's tie-break order. */
+  poolUserIds: Array<Id<"users">>;
+  /** Reviewable proposals this run may touch. The planner canonicalizes the
+   * order itself, so the same SET always produces the same plan however the
+   * client happened to list it. */
+  candidates: Array<Doc<"proposals">>;
+  /** Every review row already attributed to this round. */
+  roundReviews: Array<Doc<"reviews">>;
+  perProposal: number;
+};
+
+export type PlannedAssignment = {
+  proposalId: Id<"proposals">;
+  title: string;
+  reviewerUserId: Id<"users">;
+};
+
+export type DistributionPlan = {
+  assignments: PlannedAssignment[];
+  /** Review slots no eligible reviewer could take (everyone at the cap). */
+  unplaced: number;
+  perReviewer: Array<{ userId: Id<"users">; assigned: number; total: number }>;
+  /** Candidates that already hold the reviews this round asks for. */
+  alreadyCovered: number;
+};
+
+/**
+ * Least-loaded-first distribution across the round's pool, respecting the
+ * per-reviewer cap and never duplicating a (proposal, reviewer) pair.
+ * Conflicted reviews keep the pair blocked but release the reviewer's cap and
+ * the proposal's coverage, so a replacement can still be placed.
+ *
+ * Pure: it reads only its input and writes nothing, which is what lets the
+ * preview and the mutation run the very same code.
+ */
+function planDistribution(input: PlannerInput): DistributionPlan {
+  const { round, poolUserIds, roundReviews, perProposal } = input;
+  // Canonical order, here rather than in the fingerprint: a plan is a
+  // function of the SET of selected proposals, so two clients that name the
+  // same proposals in a different order must get the same assignments — and
+  // then the fingerprint agrees by construction rather than by luck.
+  const candidates = [...input.candidates].sort((a, b) =>
+    a._id < b._id ? -1 : a._id > b._id ? 1 : 0,
+  );
+  const load = new Map<Id<"users">, number>();
+  for (const userId of poolUserIds) load.set(userId, 0);
+  const pairs = new Set<string>();
+  const covered = new Map<Id<"proposals">, number>();
+  for (const review of roundReviews) {
+    pairs.add(`${review.proposalId}:${review.reviewerUserId}`);
+    if (review.status === "conflict") continue;
+    if (load.has(review.reviewerUserId)) {
+      load.set(
+        review.reviewerUserId,
+        (load.get(review.reviewerUserId) ?? 0) + 1,
+      );
+    }
+    covered.set(review.proposalId, (covered.get(review.proposalId) ?? 0) + 1);
+  }
+
+  const cap = round.reviewerCap;
+  const assignments: PlannedAssignment[] = [];
+  const assignedPer = new Map<Id<"users">, number>();
+  let unplaced = 0;
+  let alreadyCovered = 0;
+  for (const proposal of candidates) {
+    let needed = perProposal - (covered.get(proposal._id) ?? 0);
+    if (needed <= 0) {
+      alreadyCovered += 1;
+      continue;
+    }
+    while (needed > 0) {
+      const target = poolUserIds
+        .filter(
+          (userId) =>
+            !pairs.has(`${proposal._id}:${userId}`) &&
+            (cap === undefined || (load.get(userId) ?? 0) < cap),
+        )
+        .sort((a, b) => (load.get(a) ?? 0) - (load.get(b) ?? 0))[0];
+      if (target === undefined) {
+        unplaced += 1;
+        break;
+      }
+      assignments.push({
+        proposalId: proposal._id,
+        title: proposal.title,
+        reviewerUserId: target,
+      });
+      pairs.add(`${proposal._id}:${target}`);
+      load.set(target, (load.get(target) ?? 0) + 1);
+      assignedPer.set(target, (assignedPer.get(target) ?? 0) + 1);
+      needed -= 1;
+    }
+  }
+
+  return {
+    assignments,
+    unplaced,
+    alreadyCovered,
+    perReviewer: poolUserIds.map((userId) => ({
+      userId,
+      assigned: assignedPer.get(userId) ?? 0,
+      total: load.get(userId) ?? 0,
+    })),
+  };
+}
+
+/**
+ * FNV-1a over EVERYTHING `buildLaunchPlan` reads — the loader's output is the
+ * dependency set, so the fingerprint is taken over a canonical rendering of
+ * exactly that. Anything that shapes the plan (pool, candidates, existing
+ * assignments, cap) or merely shapes the SENTENCES (scorecard, window, blind
+ * flag, reviewer display names) is in here: launching must apply the plan the
+ * organizer read, not a different one that happens to assign the same rows.
+ */
+function fingerprintOf(
+  input: PlannerInput,
+  names: Map<Id<"users">, string>,
+): string {
+  const canonical = JSON.stringify({
+    round: {
+      id: input.round._id,
+      name: input.round.name,
+      order: input.round.order,
+      opensAt: input.round.opensAt ?? null,
+      closesAt: input.round.closesAt ?? null,
+      anonymized: input.round.anonymized,
+      reviewerCap: input.round.reviewerCap ?? null,
+      draft: isDraftRound(input.round),
+      scorecard: input.round.scorecard,
+    },
+    perProposal: input.perProposal,
+    pool: [...input.poolUserIds]
+      .map((userId) => `${userId}:${names.get(userId) ?? ""}`)
+      .sort(),
+    candidates: input.candidates
+      .map((p) => `${p._id}:${p.status}:${p.contentVersion ?? 0}`)
+      .sort(),
+    reviews: input.roundReviews
+      .map((r) => `${r.proposalId}:${r.reviewerUserId}:${r.status}`)
+      .sort(),
+  });
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < canonical.length; i += 1) {
+    hash ^= canonical.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/** Load exactly what the planner reads. Shared by the preview, the launch and
+ * auto-distribute so all three see one world. */
+async function loadPlannerInput(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  roundId: Id<"reviewRounds">,
+  options: {
+    proposalIds?: Array<Id<"proposals">>;
+    perProposal?: number;
+  },
+): Promise<PlannerInput> {
+  const round = await requireRound(ctx, caller, roundId);
+  const pool = await completeRoundPool(ctx, round._id);
+  // Mirror the client's rule rather than clamping it: clamping accepts a
+  // NaN or a 1.5 the flow already refused, and then assigns something the
+  // organizer never asked for.
+  const perProposal = options.perProposal ?? 1;
+  if (!Number.isInteger(perProposal) || perProposal < 1) {
+    throw new ConvexError({
+      code: "invalid_cap",
+      message: "Reviews per proposal must be a whole number, at least 1.",
+    });
+  }
+
+  let candidates: Array<Doc<"proposals">>;
+  if (options.proposalIds !== undefined) {
+    if (options.proposalIds.length > MAX_BULK) {
+      throw new ConvexError({
+        code: "too_many",
+        message: `At most ${MAX_BULK} proposals at a time.`,
+      });
+    }
+    candidates = [];
+    for (const id of new Set(options.proposalIds)) {
+      const proposal = await ctx.db.get("proposals", id);
+      if (proposal === null || proposal.eventId !== caller.event._id) {
+        notFound("proposal", "No such proposal on this event.");
+      }
+      if (canEnterReviewRound(proposal)) candidates.push(proposal);
+    }
+  } else {
+    const all = await ctx.db
+      .query("proposals")
+      .withIndex("by_eventId_and_status", (q) =>
+        q.eq("eventId", caller.event._id),
+      )
+      .take(REVIEW_SCAN + 1);
+    assertCompleteScan(all, REVIEW_SCAN, "proposals");
+    candidates = all.filter(canEnterReviewRound);
+  }
+
+  // Legacy rows (no roundId) belong to the FIRST round only — attributing
+  // them to whichever round is being planned would corrupt later rounds.
+  const allRounds = await launchedRoundDocs(ctx, caller.event._id);
+  const firstRoundId = allRounds[0]?._id;
+  const reviews = await ctx.db
+    .query("reviews")
+    .withIndex("by_eventId_and_reviewerUserId", (q) =>
+      q.eq("eventId", caller.event._id),
+    )
+    .take(REVIEW_SCAN + 1);
+  assertCompleteScan(reviews, REVIEW_SCAN, "reviews");
+
+  return {
+    round,
+    poolUserIds: pool.map((member) => member.userId),
+    candidates,
+    roundReviews: reviews.filter(
+      (r) => (r.roundId ?? firstRoundId) === round._id,
+    ),
+    perProposal,
+  };
+}
+
 export type DistributeResult = {
   assigned: number;
   perReviewer: Array<{ userId: Id<"users">; assigned: number; total: number }>;
@@ -657,112 +933,19 @@ export async function autoDistribute(
 ): Promise<DistributeResult> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
-  const round = await requireRound(ctx, caller, roundId);
-  const pool = await completeRoundPool(ctx, round._id);
-  if (pool.length === 0) {
+  if (options?.proposalIds !== undefined) assertBulkSize(options.proposalIds);
+  const input = await loadPlannerInput(ctx, caller, roundId, options ?? {});
+  // A draft round is still being built in the launch flow — it assigns
+  // nothing until the flow says so.
+  assertLaunchedRound(input.round);
+  if (input.poolUserIds.length === 0) {
     throw new ConvexError({
       code: "empty_pool",
       message: "Add at least one reviewer to this round first.",
     });
   }
-  const perProposal = Math.max(1, options?.perProposal ?? 1);
-
-  // Candidate proposals: the explicit selection, or every reviewable one.
-  let candidates: Array<Doc<"proposals">>;
-  if (options?.proposalIds !== undefined) {
-    assertBulkSize(options.proposalIds);
-    candidates = [];
-    for (const id of new Set(options.proposalIds)) {
-      const proposal = await ctx.db.get("proposals", id);
-      if (proposal === null || proposal.eventId !== caller.event._id) {
-        notFound("proposal", "No such proposal on this event.");
-      }
-      if (canEnterReviewRound(proposal)) candidates.push(proposal);
-    }
-  } else {
-    const all = await ctx.db
-      .query("proposals")
-      .withIndex("by_eventId_and_status", (q) =>
-        q.eq("eventId", caller.event._id),
-      )
-      .take(REVIEW_SCAN + 1);
-    assertCompleteScan(all, REVIEW_SCAN, "proposals");
-    candidates = all.filter(canEnterReviewRound);
-  }
-
-  // Current load + existing pairs in one event-wide scan. Legacy rows (no
-  // roundId) attribute to the FIRST round only; conflicted reviews keep the
-  // (proposal, reviewer) pair blocked but release the reviewer's cap and the
-  // proposal's coverage so a replacement can be assigned (codex W2 review).
-  const allRounds = await listRoundDocs(ctx, caller.event._id);
-  const firstRoundId = allRounds[0]?._id;
-  const reviews = await ctx.db
-    .query("reviews")
-    .withIndex("by_eventId_and_reviewerUserId", (q) =>
-      q.eq("eventId", caller.event._id),
-    )
-    .take(REVIEW_SCAN + 1);
-  assertCompleteScan(reviews, REVIEW_SCAN, "reviews");
-  const inRound = reviews.filter(
-    (r) => (r.roundId ?? firstRoundId) === round._id,
-  );
-  const load = new Map<Id<"users">, number>();
-  for (const member of pool) load.set(member.userId, 0);
-  const pairs = new Set<string>();
-  const perProposalCount = new Map<Id<"proposals">, number>();
-  for (const review of inRound) {
-    pairs.add(`${review.proposalId}:${review.reviewerUserId}`);
-    if (review.status === "conflict") continue;
-    if (load.has(review.reviewerUserId)) {
-      load.set(
-        review.reviewerUserId,
-        (load.get(review.reviewerUserId) ?? 0) + 1,
-      );
-    }
-    perProposalCount.set(
-      review.proposalId,
-      (perProposalCount.get(review.proposalId) ?? 0) + 1,
-    );
-  }
-
-  const cap = round.reviewerCap;
-  const now = Date.now();
-  const assignedPer = new Map<Id<"users">, number>();
-  let assigned = 0;
-  let unplaced = 0;
-  for (const proposal of candidates) {
-    let needed = perProposal - (perProposalCount.get(proposal._id) ?? 0);
-    while (needed > 0) {
-      // Least-loaded eligible pool member for THIS proposal.
-      const eligible = pool
-        .map((m) => m.userId)
-        .filter(
-          (userId) =>
-            !pairs.has(`${proposal._id}:${userId}`) &&
-            (cap === undefined || (load.get(userId) ?? 0) < cap),
-        )
-        .sort((a, b) => (load.get(a) ?? 0) - (load.get(b) ?? 0));
-      const target = eligible[0];
-      if (target === undefined) {
-        unplaced += 1;
-        break;
-      }
-      await ctx.db.insert("reviews", {
-        eventId: caller.event._id,
-        proposalId: proposal._id,
-        reviewerUserId: target,
-        roundId: round._id,
-        status: "assigned",
-        contentVersion: proposal.contentVersion ?? 0,
-        updatedAt: now,
-      });
-      pairs.add(`${proposal._id}:${target}`);
-      load.set(target, (load.get(target) ?? 0) + 1);
-      assignedPer.set(target, (assignedPer.get(target) ?? 0) + 1);
-      assigned += 1;
-      needed -= 1;
-    }
-  }
+  const plan = planDistribution(input);
+  await writeAssignments(ctx, caller, input.round._id, plan);
 
   await logAudit(ctx, {
     orgId: caller.org._id,
@@ -770,18 +953,386 @@ export async function autoDistribute(
     actorUserId: caller.user._id,
     action: "review.autoDistribute",
     targetType: "reviewRound",
-    targetId: round._id,
-    meta: { assigned, unplaced, candidates: candidates.length },
+    targetId: input.round._id,
+    meta: {
+      assigned: plan.assignments.length,
+      unplaced: plan.unplaced,
+      candidates: input.candidates.length,
+    },
   });
   return {
-    assigned,
-    unplaced,
-    perReviewer: pool.map((m) => ({
-      userId: m.userId,
-      assigned: assignedPer.get(m.userId) ?? 0,
-      total: load.get(m.userId) ?? 0,
+    assigned: plan.assignments.length,
+    unplaced: plan.unplaced,
+    perReviewer: plan.perReviewer,
+  };
+}
+
+/** Insert exactly the rows a plan describes. The proposal is re-read so the
+ * review is fenced to the content version that exists at write time. */
+async function writeAssignments(
+  ctx: MutationCtx,
+  caller: EventCaller,
+  roundId: Id<"reviewRounds">,
+  plan: DistributionPlan,
+): Promise<void> {
+  const now = Date.now();
+  for (const assignment of plan.assignments) {
+    const proposal = await ctx.db.get("proposals", assignment.proposalId);
+    if (proposal === null || proposal.eventId !== caller.event._id) {
+      notFound("proposal", "No such proposal on this event.");
+    }
+    await ctx.db.insert("reviews", {
+      eventId: caller.event._id,
+      proposalId: assignment.proposalId,
+      reviewerUserId: assignment.reviewerUserId,
+      roundId,
+      status: "assigned",
+      contentVersion: proposal.contentVersion ?? 0,
+      updatedAt: now,
+    });
+  }
+}
+
+// ── Launch summary & launch (W11) ────────────────────────────────────────
+//
+// The summary states consequences in SENTENCES, and it is composed here —
+// one producer, over the same planner input the launch will act on. The
+// client renders the strings; it never re-words a count, because a second
+// author of the same fact is a second chance to be wrong.
+
+export type LaunchPerReviewer = {
+  userId: Id<"users">;
+  name: string;
+  assigned: number;
+  total: number;
+};
+
+export type LaunchPlan = {
+  /** Echo this back to `launchRound`; a mismatch refuses the write. */
+  fingerprint: string;
+  roundId: Id<"reviewRounds">;
+  roundName: string;
+  anonymized: boolean;
+  reviewerCap: number | null;
+  perProposal: number;
+  poolSize: number;
+  candidateCount: number;
+  newAssignments: number;
+  unplaced: number;
+  alreadyCovered: number;
+  /** Candidates receiving work whose Accept/Decline was already released. */
+  decidedCount: number;
+  perReviewer: LaunchPerReviewer[];
+  /** The whole summary, ready to print. */
+  sentences: string[];
+};
+
+function s(count: number): string {
+  return count === 1 ? "" : "s";
+}
+
+/** "Both" / "All 4" / "2" — a summary reads like a sentence, not a report. */
+function subject(count: number, total: number): string {
+  if (count === total && count === 2) return "Both";
+  if (count === total && count > 2) return `All ${count}`;
+  return String(count);
+}
+
+function decidedSentence(decided: number, targeted: number): string | null {
+  if (decided === 0) return null;
+  if (decided === targeted && targeted === 1) {
+    return "It already has a released decision; that decision will not change.";
+  }
+  if (decided === targeted) {
+    return `${subject(decided, targeted)} already have released decisions; those decisions will not change.`;
+  }
+  return decided === 1
+    ? "1 of them already has a released decision; that decision will not change."
+    : `${decided} of them already have released decisions; those decisions will not change.`;
+}
+
+function blindSentence(anonymized: boolean): string {
+  return anonymized
+    ? "Reviewer identities are hidden: speaker names and every identity answer are removed from what reviewers see."
+    : "Speaker identities are visible to reviewers — this round is not blind.";
+}
+
+function capSentence(cap: number | null): string {
+  return cap === null
+    ? "No per-reviewer cap: reviewers take as many proposals as the split gives them."
+    : `Cap: ${cap} proposal${s(cap)} per reviewer.`;
+}
+
+function unplacedSentence(unplaced: number): string | null {
+  return unplaced === 0
+    ? null
+    : `${unplaced} review slot${s(unplaced)} cannot be filled — every eligible reviewer is already at the cap.`;
+}
+
+/** The one reason nothing will happen, said plainly. */
+function nothingToDoSentence(
+  plan: Pick<
+    LaunchPlan,
+    "poolSize" | "candidateCount" | "alreadyCovered" | "unplaced"
+  >,
+  tense: "will" | "did",
+): string {
+  if (plan.poolSize === 0) {
+    return "This round has no reviewers yet, so nothing will be assigned.";
+  }
+  if (plan.candidateCount === 0) {
+    return "No proposals are selected, so nothing will be assigned.";
+  }
+  if (plan.alreadyCovered === plan.candidateCount) {
+    const who = subject(plan.alreadyCovered, plan.candidateCount).toLowerCase();
+    const noun = `selected proposal${s(plan.alreadyCovered)}`;
+    const verb = plan.alreadyCovered === 1 ? "is" : "are";
+    return tense === "will"
+      ? `No new assignments: ${who} ${noun} ${verb} already assigned.`
+      : `No new assignments: ${who} ${noun} ${verb} already assigned.`;
+  }
+  return "Nothing can be assigned: every eligible reviewer is already at the cap.";
+}
+
+function summarySentences(
+  plan: Omit<LaunchPlan, "sentences">,
+  targetedDecided: number,
+  targetedProposals: number,
+): string[] {
+  const lines: string[] = [];
+  if (plan.newAssignments === 0) {
+    lines.push(nothingToDoSentence(plan, "will"));
+  } else {
+    for (const row of [...plan.perReviewer]
+      .filter((row) => row.assigned > 0)
+      .sort((a, b) => a.name.localeCompare(b.name))) {
+      lines.push(
+        `${row.assigned} proposal${s(row.assigned)} will be assigned to ${row.name}.`,
+      );
+    }
+    const decided = decidedSentence(targetedDecided, targetedProposals);
+    if (decided !== null) lines.push(decided);
+  }
+  lines.push(blindSentence(plan.anonymized));
+  lines.push(capSentence(plan.reviewerCap));
+  const unplaced = unplacedSentence(plan.unplaced);
+  if (unplaced !== null) lines.push(unplaced);
+  return lines;
+}
+
+function buildLaunchPlan(
+  input: PlannerInput,
+  names: Map<Id<"users">, string>,
+): { plan: LaunchPlan; distribution: DistributionPlan } {
+  const distribution = planDistribution(input);
+  const targeted = new Set(distribution.assignments.map((a) => a.proposalId));
+  const decidedCount = input.candidates.filter(
+    (p) =>
+      targeted.has(p._id) &&
+      (p.status === "accepted" || p.status === "declined"),
+  ).length;
+
+  const base: Omit<LaunchPlan, "sentences"> = {
+    fingerprint: fingerprintOf(input, names),
+    roundId: input.round._id,
+    roundName: input.round.name,
+    anonymized: input.round.anonymized,
+    reviewerCap: input.round.reviewerCap ?? null,
+    perProposal: input.perProposal,
+    poolSize: input.poolUserIds.length,
+    candidateCount: input.candidates.length,
+    newAssignments: distribution.assignments.length,
+    unplaced: distribution.unplaced,
+    alreadyCovered: distribution.alreadyCovered,
+    decidedCount,
+    perReviewer: distribution.perReviewer.map((row) => ({
+      ...row,
+      name: names.get(row.userId) ?? "a reviewer",
     })),
   };
+  return {
+    plan: {
+      ...base,
+      sentences: summarySentences(base, decidedCount, targeted.size),
+    },
+    distribution,
+  };
+}
+
+async function poolNames(
+  ctx: QueryCtx,
+  userIds: Array<Id<"users">>,
+): Promise<Map<Id<"users">, string>> {
+  const names = new Map<Id<"users">, string>();
+  for (const userId of userIds) {
+    const user = await ctx.db.get("users", userId);
+    names.set(userId, user?.name ?? user?.email ?? "a reviewer");
+  }
+  return names;
+}
+
+export type LaunchArgs = {
+  roundId: Id<"reviewRounds">;
+  proposalIds?: Array<Id<"proposals">>;
+  perProposal?: number;
+};
+
+/** Preview: what launching this round would do, written nowhere. */
+export async function previewLaunch(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  args: LaunchArgs,
+): Promise<LaunchPlan> {
+  requireOrganizer(caller);
+  const input = await loadPlannerInput(ctx, caller, args.roundId, args);
+  return buildLaunchPlan(input, await poolNames(ctx, input.poolUserIds)).plan;
+}
+
+export type LaunchOutcome = {
+  assigned: number;
+  unplaced: number;
+  perReviewer: LaunchPerReviewer[];
+  /** What happened, in sentences — the client prints these verbatim. */
+  sentences: string[];
+};
+
+function outcomeSentences(plan: LaunchPlan): string[] {
+  if (plan.newAssignments === 0) {
+    const lines = [nothingToDoSentence(plan, "did")];
+    const unplaced = unplacedSentence(plan.unplaced);
+    if (unplaced !== null) lines.push(unplaced);
+    return lines;
+  }
+  const lines = [
+    `${plan.newAssignments} assignment${s(plan.newAssignments)} created across ${plan.candidateCount} selected proposal${s(plan.candidateCount)}.`,
+  ];
+  for (const row of [...plan.perReviewer]
+    .filter((row) => row.assigned > 0)
+    .sort((a, b) => a.name.localeCompare(b.name))) {
+    lines.push(
+      `${row.assigned} proposal${s(row.assigned)} assigned to ${row.name} — ${row.total} in this round in total.`,
+    );
+  }
+  if (plan.alreadyCovered > 0) {
+    lines.push(
+      `${plan.alreadyCovered} selected proposal${s(plan.alreadyCovered)} ${plan.alreadyCovered === 1 ? "was" : "were"} already assigned and ${plan.alreadyCovered === 1 ? "was" : "were"} left alone.`,
+    );
+  }
+  const decided = decidedSentence(plan.decidedCount, plan.newAssignments);
+  if (plan.decidedCount > 0 && decided !== null) {
+    lines.push(
+      `${plan.decidedCount} of the newly assigned proposal${s(plan.decidedCount)} already ${plan.decidedCount === 1 ? "has a released decision; that decision was" : "have released decisions; those decisions were"} not changed.`,
+    );
+  }
+  const unplaced = unplacedSentence(plan.unplaced);
+  if (unplaced !== null) lines.push(unplaced);
+  return lines;
+}
+
+/**
+ * Launch: apply exactly the plan the summary described.
+ *
+ * The plan is re-derived from current state first. If anything the planner
+ * reads moved between the preview and the launch — the pool, the selection,
+ * the round's cap, another organizer's assignment — the write is refused
+ * rather than assigning work the organizer never read a sentence about. The
+ * FRESH plan is what gets written, so a doctored fingerprint cannot place
+ * anything the planner would not.
+ */
+export async function launchRound(
+  ctx: MutationCtx,
+  caller: EventCaller,
+  args: LaunchArgs & { fingerprint: string },
+): Promise<LaunchOutcome> {
+  requireOrganizer(caller);
+  assertEventActive(caller.event);
+  if (args.proposalIds !== undefined) assertBulkSize(args.proposalIds);
+  const input = await loadPlannerInput(ctx, caller, args.roundId, args);
+  if (input.poolUserIds.length === 0) {
+    throw new ConvexError({
+      code: "empty_pool",
+      message: "Add at least one reviewer to this round first.",
+    });
+  }
+  const { plan, distribution } = buildLaunchPlan(
+    input,
+    await poolNames(ctx, input.poolUserIds),
+  );
+  if (plan.fingerprint !== args.fingerprint) {
+    throw new ConvexError({
+      code: "plan_stale",
+      message:
+        "The round changed since this summary was composed, so nothing was assigned. Read the summary again to see what launching would do now.",
+    });
+  }
+
+  // Written from the FRESH plan — never from the client's payload.
+  await writeAssignments(ctx, caller, input.round._id, distribution);
+  // Launching is what turns a draft round into a live one: from here it is
+  // visible to reviewers, to the progress board and to the readiness counts.
+  if (isDraftRound(input.round)) {
+    await ctx.db.patch("reviewRounds", input.round._id, {
+      draft: undefined,
+      updatedAt: Date.now(),
+    });
+  }
+
+  await logAudit(ctx, {
+    orgId: caller.org._id,
+    eventId: caller.event._id,
+    actorUserId: caller.user._id,
+    action: "review.launch",
+    targetType: "reviewRound",
+    targetId: input.round._id,
+    meta: {
+      assigned: plan.newAssignments,
+      unplaced: plan.unplaced,
+      candidates: plan.candidateCount,
+      anonymized: plan.anonymized,
+    },
+  });
+
+  return {
+    assigned: plan.newAssignments,
+    unplaced: plan.unplaced,
+    perReviewer: plan.perReviewer,
+    sentences: outcomeSentences(plan),
+  };
+}
+
+export type EligibleProposal = {
+  proposalId: Id<"proposals">;
+  title: string;
+  status: Doc<"proposals">["status"];
+  /** Reviews this proposal already holds in this round. */
+  assigned: number;
+  decisionReleased: boolean;
+};
+
+/** The round's eligible set, for the flow's "which proposals" step. */
+export async function eligibleProposals(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  roundId: Id<"reviewRounds">,
+): Promise<EligibleProposal[]> {
+  requireOrganizer(caller);
+  const input = await loadPlannerInput(ctx, caller, roundId, {});
+  const covered = new Map<Id<"proposals">, number>();
+  for (const review of input.roundReviews) {
+    if (review.status === "conflict") continue;
+    covered.set(
+      review.proposalId,
+      (covered.get(review.proposalId) ?? 0) + 1,
+    );
+  }
+  return input.candidates.map((proposal) => ({
+    proposalId: proposal._id,
+    title: proposal.title,
+    status: proposal.status,
+    assigned: covered.get(proposal._id) ?? 0,
+    decisionReleased:
+      proposal.status === "accepted" || proposal.status === "declined",
+  }));
 }
 
 /** Undo an assignment. A submitted review is evidence and stays put. */
@@ -928,6 +1479,53 @@ function reviewerProjection(
 }
 
 /**
+ * The reviewer-facing shape of ONE proposal. The only place the projection is
+ * applied to data — `myAssignments` and the organizer's "preview as reviewer"
+ * both come through here, so a blind round cannot leak through a second,
+ * slightly different renderer.
+ */
+async function reviewerProposalView(
+  ctx: QueryCtx,
+  proposal: Doc<"proposals">,
+  projection: ReviewerProjection,
+  anonymized: boolean,
+): Promise<AssignmentRow["proposal"]> {
+  const speakers = await ctx.db
+    .query("proposalSpeakers")
+    .withIndex("by_proposalId", (q) => q.eq("proposalId", proposal._id))
+    .take(MAX_SPEAKERS_PER_PROPOSAL);
+  const answers: Record<string, AnswerValue> = {};
+  const fileUrls: Record<string, string | null> = {};
+  for (const [fieldId, value] of Object.entries(proposal.answers)) {
+    if (!projection.allowedIds.has(fieldId)) continue;
+    answers[fieldId] = value;
+    if (
+      projection.fileFieldIds.has(fieldId) &&
+      typeof value === "string" &&
+      value.length > 0
+    ) {
+      // One malformed stored value must not throw and blank the reviewer's
+      // whole assignment list — it degrades to a null URL instead.
+      const storageId = ctx.db.system.normalizeId("_storage", value);
+      fileUrls[value] =
+        storageId === null ? null : await ctx.storage.getUrl(storageId);
+    }
+  }
+  return {
+    _id: proposal._id,
+    title: proposal.title,
+    answers,
+    fields: projection.fields,
+    fileUrls,
+    // Blind round: no author identity of any kind crosses the wire (ABS-07).
+    // The professional-identity-only projection applies to non-blind rounds.
+    speakers: anonymized
+      ? []
+      : speakers.sort((a, b) => a.order - b.order).map(reviewerSpeaker),
+  };
+}
+
+/**
  * Everything this reviewer has been asked to evaluate, unfinished first
  * (M2 "Submit & Next"). Organizers who assigned themselves see their own rows
  * here too — the query is scoped to the caller either way.
@@ -954,7 +1552,7 @@ export async function myAssignments(
   const nonBlindProjection = reviewerProjection(def, false);
   const blindProjection = reviewerProjection(def, true);
 
-  const rounds = await listRoundDocs(ctx, caller.event._id);
+  const rounds = await launchedRoundDocs(ctx, caller.event._id);
   const rows: AssignmentRow[] = [];
   for (const review of reviews) {
     const proposal = await ctx.db.get("proposals", review.proposalId);
@@ -963,27 +1561,6 @@ export async function myAssignments(
     if (proposal === null || proposal.status === "withdrawn") continue;
     const round = roundForReview(review, rounds);
     const projection = round.anonymized ? blindProjection : nonBlindProjection;
-    const speakers = await ctx.db
-      .query("proposalSpeakers")
-      .withIndex("by_proposalId", (q) => q.eq("proposalId", proposal._id))
-      .take(MAX_SPEAKERS_PER_PROPOSAL);
-    const answers: Record<string, AnswerValue> = {};
-    const fileUrls: Record<string, string | null> = {};
-    for (const [fieldId, value] of Object.entries(proposal.answers)) {
-      if (!projection.allowedIds.has(fieldId)) continue;
-      answers[fieldId] = value;
-      if (
-        projection.fileFieldIds.has(fieldId) &&
-        typeof value === "string" &&
-        value.length > 0
-      ) {
-        // One malformed stored value must not throw and blank the reviewer's
-        // whole assignment list — it degrades to a null URL instead.
-        const storageId = ctx.db.system.normalizeId("_storage", value);
-        fileUrls[value] =
-          storageId === null ? null : await ctx.storage.getUrl(storageId);
-      }
-    }
     rows.push({
       reviewId: review._id,
       contentVersion: proposal.contentVersion ?? 0,
@@ -997,24 +1574,92 @@ export async function myAssignments(
         closesAt: round.closesAt,
         scorecard: round.scorecard,
       },
-      proposal: {
-        _id: proposal._id,
-        title: proposal.title,
-        answers,
-        fields: projection.fields,
-        fileUrls,
-        // Blind round: no author identity of any kind crosses the wire
-        // (ABS-07). The professional-identity-only projection applies to
-        // non-blind rounds.
-        speakers: round.anonymized
-          ? []
-          : speakers.sort((a, b) => a.order - b.order).map(reviewerSpeaker),
-      },
+      proposal: await reviewerProposalView(
+        ctx,
+        proposal,
+        projection,
+        round.anonymized,
+      ),
     });
   }
   const rank = (status: ReviewStatus): number =>
     status === "assigned" || status === "draft" ? 0 : 1;
   return rows.sort((a, b) => rank(a.status) - rank(b.status));
+}
+
+export type ReviewerPreview = {
+  roundId: Id<"reviewRounds">;
+  roundName: string;
+  anonymized: boolean;
+  scorecard: ScorecardField[];
+  proposal: AssignmentRow["proposal"];
+  /** Answers the round removes from the reviewer's view, by label — what the
+   * preview PROVES is hidden rather than asking the organizer to reason. */
+  hiddenFieldLabels: string[];
+  /** Speaker names withheld, count only — the preview must not print them. */
+  hiddenSpeakerCount: number;
+};
+
+/**
+ * "Preview as reviewer" (W11). Organizer-only, and deliberately built from the
+ * SAME projection the reviewer query serves — a sample proposal from the
+ * round's eligible set run through `reviewerProjection` + `reviewerProposalView`.
+ * Blinding is never re-implemented on the client; this is the server showing
+ * its own work.
+ */
+export async function previewAsReviewer(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  roundId: Id<"reviewRounds">,
+  proposalId?: Id<"proposals">,
+): Promise<ReviewerPreview | null> {
+  requireOrganizer(caller);
+  const round = await requireRound(ctx, caller, roundId);
+
+  let proposal: Doc<"proposals"> | null = null;
+  if (proposalId !== undefined) {
+    const picked = await ctx.db.get("proposals", proposalId);
+    if (picked === null || picked.eventId !== caller.event._id) {
+      notFound("proposal", "No such proposal on this event.");
+    }
+    if (canEnterReviewRound(picked)) proposal = picked;
+  } else {
+    const all = await ctx.db
+      .query("proposals")
+      .withIndex("by_eventId_and_status", (q) =>
+        q.eq("eventId", caller.event._id),
+      )
+      .take(REVIEW_SCAN + 1);
+    assertCompleteScan(all, REVIEW_SCAN, "proposals");
+    proposal = all.find(canEnterReviewRound) ?? null;
+  }
+  if (proposal === null) return null;
+
+  const form = await findForm(ctx, caller.event._id);
+  const def = form?.published ?? form?.working;
+  const projection = reviewerProjection(def, round.anonymized);
+  const everything = reviewerProjection(def, false);
+  const speakers = await ctx.db
+    .query("proposalSpeakers")
+    .withIndex("by_proposalId", (q) => q.eq("proposalId", proposal._id))
+    .take(MAX_SPEAKERS_PER_PROPOSAL);
+
+  return {
+    roundId: round._id,
+    roundName: round.name,
+    anonymized: round.anonymized,
+    scorecard: round.scorecard,
+    proposal: await reviewerProposalView(
+      ctx,
+      proposal,
+      projection,
+      round.anonymized,
+    ),
+    hiddenFieldLabels: everything.fields
+      .filter((field) => !projection.allowedIds.has(field.id))
+      .map((field) => field.label),
+    hiddenSpeakerCount: round.anonymized ? speakers.length : 0,
+  };
 }
 
 /** A review the caller owns. Non-owners get "not_found", never "forbidden":
@@ -1090,7 +1735,7 @@ async function roundForReviewWrite(
   ctx: QueryCtx,
   review: Doc<"reviews">,
 ): Promise<RoundInfo> {
-  const rounds = await listRoundDocs(ctx, review.eventId);
+  const rounds = await launchedRoundDocs(ctx, review.eventId);
   return roundForReview(review, rounds);
 }
 
@@ -1381,7 +2026,7 @@ export async function reviewSummary(
     .take(REVIEW_SUMMARY_SCAN + 1);
   assertCompleteScan(reviews, REVIEW_SUMMARY_SCAN, "reviews on one proposal");
 
-  const rounds = await listRoundDocs(ctx, caller.event._id);
+  const rounds = await launchedRoundDocs(ctx, caller.event._id);
   const rows: ReviewSummaryRow[] = [];
   for (const review of reviews) {
     const reviewer = await ctx.db.get("users", review.reviewerUserId);
@@ -1485,7 +2130,7 @@ export async function reviewerProgress(
   caller: EventCaller,
 ): Promise<ReviewerProgressRow[]> {
   requireOrganizer(caller);
-  const rounds = await listRoundDocs(ctx, caller.event._id);
+  const rounds = await launchedRoundDocs(ctx, caller.event._id);
   const reviews = await ctx.db
     .query("reviews")
     .withIndex("by_eventId_and_reviewerUserId", (q) =>

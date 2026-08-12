@@ -781,3 +781,72 @@
     justify-content: center;
   }
 }
+
+/* ── Review round launch flow (W11) ───────────────────────────────────────
+   One step per screen, and the two controls that move between steps pinned
+   where a thumb already is. Sticky rather than fixed, and inside the flow
+   container: the last row of a step is routinely the row Next acts on, so a
+   floating bar would sit on top of it. */
+.ss-launch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+/* The step list is orientation, not navigation — the flow validates forward,
+   so the steps are read, not clicked. */
+.ss-launch__steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ss-launch__step {
+  font: var(--type-caption);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.ss-launch__step[aria-current='step'] {
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+}
+/* The summary states consequences in sentences: they wrap, they never scroll
+   sideways, and they read as prose rather than as a table of counts. */
+.ss-launch__sentences {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 0 0 var(--space-4);
+  font: var(--type-body);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.ss-launch__nav {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--page-gutter);
+  margin: 0 calc(var(--page-gutter) * -1) calc(var(--safe-bottom) * -1);
+  padding-bottom: calc(var(--space-3) + var(--safe-bottom));
+  background: var(--surface-card);
+  border-top: var(--space-px) solid var(--border-default);
+}
+
+@media (max-width: 640px) {
+  /* The "Step 3 of 7 · Reviewers" line above the step carries the progress;
+     the full list would cost two rows of a phone screen to repeat it. */
+  .ss-launch__steps {
+    display: none;
+  }
+  .ss-launch__nav > * {
+    flex: 1;
+    justify-content: center;
+  }
+}
