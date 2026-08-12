@@ -33,3 +33,7 @@
      the element that *is* focused has no pixels of its own. */
   .file-button:focus-within{outline:3px solid Highlight;outline-offset:2px}
 }
+
+/* Text that only assistive tech reads: a per-row checkbox needs a name, and
+   that name must not print six times down the left edge of a table. */
+.ss-visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}

@@ -12,11 +12,14 @@ import type {
   ViewDef,
 } from '~/components/abstracts/model'
 import type { BulkOutcomeView } from '~/components/abstracts/BulkBar'
+import type { ActiveFilter } from '~/ds'
 import {
   ActionResult,
+  ActiveFilters,
   Button,
   Callout,
   Card,
+  DataTable,
   EmptyState,
   SearchInput,
   Toolbar,
@@ -33,6 +36,7 @@ import {
   ViewsMenu,
 } from '~/components/abstracts/TableMenus'
 import {
+  ABSTRACT_STATUS_LABEL,
   ALL_COLUMN_IDS,
   filterRows,
   loadSavedViews,
@@ -285,8 +289,51 @@ function Abstracts({
     })
   }
 
+  // W12: a skeleton, not a sentence in an empty page — the toolbar and the
+  // table's shape are already knowable, so they hold still while the rows land.
+  // "Clear all" clears FILTERS. Sort direction and the column set are not
+  // filters — they are how this organizer reads a table, kept across views and
+  // stored per event — so wiping them to answer "show me everything again"
+  // costs them a set-up they never asked to undo.
+  const clearFilters = () => {
+    setQ('')
+    pushedQ.current = ''
+    patch({ q: undefined, status: undefined })
+  }
+
+  const activeChips: Array<ActiveFilter> = [
+    ...(q.trim() === ''
+      ? []
+      : [
+          {
+            id: 'q',
+            label: `Search: ${q.trim()}`,
+            onRemove: () => {
+              setQ('')
+              pushedQ.current = ''
+              patch({ q: undefined })
+            },
+          },
+        ]),
+    ...state.statuses.map((status) => ({
+      id: `status:${status}`,
+      label: `Status: ${ABSTRACT_STATUS_LABEL[status]}`,
+      onRemove: () => onToggleStatus(status),
+    })),
+  ]
+
   if (list === undefined) {
-    return <p style={{ color: 'var(--text-tertiary)' }}>Loading proposals…</p>
+    return (
+      <Card padded={false}>
+        <DataTable
+          aria-label="Proposals"
+          loading
+          loadingLabel="Loading proposals…"
+          rows={[]}
+          columns={state.cols.map((id) => ({ key: id, header: id }))}
+        />
+      </Card>
+    )
   }
 
   return (
@@ -364,6 +411,12 @@ function Abstracts({
           </div>
         }
       />
+
+      {/* W12: every narrowing in force, each removable, each removal a URL
+          write (replace — a filter tweak is a view of this page, not a
+          journey). The counted chips below are the PICKER; this row is the
+          statement of what is currently on. */}
+      <ActiveFilters chips={activeChips} onClearAll={clearFilters} />
 
       {capped ? (
         <Callout tone="attention" title="This list is not the whole CFP">

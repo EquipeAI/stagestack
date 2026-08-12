@@ -63,6 +63,7 @@ import type * as reviews from "../reviews.js";
 import type * as sessions from "../sessions.js";
 import type * as shared_brandColor from "../shared/brandColor.js";
 import type * as shared_bulkDecisions from "../shared/bulkDecisions.js";
+import type * as shared_bulkOutreach from "../shared/bulkOutreach.js";
 import type * as shared_formDef from "../shared/formDef.js";
 import type * as shared_importPlan from "../shared/importPlan.js";
 import type * as shared_jobTypes from "../shared/jobTypes.js";
@@ -139,6 +140,7 @@ declare const fullApi: ApiFromModules<{
   sessions: typeof sessions;
   "shared/brandColor": typeof shared_brandColor;
   "shared/bulkDecisions": typeof shared_bulkDecisions;
+  "shared/bulkOutreach": typeof shared_bulkOutreach;
   "shared/formDef": typeof shared_formDef;
   "shared/importPlan": typeof shared_importPlan;
   "shared/jobTypes": typeof shared_jobTypes;

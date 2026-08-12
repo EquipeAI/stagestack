@@ -49,26 +49,22 @@ const STAGES: Array<{ value: Stage; label: string }> = [
 export function CrmTools({
   orgSlug,
   contacts,
-  selected,
   search,
   tag,
   company,
   onSearch,
   onTag,
   onCompany,
-  onClearSelection,
   onOpenContact,
 }: {
   orgSlug: string
   contacts: Array<Contact>
-  selected: Array<Id<'contacts'>>
   search: string
   tag: string
   company: string
   onSearch: (value: string) => void
   onTag: (value: string) => void
   onCompany: (value: string) => void
-  onClearSelection: () => void
   onOpenContact: (contact: Contact) => void
 }) {
   const overview = useQuery(api.contacts.overview, { orgSlug })
@@ -77,14 +73,6 @@ export function CrmTools({
   const saveSegment = useMutation(api.contacts.saveSegment)
   const merge = useMutation(api.contacts.merge)
   const [importing, setImporting] = useState(false)
-  const [composing, setComposing] = useState(false)
-  // The outreach dialog closes on send, so its outcome belongs to the page —
-  // otherwise "3 failed" would leave with the dialog (W5).
-  const [outreachResult, setOutreachResult] = useState<{
-    status: 'success' | 'partial'
-    title: string
-    lines: Array<string>
-  } | null>(null)
   const [segmentName, setSegmentName] = useState('')
   const [mergePair, setMergePair] = useState<
     { primary: Contact; secondary: Contact } | undefined
@@ -100,14 +88,6 @@ export function CrmTools({
         gap: 'var(--space-4)',
       }}
     >
-      {outreachResult === null ? null : (
-        <ActionResult
-          status={outreachResult.status}
-          title={outreachResult.title}
-          details={outreachResult.lines}
-          onDismiss={() => setOutreachResult(null)}
-        />
-      )}
       <div
         style={{
           display: 'grid',
@@ -241,13 +221,6 @@ export function CrmTools({
         <Button iconLeft="upload" onClick={() => setImporting(true)}>
           Import CSV
         </Button>
-        <Button
-          disabled={selected.length < 2}
-          iconLeft="mail"
-          onClick={() => setComposing(true)}
-        >
-          Email selected ({selected.length})
-        </Button>
       </div>
 
       {duplicates !== undefined && duplicates.pairs.length > 0 ? (
@@ -296,17 +269,6 @@ export function CrmTools({
         <CsvImportDialog
           orgSlug={orgSlug}
           onClose={() => setImporting(false)}
-        />
-      ) : null}
-      {composing ? (
-        <BulkOutreachDialog
-          orgSlug={orgSlug}
-          contacts={contacts.filter((contact) =>
-            selected.includes(contact._id),
-          )}
-          onClose={() => setComposing(false)}
-          onResult={setOutreachResult}
-          onSent={onClearSelection}
         />
       ) : null}
       {mergePair ? (
@@ -710,7 +672,7 @@ function CsvImportDialog({
   )
 }
 
-function BulkOutreachDialog({
+export function BulkOutreachDialog({
   orgSlug,
   contacts,
   onClose,

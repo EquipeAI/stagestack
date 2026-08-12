@@ -2,9 +2,14 @@ import { useMemo, useState } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
+import { planOutreach } from '@convex/shared/bulkOutreach'
 import type { Doc } from '@convex/_generated/dataModel'
+import type { ActiveFilter } from '~/ds'
 import {
+  ActionResult,
+  ActiveFilters,
   Avatar,
+  BatchBar,
   Button,
   Callout,
   Card,
@@ -23,7 +28,12 @@ import {
   Toolbar,
 } from '~/ds'
 import { ContactDetailDialog } from '~/components/contacts/ContactDetailDialog'
-import { CrmTools, contactMatchesSearch } from '~/components/contacts/CrmTools'
+import {
+  BulkOutreachDialog,
+  CrmTools,
+  contactMatchesSearch,
+} from '~/components/contacts/CrmTools'
+import { parseOrgSearch } from '~/components/contacts/search'
 import { PageBody } from '~/components/PageBody'
 import { EventCard, EventGrid } from '~/components/EventCard'
 import { QueryBoundary } from '~/components/QueryBoundary'
@@ -40,6 +50,10 @@ import { ROLE_LABEL } from '~/lib/roles'
 
 export const Route = createFileRoute('/app/org/$orgSlug')({
   component: OrgPage,
+  // W12: the tab AND the directory's search, tag and company filters live in
+  // the URL, so a filtered directory is a link, survives a reload, and can be
+  // backed out of.
+  validateSearch: parseOrgSearch,
   errorComponent: ({ error }) => (
     <PageBody narrow>
       <Callout tone="blocked" title="This organization is not available">
@@ -55,7 +69,13 @@ function OrgPage() {
   const { orgSlug } = Route.useParams()
   const org = useQuery(api.orgs.get, { orgSlug })
   const orgEvents = useQuery(api.events.listForOrg, { orgSlug })
-  const [tab, setTab] = useState<TabId>('events')
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const setTab = (next: TabId) => {
+    // Replace, like every other view switch in the app: the tab strip is a
+    // view of this page, not six pages.
+    void navigate({ search: { tab: next }, replace: true })
+  }
 
   if (org === undefined) {
     return (
@@ -70,6 +90,14 @@ function OrgPage() {
   // through an event membership: they can look, but every org-wide mutation
   // the backend offers here would refuse them.
   const isAdmin = org.role !== null
+
+  // The Team tab only exists for org admins, and a URL can ask for it anyway
+  // (a shared link, a bookmark made before a role changed). The choice made
+  // here is to FALL BACK to the default tab rather than to render a refusal:
+  // a tab strip that does not offer Team has already said Team is not yours,
+  // and a blank third panel would be the only wrong answer available.
+  const tab: TabId =
+    search.tab === 'team' && !isAdmin ? 'events' : (search.tab ?? 'events')
 
   const tabs = [
     {
@@ -330,15 +358,46 @@ function ContactsTab({
   orgSlug: string
   canManageCrm: boolean
 }) {
-  const [search, setSearch] = useState('')
+  const params = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const search = params.q ?? ''
+  const tagFilter = params.tag ?? ''
+  const companyFilter = params.company ?? ''
+  // Filter writes REPLACE: narrowing the directory is a view of this page, so
+  // back leaves the org rather than walking back through the organizer's own
+  // keystrokes.
+  const patch = (part: {
+    q?: string | undefined
+    tag?: string | undefined
+    company?: string | undefined
+  }) => {
+    void navigate({
+      search: (prev) => ({
+        ...prev,
+        ...Object.fromEntries(
+          Object.entries(part).map(([key, value]) => [
+            key,
+            value === '' ? undefined : value,
+          ]),
+        ),
+      }),
+      replace: true,
+    })
+  }
   // One subscription for the whole directory; search and the attribute
   // filters all run locally so typing never re-subscribes.
   const contacts = useQuery(api.contacts.list, { orgSlug })
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<ContactDoc | null>(null)
-  const [tagFilter, setTagFilter] = useState('')
-  const [companyFilter, setCompanyFilter] = useState('')
   const [selected, setSelected] = useState<Array<ContactDoc['_id']>>([])
+  const [composing, setComposing] = useState(false)
+  // The outreach dialog closes on send, so its outcome belongs to the page —
+  // otherwise "3 failed" would leave with the dialog (W5).
+  const [outreachResult, setOutreachResult] = useState<{
+    status: 'success' | 'partial'
+    title: string
+    lines: Array<string>
+  } | null>(null)
 
   const { allTags, allCompanies } = useMemo(() => {
     const tags = new Set<string>()
@@ -367,6 +426,67 @@ function ContactsTab({
     })
   }, [contacts, needle, tagFilter, companyFilter])
 
+  const selection = (contacts ?? []).filter((contact) =>
+    selected.includes(contact._id),
+  )
+  // The eligibility arithmetic is the backend's: convex/shared/bulkOutreach.ts
+  // states the rule (an address on file) and the audience range, and
+  // convex/model/contacts.ts enforces the same one when the mutation lands.
+  const outreach = planOutreach(selection)
+
+  const chips: Array<ActiveFilter> = [
+    ...(search === ''
+      ? []
+      : [
+          {
+            id: 'q',
+            label: `Search: ${search}`,
+            onRemove: () => patch({ q: undefined }),
+          },
+        ]),
+    ...(tagFilter === ''
+      ? []
+      : [
+          {
+            id: `tag:${tagFilter}`,
+            label: `Tag: ${tagFilter}`,
+            onRemove: () => patch({ tag: undefined }),
+          },
+        ]),
+    ...(companyFilter === ''
+      ? []
+      : [
+          {
+            id: `company:${companyFilter}`,
+            label: `Company: ${companyFilter}`,
+            onRemove: () => patch({ company: undefined }),
+          },
+        ]),
+  ]
+
+  const selectColumn = {
+    key: 'select',
+    header: 'Select',
+    width: '4rem',
+    cell: (row: ContactDoc) => (
+      <span onClick={(event) => event.stopPropagation()}>
+        <Checkbox
+          label={<span className="ss-visually-hidden">
+            Select {row.firstName} {row.lastName}
+          </span>}
+          checked={selected.includes(row._id)}
+          onChange={(event) =>
+            setSelected((current) =>
+              event.target.checked
+                ? [...new Set([...current, row._id])]
+                : current.filter((id) => id !== row._id),
+            )
+          }
+        />
+      </span>
+    ),
+  }
+
   return (
     <div
       style={{
@@ -375,28 +495,68 @@ function ContactsTab({
         gap: 'var(--space-4)',
       }}
     >
-      {contacts !== undefined && canManageCrm ? (
-        <CrmTools
-          orgSlug={orgSlug}
-          contacts={contacts}
-          selected={selected}
-          search={search}
-          tag={tagFilter}
-          company={companyFilter}
-          onSearch={setSearch}
-          onTag={setTagFilter}
-          onCompany={setCompanyFilter}
-          onClearSelection={() => setSelected([])}
-          onOpenContact={setEditing}
+      {/* W12: the DIRECTORY leads. The KPI cards, saved segments, duplicate
+          review and pipeline board follow it — they are still on screen
+          without any interaction (the eval requires a populated analytics
+          widget to be screenshot-visible, so nothing here is collapsed), but
+          the organizer's primary work is no longer the last thing they reach. */}
+      {outreachResult === null ? null : (
+        <ActionResult
+          status={outreachResult.status}
+          title={outreachResult.title}
+          details={outreachResult.lines}
+          onDismiss={() => setOutreachResult(null)}
         />
-      ) : null}
+      )}
       <Toolbar
+        // Slot order (W12): search · filters · add. The directory has no
+        // saved view or column picker; CSV import and export live with the
+        // CRM tools below, where the rest of the bulk data work is.
         left={
-          <SearchInput
-            placeholder="Search contacts"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: 'var(--space-2)',
+            }}
+          >
+            <SearchInput
+              aria-label="Search contacts"
+              placeholder="Search contacts"
+              value={search}
+              onChange={(e) => patch({ q: e.target.value })}
+            />
+            {allTags.length === 0 ? null : (
+              <Select
+                id="contacts-filter-tag"
+                size="sm"
+                aria-label="Filter by tag"
+                value={tagFilter}
+                options={[
+                  { value: '', label: 'All tags' },
+                  ...allTags.map((tag) => ({ value: tag, label: tag })),
+                ]}
+                onChange={(e) => patch({ tag: e.target.value })}
+              />
+            )}
+            {allCompanies.length === 0 ? null : (
+              <Select
+                id="contacts-filter-company"
+                size="sm"
+                aria-label="Filter by company"
+                value={companyFilter}
+                options={[
+                  { value: '', label: 'All companies' },
+                  ...allCompanies.map((company) => ({
+                    value: company,
+                    label: company,
+                  })),
+                ]}
+                onChange={(e) => patch({ company: e.target.value })}
+              />
+            )}
+          </span>
         }
         right={
           <Button
@@ -408,53 +568,24 @@ function ContactsTab({
           </Button>
         }
       />
-      {allTags.length > 0 || allCompanies.length > 0 || filtered ? (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--space-3)',
-            flexWrap: 'wrap',
-          }}
-        >
-          <Select
-            id="contacts-filter-tag"
-            value={tagFilter}
-            options={[
-              { value: '', label: 'All tags' },
-              ...allTags.map((tag) => ({ value: tag, label: tag })),
-            ]}
-            onChange={(e) => setTagFilter(e.target.value)}
-          />
-          <Select
-            id="contacts-filter-company"
-            value={companyFilter}
-            options={[
-              { value: '', label: 'All companies' },
-              ...allCompanies.map((company) => ({
-                value: company,
-                label: company,
-              })),
-            ]}
-            onChange={(e) => setCompanyFilter(e.target.value)}
-          />
-          {filtered ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              iconLeft="x"
-              onClick={() => {
-                setTagFilter('')
-                setCompanyFilter('')
-              }}
-            >
-              Clear filters
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
+
+      <ActiveFilters
+        chips={chips}
+        onClearAll={() =>
+          patch({ q: undefined, tag: undefined, company: undefined })
+        }
+      />
+
       {visible === undefined ? (
-        <p style={{ color: 'var(--text-tertiary)' }}>Loading contacts…</p>
+        <Card padded={false}>
+          <DataTable
+            aria-label="Contact directory"
+            loading
+            loadingLabel="Loading the contact directory…"
+            rows={[]}
+            columns={CONTACT_SKELETON_COLUMNS}
+          />
+        </Card>
       ) : visible.length === 0 ? (
         <Card>
           <EmptyState
@@ -485,48 +616,70 @@ function ContactsTab({
       ) : (
         <Card padded={false}>
           <DataTable
+            aria-label="Contact directory"
             rowKey="_id"
+            selectedIds={selected}
             onRowClick={(row: ContactDoc) => setEditing(row)}
+            // The phone rendering: who they are, where they work, and the same
+            // tick box — selection and the batch bar work identically in both.
+            cardRow={(row: ContactDoc) => (
+              <>
+                <span
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 'var(--space-3)',
+                  }}
+                >
+                  {canManageCrm ? selectColumn.cell(row) : null}
+                  <Avatar
+                    name={`${row.firstName} ${row.lastName}`}
+                    size={32}
+                  />
+                  <span
+                    style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}
+                  >
+                    <span style={{ color: 'var(--text-primary)' }}>
+                      {row.firstName} {row.lastName}
+                    </span>
+                    <span
+                      style={{
+                        font: 'var(--type-caption)',
+                        color: 'var(--text-tertiary)',
+                      }}
+                    >
+                      {row.email ?? 'No email on file'}
+                    </span>
+                  </span>
+                </span>
+                {row.company === undefined && (row.tags ?? []).length === 0 ? null : (
+                  <span
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      alignItems: 'center',
+                      gap: 'var(--space-2)',
+                    }}
+                  >
+                    {row.company === undefined ? null : (
+                      <span
+                        style={{
+                          font: 'var(--type-caption)',
+                          color: 'var(--text-secondary)',
+                        }}
+                      >
+                        {row.company}
+                      </span>
+                    )}
+                    {(row.tags ?? []).map((tag) => (
+                      <Tag key={tag}>{tag}</Tag>
+                    ))}
+                  </span>
+                )}
+              </>
+            )}
             columns={[
-              ...(canManageCrm
-                ? [
-                    {
-                      key: 'select',
-                      header: 'Select',
-                      cell: (row: ContactDoc) => (
-                        <span onClick={(event) => event.stopPropagation()}>
-                          <Checkbox
-                            label={
-                              <span
-                                style={{
-                                  position: 'absolute',
-                                  width: 'var(--space-px)',
-                                  height: 'var(--space-px)',
-                                  padding: 0,
-                                  margin: 'calc(-1 * var(--space-px))',
-                                  overflow: 'hidden',
-                                  clip: 'rect(0, 0, 0, 0)',
-                                  whiteSpace: 'nowrap',
-                                  border: 0,
-                                }}
-                              >
-                                Select {row.firstName} {row.lastName}
-                              </span>
-                            }
-                            checked={selected.includes(row._id)}
-                            onChange={(event) =>
-                              setSelected((current) =>
-                                event.target.checked
-                                  ? [...new Set([...current, row._id])]
-                                  : current.filter((id) => id !== row._id),
-                              )
-                            }
-                          />
-                        </span>
-                      ),
-                    },
-                  ]
-                : []),
+              ...(canManageCrm ? [selectColumn] : []),
               {
                 key: 'name',
                 header: 'Name',
@@ -581,6 +734,54 @@ function ContactsTab({
           />
         </Card>
       )}
+
+      {/* Everything the organizer consults ABOUT the directory, under it. */}
+      {contacts !== undefined && canManageCrm ? (
+        <CrmTools
+          orgSlug={orgSlug}
+          contacts={contacts}
+          search={search}
+          tag={tagFilter}
+          company={companyFilter}
+          onSearch={(value) => patch({ q: value })}
+          onTag={(value) => patch({ tag: value })}
+          onCompany={(value) => patch({ company: value })}
+          onOpenContact={setEditing}
+        />
+      ) : null}
+
+      {canManageCrm && selected.length > 0 ? (
+        <BatchBar
+          label="Contact bulk actions"
+          noun="contact"
+          count={outreach.selected}
+          eligible={outreach.eligible}
+          exclusions={outreach.excluded}
+          summary={outreach.blocked ?? undefined}
+          onClear={() => setSelected([])}
+          actions={
+            <Button
+              size="sm"
+              variant="primary"
+              iconLeft="mail"
+              disabled={outreach.blocked !== null || outreach.eligible === 0}
+              onClick={() => setComposing(true)}
+            >
+              Email selected
+            </Button>
+          }
+        />
+      ) : null}
+
+      {composing ? (
+        <BulkOutreachDialog
+          orgSlug={orgSlug}
+          contacts={selection}
+          onClose={() => setComposing(false)}
+          onResult={setOutreachResult}
+          onSent={() => setSelected([])}
+        />
+      ) : null}
       {adding ? (
         <ContactDialog orgSlug={orgSlug} onClose={() => setAdding(false)} />
       ) : null}
@@ -595,6 +796,14 @@ function ContactsTab({
     </div>
   )
 }
+
+/** Headers only — the skeleton holds the directory's shape while it loads. */
+const CONTACT_SKELETON_COLUMNS = [
+  { key: 'name', header: 'Name' },
+  { key: 'email', header: 'Email' },
+  { key: 'company', header: 'Company' },
+  { key: 'tags', header: 'Tags' },
+]
 
 function ContactDialog({
   orgSlug,

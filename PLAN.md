@@ -654,20 +654,20 @@ than by keeping the table on screen.
 
 Applied as the surfaces above are touched, not as a big-bang refactor.
 
-- [ ] **One toolbar** (`ds/components/layout/Toolbar.jsx`): search · filters ·
+- [x] **One toolbar** (`ds/components/layout/Toolbar.jsx`): search · filters ·
       saved view · columns · export.
-- [ ] **Removable filter chips**, and **URL-persisted filter state** via typed
+- [x] **Removable filter chips**, and **URL-persisted filter state** via typed
       `validateSearch` — the ARCHITECTURE.md saved-views mechanism, finally used
       consistently.
-- [ ] **Row click opens the workspace**; at most two visible row actions, rest in
+- [x] **Row click opens the workspace**; at most two visible row actions, rest in
       overflow.
-- [ ] **Selection reveals a batch bar** stating count, eligibility, exclusions,
+- [x] **Selection reveals a batch bar** stating count, eligibility, exclusions,
       expected result (`components/abstracts/BulkBar.tsx` is the existing
       pattern — promote it into the DS).
-- [ ] **Hide zero-count filters** unless the zero is operationally meaningful
+- [x] **Hide zero-count filters** unless the zero is operationally meaningful
       (an empty "Blocked" is worth showing; an empty "Withdrawn" is noise).
-- [ ] **Skeleton/progress during load and export.**
-- [ ] **CRM page order** (`apps/web/src/routes/app.org.$orgSlug.tsx`): the
+- [x] **Skeleton/progress during load and export.**
+- [x] **CRM page order** (`apps/web/src/routes/app.org.$orgSlug.tsx`): the
       contact directory leads; KPIs, segments, and duplicates move below. Eval
       constraint: `specs/07-speaker-crm.yaml:337-351` requires a
       screenshot-visible populated analytics widget — do **not** collapse the

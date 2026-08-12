@@ -3,7 +3,10 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { FunctionReturnType } from 'convex/server'
+import type { ActiveFilter } from '~/ds'
+import type { ContentFilter } from '~/components/sessions/search'
 import {
+  ActiveFilters,
   Badge,
   Button,
   Callout,
@@ -13,6 +16,8 @@ import {
   EmptyState,
   Field,
   Input,
+  MenuButton,
+  Select,
   StatusPill,
   Textarea,
   Toolbar,
@@ -24,9 +29,11 @@ import { SessionPortalDialog } from '~/components/portal/SessionPortalDialog'
 import { SessionContentCell } from '~/components/sessions/SessionContentCell'
 import { FormatField } from '~/components/sessions/FormatField'
 import {
+  CONTENT_FILTERS,
   matchesContent,
   parseSessionsSearch,
 } from '~/components/sessions/search'
+import { visibleFilters } from '~/lib/filters'
 
 // The event's sessions (M2). A session is what a proposal becomes once it is
 // accepted, or what a directly invited speaker is invited to — scheduling
@@ -67,6 +74,12 @@ function Sessions() {
   )
   const { content } = Route.useSearch()
   const navigate = Route.useNavigate()
+  // Filter changes REPLACE: narrowing the roster is a view of this page, not a
+  // journey to another one, so back still returns to wherever the organizer
+  // came from rather than walking back through their own filter presses.
+  const setContent = (next: ContentFilter | undefined) => {
+    void navigate({ search: (prev) => ({ ...prev, content: next }), replace: true })
+  }
   const [inviting, setInviting] = useState(false)
   const [portalFor, setPortalFor] = useState<string | null>(null)
   const archived = event?.event.archivedAt !== undefined
@@ -84,20 +97,47 @@ function Sessions() {
     )
   }
 
-  if (sessions === undefined) {
-    return <p style={{ color: 'var(--text-tertiary)' }}>Loading sessions…</p>
-  }
+  const loading = sessions === undefined
+  const all = sessions ?? []
 
   const summaries = new Map(
     (publication ?? []).map((row) => [row.sessionId as string, row.publication]),
   )
-  const rows: Array<Row> = sessions
+  const rows: Array<Row> = all
     .filter((row) => matchesContent(row.session.contentStatus, content))
     .map((row) => ({
       ...row,
       id: row.session._id,
     }))
   const portalRow = rows.find((row) => row.session._id === portalFor) ?? null
+
+  // Counted on the unfiltered roster so narrowing never makes the option that
+  // produced the view read zero. Draft keeps its place at zero (W12): that
+  // zero is the answer to "is anything being held back from the program?" —
+  // an empty Approved is not news anybody came here for.
+  const contentOptions = visibleFilters(
+    CONTENT_FILTERS.map((id) => ({
+      id,
+      label: id === 'draft' ? 'Draft content' : 'Approved content',
+      count: all.filter((row) => matchesContent(row.session.contentStatus, id))
+        .length,
+      meaningfulZero: id === 'draft',
+    })),
+    content === undefined ? [] : [content],
+  )
+
+  const chips: Array<ActiveFilter> =
+    content === undefined
+      ? []
+      : [
+          {
+            id: `content:${content}`,
+            label: `Content: ${content === 'draft' ? 'Draft' : 'Approved'}`,
+            onRemove: () => {
+              setContent(undefined)
+            },
+          },
+        ]
   const inviteButton = (
     <Button
       variant="primary"
@@ -120,15 +160,36 @@ function Sessions() {
       }}
     >
       <Toolbar
+        // Slot order (W12): filters first — the roster has no free-text
+        // search, no saved views and no export, and none is invented here.
         left={
           <span
             style={{
               display: 'flex',
               flexWrap: 'wrap',
-              alignItems: 'baseline',
+              alignItems: 'center',
               gap: 'var(--space-3)',
             }}
           >
+            <Select
+              size="sm"
+              aria-label="Filter by content approval"
+              value={content ?? ''}
+              options={[
+                { value: '', label: 'Any content state' },
+                ...contentOptions.map((option) => ({
+                  value: option.id,
+                  label: `${option.label} (${option.count})`,
+                })),
+              ]}
+              onChange={(e) => {
+                setContent(
+                  e.target.value === ''
+                    ? undefined
+                    : (e.target.value as ContentFilter),
+                )
+              }}
+            />
             <span
               style={{
                 fontFamily: 'var(--font-mono)',
@@ -137,7 +198,8 @@ function Sessions() {
                 color: 'var(--text-tertiary)',
               }}
             >
-              {rows.length} session{rows.length === 1 ? '' : 's'}
+              {loading ? '—' : rows.length} session
+              {rows.length === 1 ? '' : 's'}
             </span>
             <span
               style={{
@@ -147,26 +209,26 @@ function Sessions() {
             >
               Draft content never appears on the public program.
             </span>
-            {/* A filtered view arrived at by link must say so and offer the way
-                out; a silently short list reads as missing data. */}
-            {content === undefined ? null : (
-              <Button
-                size="sm"
-                variant="ghost"
-                iconLeft="x"
-                onClick={() => {
-                  void navigate({ search: {} })
-                }}
-              >
-                Filtered to {content} content — show all
-              </Button>
-            )}
           </span>
         }
         right={inviteButton}
       />
 
-      {rows.length === 0 ? (
+      {/* A filtered view arrived at by link must say so and offer the way out;
+          a silently short list reads as missing data. */}
+      <ActiveFilters chips={chips} />
+
+      {loading ? (
+        <Card padded={false}>
+          <DataTable
+            aria-label="Sessions"
+            loading
+            loadingLabel="Loading the session roster…"
+            rows={[]}
+            columns={SKELETON_COLUMNS}
+          />
+        </Card>
+      ) : rows.length === 0 ? (
         <Card>
           <EmptyState
             icon="presentation"
@@ -180,6 +242,69 @@ function Sessions() {
           <DataTable
             aria-label="Sessions"
             rowKey="id"
+            // Under 640px the roster is a card list: the session, its content
+            // state, who is speaking, and the one action an organizer takes
+            // from a list. Tapping the card opens the workspace.
+            cardRow={(row: Row) => (
+              <>
+                <span style={{ color: 'var(--text-primary)' }}>
+                  {row.session.title}
+                </span>
+                <span
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    gap: 'var(--space-2)',
+                  }}
+                >
+                  <StatusPill
+                    status={
+                      row.session.status === 'cancelled'
+                        ? 'Cancelled'
+                        : 'Planned'
+                    }
+                  />
+                  <Badge
+                    tone={
+                      (row.session.contentStatus ?? 'approved') === 'draft'
+                        ? 'attention'
+                        : 'success'
+                    }
+                  >
+                    {(row.session.contentStatus ?? 'approved') === 'draft'
+                      ? 'Draft content'
+                      : 'Approved content'}
+                  </Badge>
+                  <span
+                    style={{
+                      font: 'var(--type-caption)',
+                      color: 'var(--text-tertiary)',
+                    }}
+                  >
+                    {row.participants.length === 0
+                      ? 'Speaker to be announced'
+                      : row.participants
+                          .map((p) =>
+                            `${p.firstName} ${p.lastName}`.trim() ||
+                            'Unnamed contact',
+                          )
+                          .join(', ')}
+                  </span>
+                </span>
+                <span>
+                  <Button
+                    size="sm"
+                    iconLeft="mic-vocal"
+                    onClick={() => {
+                      setPortalFor(row.session._id)
+                    }}
+                  >
+                    Manage speaker portal
+                  </Button>
+                </span>
+              </>
+            )}
             // Focusable rows that activate on Enter/Space (W6) — clicks that
             // land on a cell's own control are left to that control.
             onRowClick={(row: Row) => {
@@ -324,19 +449,77 @@ function Sessions() {
                   ),
               },
               {
-                key: 'portal',
-                header: 'Speaker portal',
-                width: '10rem',
+                key: 'actions',
+                header: 'Actions',
+                width: '11rem',
+                // W12: at most two visible row actions. "Manage" is the one an
+                // organizer reaches for from a list; everything else that used
+                // to compete for the row lives in the overflow menu, which is
+                // keyboard-operable (arrows, Home/End, Escape back to trigger).
                 cell: (row: Row) => (
-                  <Button
-                    size="sm"
-                    iconLeft="mic-vocal"
-                    onClick={() => {
-                      setPortalFor(row.session._id)
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 'var(--space-1)',
                     }}
                   >
-                    Manage
-                  </Button>
+                    <Button
+                      size="sm"
+                      iconLeft="mic-vocal"
+                      onClick={() => {
+                        setPortalFor(row.session._id)
+                      }}
+                    >
+                      Manage
+                    </Button>
+                    <MenuButton
+                      label={`More actions for ${row.session.title}`}
+                      items={[
+                        {
+                          id: 'workspace',
+                          label: 'Open the session workspace',
+                          onSelect: () => {
+                            void navigate({
+                              to: '/app/e/$eventSlug/sessions/$sessionId',
+                              params: {
+                                eventSlug,
+                                sessionId: row.session._id,
+                              },
+                            })
+                          },
+                        },
+                        {
+                          id: 'content',
+                          label: 'Review the content approval',
+                          onSelect: () => {
+                            void navigate({
+                              to: '/app/e/$eventSlug/sessions/$sessionId',
+                              params: {
+                                eventSlug,
+                                sessionId: row.session._id,
+                              },
+                              search: { tab: 'content' },
+                            })
+                          },
+                        },
+                        row.session.source === 'cfp' && {
+                          id: 'proposal',
+                          label: 'Open the source proposal',
+                          onSelect: () => {
+                            void navigate({
+                              to: '/app/e/$eventSlug/sessions/$sessionId',
+                              params: {
+                                eventSlug,
+                                sessionId: row.session._id,
+                              },
+                              search: { tab: 'proposal' },
+                            })
+                          },
+                        },
+                      ]}
+                    />
+                  </span>
                 ),
               },
             ]}
@@ -367,6 +550,18 @@ function Sessions() {
     </div>
   )
 }
+
+/** Headers only: the skeleton holds the shape the rows will take, so the
+ * table does not jump a column wider the moment the roster arrives. */
+const SKELETON_COLUMNS = [
+  { key: 'title', header: 'Session' },
+  { key: 'source', header: 'Source', width: '9rem' },
+  { key: 'status', header: 'Status', width: '8rem' },
+  { key: 'content', header: 'Content' },
+  { key: 'public', header: 'Public' },
+  { key: 'participants', header: 'Participants' },
+  { key: 'actions', header: 'Actions', width: '11rem' },
+]
 
 // ── Direct invitation ────────────────────────────────────────────────────
 

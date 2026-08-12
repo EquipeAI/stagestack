@@ -221,6 +221,30 @@
       {
         "selector": "JSXOpeningElement[name.name='Tooltip'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|key|ref|className|style|children|aria-[a-z]+|role)$/]",
         "message": "<Tooltip> doesn't accept that prop. Declared props: label, plus ARIA attributes and role."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='BatchBar'] > JSXAttribute > JSXIdentifier[name!=/^(?:count|noun|nounPlural|eligible|exclusions|summary|actions|onClear|clearLabel|label|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<BatchBar> doesn't accept that prop. Declared props: count, noun, nounPlural, eligible, exclusions, summary, actions, onClear, clearLabel, label, plus ARIA attributes and role."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='DataTable'] > JSXAttribute > JSXIdentifier[name!=/^(?:columns|rows|selectedIds|rowKey|onRowClick|loading|skeletonRows|loadingLabel|cardRow|cardBreakpoint|key|ref|className|style|aria-[a-z]+|role)$/]",
+        "message": "<DataTable> doesn't accept that prop. Declared props: columns, rows, selectedIds, rowKey, onRowClick, loading, skeletonRows, loadingLabel, cardRow, cardBreakpoint, plus ARIA attributes and role."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ActiveFilters'] > JSXAttribute > JSXIdentifier[name!=/^(?:chips|label|onClearAll|clearLabel|key|ref|className|style|aria-[a-z]+|role)$/]",
+        "message": "<ActiveFilters> doesn't accept that prop. Declared props: chips, label, onClearAll, clearLabel, plus ARIA attributes and role."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='MenuButton'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|icon|iconRight|variant|size|align|width|disabled|items|key|ref|className|style|aria-[a-z]+|role)$/]",
+        "message": "<MenuButton> doesn't accept that prop. Declared props: label, icon, iconRight, variant, size, align, width, disabled, items, plus ARIA attributes and role."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='MenuButton'] > JSXAttribute[name.name='variant'] > Literal[value!=/^(?:primary|brand|secondary|ghost|danger)$/]",
+        "message": "<MenuButton> variant must be one of 'primary' | 'brand' | 'secondary' | 'ghost' | 'danger'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='MenuButton'] > JSXAttribute[name.name='align'] > Literal[value!=/^(?:start|end)$/]",
+        "message": "<MenuButton> align must be one of 'start' | 'end'."
       }
     ]
   },

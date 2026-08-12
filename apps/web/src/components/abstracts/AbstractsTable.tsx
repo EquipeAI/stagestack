@@ -106,10 +106,61 @@ export function AbstractsTable({
 
   return (
     <DataTable
+      aria-label="Proposals"
       rowKey="_id"
       rows={rows.map((r) => ({ ...r, _id: r.proposal._id }))}
       selectedIds={[...selected]}
       onRowClick={(row: AbstractRow) => onOpen(row.proposal._id)}
+      // Under 640px the table becomes a card list (W12): the tick box (so the
+      // batch bar works identically on a phone), the title, the status, and
+      // who submitted it. Tapping the card opens the proposal, exactly as
+      // clicking a row does.
+      cardRow={(row: AbstractRow) => {
+        const { name } = submitterOf(row.proposal, ids)
+        const failure = failures.get(row.proposal._id)
+        return (
+          <>
+            <span
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 'var(--space-3)',
+              }}
+            >
+              <CheckCell
+                checked={selected.has(row.proposal._id)}
+                label={`Select ${displayTitle(row.proposal)}`}
+                onToggle={(shiftKey) => onToggle(row.proposal._id, shiftKey)}
+              />
+              <span style={{ minWidth: 0, color: 'var(--text-primary)' }}>
+                {displayTitle(row.proposal)}
+              </span>
+            </span>
+            <span
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: 'var(--space-2)',
+              }}
+            >
+              <StatusPill
+                status={ABSTRACT_STATUS_LABEL[row.proposal.status]}
+                tone={ABSTRACT_STATUS_TONE[row.proposal.status]}
+              />
+              <span className="ss-table__sub">{name === '' ? '—' : name}</span>
+            </span>
+            {failure === undefined ? null : (
+              <span
+                className="ss-table__sub"
+                style={{ color: 'var(--text-danger)' }}
+              >
+                {failure}
+              </span>
+            )}
+          </>
+        )
+      }}
       columns={columns}
     />
   )

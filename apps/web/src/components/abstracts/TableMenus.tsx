@@ -28,6 +28,7 @@ import type {
 } from './model'
 import type { ExportInput, ReviewExportRow } from './exporters'
 import { ActionResult, Button, Field, Icon, IconButton, Input, Switch } from '~/ds'
+import { visibleFilters } from '~/lib/filters'
 
 // The three toolbar menus. Views and columns are preferences (URL + local
 // storage); export is a client-side action over exactly the rows on screen.
@@ -161,9 +162,24 @@ function SaveViewForm({ onSave }: { onSave: (name: string) => void }) {
 }
 
 /**
- * The status filter: every state, its count, and whether it is on. A chip row
- * rather than a Select because an organizer reads the shape of the pipeline
- * from the counts — 312 Submitted, 40 in the accept queue — at a glance.
+ * Statuses whose ZERO is itself operational news (W12).
+ *
+ * "0 Submitted" means the queue is clear and "0 accept queue" means nothing is
+ * staged waiting to be released — both are answers an organizer came to this
+ * page for. "0 Withdrawn" and "0 Draft" are answers to nothing, so those chips
+ * only appear once somebody is in them.
+ */
+const MEANINGFUL_ZERO: ReadonlySet<ProposalStatus> = new Set([
+  'pending',
+  'acceptQueue',
+  'declineQueue',
+])
+
+/**
+ * The status filter: every state that is worth offering, its count, and
+ * whether it is on. A chip row rather than a Select because an organizer reads
+ * the shape of the pipeline from the counts — 312 Submitted, 40 in the accept
+ * queue — at a glance.
  */
 export function StatusChips({
   counts,
@@ -191,13 +207,21 @@ export function StatusChips({
         on={active.length === 0}
         onClick={onClear}
       />
-      {STATUS_ORDER.map((status) => (
+      {visibleFilters(
+        STATUS_ORDER.map((status) => ({
+          id: status,
+          label: ABSTRACT_STATUS_LABEL[status],
+          count: counts[status] ?? 0,
+          meaningfulZero: MEANINGFUL_ZERO.has(status),
+        })),
+        active,
+      ).map((option) => (
         <Chip
-          key={status}
-          label={ABSTRACT_STATUS_LABEL[status]}
-          count={counts[status] ?? 0}
-          on={active.includes(status)}
-          onClick={() => onToggle(status)}
+          key={option.id}
+          label={option.label}
+          count={option.count}
+          on={active.includes(option.id)}
+          onClick={() => onToggle(option.id)}
         />
       ))}
     </div>
@@ -289,9 +313,14 @@ export function ColumnsMenu({
 
 /** W5: an export's outcome is a persistent result, not a toast — "did the
  * download actually happen, and with how many rows?" is a question asked after
- * the five seconds a toast lives. */
+ * the five seconds a toast lives.
+ *
+ * W12 adds the `pending` half: a zip of 40 attachments or a review-results
+ * sheet takes long enough that a menu closing over silence reads as nothing
+ * having happened. The pending result is the same component, announced the
+ * same way, replaced in place by the outcome. */
 export type ExportOutcome = {
-  status: 'success' | 'partial' | 'failed'
+  status: 'pending' | 'success' | 'partial' | 'failed'
   title: string
   lines: Array<string>
   retry?: () => void
@@ -358,7 +387,11 @@ export function ExportMenu({
             <MenuItem
               onClick={() => {
                 const runXlsx = () => {
-                  setExportResult(null)
+                  setExportResult({
+                    status: 'pending',
+                    title: 'Building the XLSX…',
+                    lines: [`${rowLabel(visibleCount)} — the rows loaded in this view.`],
+                  })
                   setBusy(true)
                   void exportXlsx(buildInput(), base)
                     .then(() => {
@@ -415,7 +448,11 @@ export function ExportMenu({
             title={exportResult.title}
             details={exportResult.lines}
             onRetry={exportResult.retry}
-            onDismiss={() => setExportResult(null)}
+            onDismiss={
+              exportResult.status === 'pending'
+                ? undefined
+                : () => setExportResult(null)
+            }
           />
         </span>
       )}
@@ -557,7 +594,15 @@ function ReviewsCsvItem({
   const progressReady = buildInput().progress !== undefined
 
   const runExport = (format: 'csv' | 'xlsx') => {
-    onResult(null)
+    // Each proposal's review summary is a separate read, so this one runs for
+    // seconds on a real CFP. Say so while it does.
+    onResult({
+      status: 'pending',
+      title: 'Reading review results…',
+      lines: [
+        'One row per loaded proposal. The download starts when every summary is in.',
+      ],
+    })
     setBusy(true)
     void buildReviewRows(convex, eventSlug, buildInput())
       .then(async (rows) => {
@@ -649,7 +694,11 @@ function FileBundleItem({
           return
         }
         const runBundle = () => {
-          onResult(null)
+          onResult({
+            status: 'pending',
+            title: `Zipping ${files.length} ${files.length === 1 ? 'file' : 'files'}…`,
+            lines: ['Each attachment is fetched, then written into one zip.'],
+          })
           setBusy(true)
           void downloadFileBundle(files, `${base}-files`)
             .then(({ added, failed }) => {

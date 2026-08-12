@@ -3,8 +3,11 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import type { InstanceRow, TaskStatus } from '~/components/tasks/model'
-import type { TaskFilter, TaskTab } from '~/components/tasks/search'
+import type { TaskFilter, TaskTab, TasksSearch } from '~/components/tasks/search'
+import type { ActiveFilter } from '~/ds'
+import type { FilterOption } from '~/lib/filters'
 import {
+  ActiveFilters,
   Button,
   Callout,
   Card,
@@ -30,6 +33,7 @@ import {
   speakerLabel,
 } from '~/components/tasks/model'
 import { parseTasksSearch } from '~/components/tasks/search'
+import { visibleFilters } from '~/lib/filters'
 import { useLastLoaded, useNow } from '~/components/tasks/useNow'
 import { ReminderFactsPanel } from '~/components/reminders/ReminderFactsPanel'
 import { SendRemindersDialog } from '~/components/reminders/SendRemindersDialog'
@@ -64,6 +68,16 @@ const STATUS_ORDER: Array<TaskStatus> = [
 ]
 
 type Filter = TaskFilter
+
+/** What each filter is CALLED. Separate from the counted chip options because
+ * an active filter has to be nameable even when there are no rows to count —
+ * that is exactly the state in which the organizer most needs to remove it. */
+const FILTER_LABEL: Record<Filter, string> = {
+  all: 'All',
+  outstanding: 'Outstanding work',
+  overdue: 'Overdue',
+  ...TASK_STATUS_LABEL,
+}
 
 function TasksRoute() {
   const { eventSlug } = Route.useParams()
@@ -119,11 +133,7 @@ function TasksRoute() {
       ) : tab === 'files' ? (
         <FilesPanel eventSlug={eventSlug} timezone={data.event.timezone} />
       ) : (
-        <InstancesPanel
-          eventSlug={eventSlug}
-          timezone={data.event.timezone}
-          initialFilter={search.status ?? 'all'}
-        />
+        <InstancesPanel eventSlug={eventSlug} timezone={data.event.timezone} />
       )}
     </div>
   )
@@ -303,21 +313,31 @@ function ReminderControls({
 function InstancesPanel({
   eventSlug,
   timezone,
-  initialFilter,
 }: {
   eventSlug: string
   timezone: string
-  /** From the URL, so a deep link lands pre-filtered. The chips take over
-   * from there — a filter the organizer changes by hand is a view, not an
-   * address, and rewriting the URL on every chip would bury the page they
-   * arrived from under a history entry each. */
-  initialFilter: Filter
 }) {
   const instances = useQuery(api.tasks.listInstances, { eventSlug })
   const requirements = useQuery(api.tasks.listRequirements, { eventSlug })
   const now = useNow()
-  const [filter, setFilter] = useState<Filter>(initialFilter)
-  const [requirementId, setRequirementId] = useState('all')
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const filter: Filter = search.status ?? 'all'
+  const requirementId = search.requirement ?? 'all'
+
+  // W8 left the chips writing to component state only, and said W12 owned the
+  // question. This is the answer: every filter on this table is in the URL, so
+  // the view is a link, a reload keeps it, and the chip row can undo it.
+  //
+  // REPLACE, not push. A filter tweak is a view of the page the organizer is
+  // standing on; pushing one entry per chip press would mean six back presses
+  // to leave a page they reached in one click.
+  const patch = (part: TasksSearch) => {
+    void navigate({
+      search: (prev: TasksSearch) => ({ ...prev, ...part }),
+      replace: true,
+    })
+  }
 
   const rows = useMemo(() => {
     if (instances === undefined) return []
@@ -338,18 +358,95 @@ function InstancesPanel({
   }, [instances, filter, requirementId, now])
 
   if (instances === undefined || requirements === undefined) {
-    return <p style={{ color: 'var(--text-tertiary)' }}>Loading tasks…</p>
-  }
-
-  if (instances.length === 0) {
     return (
-      <Card>
-        <EmptyState
-          icon="list-checks"
-          title="No tasks yet"
-          description="Tasks appear the moment a requirement exists and a speaker is accepted. Define a requirement first."
+      <Card padded={false}>
+        <DataTable
+          aria-label="Speaker tasks"
+          loading
+          loadingLabel="Loading speaker tasks…"
+          rows={[]}
+          columns={SKELETON_COLUMNS}
         />
       </Card>
+    )
+  }
+
+  const requirementTitle = requirements.find(
+    (r) => r.requirementId === requirementId,
+  )?.title
+  const activeChips: Array<ActiveFilter> = [
+    ...(filter === 'all'
+      ? []
+      : [
+          {
+            id: `status:${filter}`,
+            label: `Status: ${FILTER_LABEL[filter]}`,
+            onRemove: () => patch({ status: undefined }),
+          },
+        ]),
+    ...(requirementId === 'all'
+      ? []
+      : [
+          {
+            // A requirement id from the URL that matches nothing on this event
+            // (a deleted requirement, a link from another event, a typo) still
+            // narrows the list to nothing. Without a chip that view is
+            // unexplained AND unremovable — the organizer sees an empty table
+            // and no reason for it, which is the same stranding the
+            // zero-count rule exists to prevent.
+            id: `requirement:${requirementId}`,
+            label:
+              requirementTitle === undefined
+                ? 'Unknown requirement'
+                : `Requirement: ${requirementTitle}`,
+            onRemove: () => patch({ requirement: undefined }),
+          },
+        ]),
+  ]
+  const filtering = activeChips.length > 0
+
+  // Nothing on the event at all. The chip row still renders when a filter is
+  // in force, because a stale deep link (a control-center count that has since
+  // been satisfied) lands here, and an empty state with no way out of the
+  // filter that produced it is a dead end.
+  if (instances.length === 0) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 'var(--space-4)',
+        }}
+      >
+        <ActiveFilters
+          chips={activeChips}
+          onClearAll={() => {
+            patch({ status: undefined, requirement: undefined })
+          }}
+        />
+        <Card>
+          <EmptyState
+            icon={filtering ? 'list-filter' : 'list-checks'}
+            title={filtering ? 'No tasks match these filters' : 'No tasks yet'}
+            description={
+              filtering
+                ? 'There are no tasks on this event at all yet, so no filter can match. Tasks appear the moment a requirement exists and a speaker is accepted.'
+                : 'Tasks appear the moment a requirement exists and a speaker is accepted. Define a requirement first.'
+            }
+            action={
+              filtering ? (
+                <Button
+                  onClick={() => {
+                    patch({ status: undefined, requirement: undefined })
+                  }}
+                >
+                  Clear the filters
+                </Button>
+              ) : undefined
+            }
+          />
+        </Card>
+      </div>
     )
   }
 
@@ -366,15 +463,35 @@ function InstancesPanel({
   }
   for (const row of instances) counts[row.status] += 1
 
-  const chips: Array<{ id: Filter; label: string }> = [
-    { id: 'all', label: 'All' },
-    { id: 'outstanding', label: 'Outstanding work' },
-    { id: 'overdue', label: 'Overdue' },
-    ...STATUS_ORDER.map((status) => ({
-      id: status,
-      label: TASK_STATUS_LABEL[status],
-    })),
-  ]
+  // W12's zero-count rule. `Outstanding work` and `Overdue` keep their place
+  // when empty, because those zeros are the answer to the question the
+  // organizer opened this tab with — "is anyone behind?" — and a chip row that
+  // silently drops them turns "nobody is overdue" into no statement at all.
+  // A status nobody is in is just noise, so it goes.
+  const statusChips = visibleFilters<FilterOption<Filter>>(
+    [
+      { id: 'all', label: 'All', count: counts.all, meaningfulZero: true },
+      {
+        id: 'outstanding',
+        label: 'Outstanding work',
+        count: counts.outstanding,
+        meaningfulZero: true,
+      },
+      {
+        id: 'overdue',
+        label: 'Overdue',
+        count: counts.overdue,
+        meaningfulZero: true,
+      },
+      ...STATUS_ORDER.map((status) => ({
+        id: status,
+        label: TASK_STATUS_LABEL[status],
+        count: counts[status],
+        meaningfulZero: false,
+      })),
+    ],
+    [filter],
+  )
 
   return (
     <div
@@ -385,6 +502,9 @@ function InstancesPanel({
       }}
     >
       <Toolbar
+        // Slot order (W12): filters, then the requirement narrowing. This tab
+        // has no free-text search, saved views or export of its own — the
+        // Files tab owns the bundle download — so those slots stay empty.
         left={
           <div
             style={{
@@ -394,7 +514,7 @@ function InstancesPanel({
               alignItems: 'center',
             }}
           >
-            {chips.map((chip) => (
+            {statusChips.map((chip) => (
               <Button
                 key={chip.id}
                 size="sm"
@@ -402,12 +522,11 @@ function InstancesPanel({
                 // Which chip is active is otherwise carried by the variant's
                 // styling alone, which a screen reader never sees.
                 aria-pressed={filter === chip.id}
-                disabled={counts[chip.id] === 0 && chip.id !== 'all'}
                 onClick={() => {
-                  setFilter(chip.id)
+                  patch({ status: chip.id === 'all' ? undefined : chip.id })
                 }}
               >
-                {chip.label} ({counts[chip.id]})
+                {`${chip.label} (${chip.count})`}
               </Button>
             ))}
           </div>
@@ -442,7 +561,10 @@ function InstancesPanel({
                   })),
                 ]}
                 onChange={(e) => {
-                  setRequirementId(e.target.value)
+                  patch({
+                    requirement:
+                      e.target.value === 'all' ? undefined : e.target.value,
+                  })
                 }}
               />
             </label>
@@ -461,19 +583,73 @@ function InstancesPanel({
         }
       />
 
+      <ActiveFilters
+        chips={activeChips}
+        onClearAll={() => {
+          patch({ status: undefined, requirement: undefined })
+        }}
+      />
+
       {rows.length === 0 ? (
         <Card>
           <EmptyState
             icon="list-filter"
-            title="Nothing matches these filters"
+            title="No tasks match these filters"
             description="Widen the status or requirement filter to see the rest."
+            action={
+              filtering ? (
+                <Button
+                  onClick={() => {
+                    patch({ status: undefined, requirement: undefined })
+                  }}
+                >
+                  Clear the filters
+                </Button>
+              ) : undefined
+            }
           />
         </Card>
       ) : (
         <Card padded={false}>
           <DataTable
+            aria-label="Speaker tasks"
             rowKey="instanceId"
             rows={rows}
+            // On a phone a task is: what is owed, by whom, its state, when it
+            // is due, and the actions — which are already collapsed to two
+            // plus an overflow menu, so they fit.
+            cardRow={(row: InstanceRow) => (
+              <>
+                <span style={{ color: 'var(--text-primary)' }}>
+                  {row.requirementTitle}
+                </span>
+                <span
+                  style={{
+                    font: 'var(--type-caption)',
+                    color: 'var(--text-tertiary)',
+                  }}
+                >
+                  {speakerLabel(row)} · {row.sessionTitle}
+                </span>
+                <span
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    gap: 'var(--space-3)',
+                  }}
+                >
+                  <StatusCell instance={row} now={now} />
+                  <DueCell instance={row} timezone={timezone} now={now} />
+                </span>
+                <InstanceActions
+                  eventSlug={eventSlug}
+                  instance={row}
+                  timezone={timezone}
+                  now={now}
+                />
+              </>
+            )}
             columns={[
               {
                 key: 'requirementTitle',
@@ -540,3 +716,13 @@ function InstancesPanel({
     </div>
   )
 }
+
+/** Headers only — the skeleton holds the shape the rows will take. */
+const SKELETON_COLUMNS = [
+  { key: 'requirementTitle', header: 'Requirement' },
+  { key: 'speaker', header: 'Speaker' },
+  { key: 'sessionTitle', header: 'Session' },
+  { key: 'status', header: 'Status' },
+  { key: 'dueAt', header: 'Due' },
+  { key: 'actions', header: 'Actions' },
+]

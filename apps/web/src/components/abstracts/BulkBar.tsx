@@ -13,7 +13,7 @@ import { Modal } from './Modal'
 import type { BulkAction } from '@convex/shared/bulkDecisions'
 import type { Id } from '@convex/_generated/dataModel'
 import type { AbstractRow, BulkResult, ProposalId } from './model'
-import { Button, Field, Input, Select } from '~/ds'
+import { BatchBar, Button, Field, Input, Select } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { useLastLoaded, useNow } from '~/components/tasks/useNow'
 import { ROLE_LABEL } from '~/lib/roles'
@@ -58,10 +58,13 @@ export function BulkBar({
   const ids = selection.map((r) => r.proposal._id)
   const statuses = selection.map((r) => r.proposal.status)
   const staged = selection.filter((r) => isStaged(r.proposal.status))
+  // TWO rules are in force at once, and they are not the same rule: the three
+  // queue buttons accept STAGEABLE_STATUSES, "Release decisions" accepts only
+  // RELEASABLE_STATUSES. Stating one number for both would be a promise about
+  // whichever button the organizer did not press — so the bar names each, and
+  // each action's own confirmation and outcome then state ITS plan in full,
+  // exclusions and all, from the same shared producer.
   const releasePlan = planBulk(statuses, RELEASE)
-  // The three queue buttons share one eligibility rule, so the bar states it
-  // once, before anything is clicked. Rendered as text, not a tooltip: a phone
-  // has no hover.
   const stagePlan = planBulk(statuses, { kind: 'stage', to: 'acceptQueue' })
 
   // The backend takes at most 100 ids per call, so a wider selection becomes
@@ -149,113 +152,83 @@ export function BulkBar({
 
   return (
     <>
-      {/* Held out of flow so the bar never pushes the table, plus a spacer
-          that keeps the last row reachable underneath it. */}
-      <div style={{ height: 'var(--space-16)' }} aria-hidden="true" />
-      <div
-        style={{
-          position: 'fixed',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          bottom: 'var(--space-6)',
-          maxWidth: 'calc(100vw - var(--page-gutter) * 2)',
-          zIndex: 'var(--z-overlay)',
-          display: 'flex',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: 'var(--space-2)',
-          padding: 'var(--space-2) var(--space-3)',
-          background: 'var(--surface-card)',
-          border: 'var(--space-px) solid var(--border-strong)',
-          borderRadius: 'var(--radius-card)',
-          boxShadow: 'var(--shadow-lg)',
-        }}
-      >
-        <span
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            paddingInline: 'var(--space-2)',
-          }}
-        >
-          <span
-            style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: 'var(--text-sm)',
-              color: 'var(--text-secondary)',
-            }}
-          >
-            {stagePlan.selected} selected · {stagePlan.eligible} eligible
-          </span>
-          {stagePlan.excluded.length > 0 ? (
-            <span
-              style={{
-                font: 'var(--type-caption)',
-                color: 'var(--text-tertiary)',
-              }}
+      {/* W12: the bar itself is now `ds/components/layout/BatchBar` — the
+          count, the eligibility arithmetic, the exclusions and the clear are
+          the design system's, and this file supplies the proposals-specific
+          actions and the numbers `convex/shared/bulkDecisions.ts` produced. */}
+      <BatchBar
+        label="Proposal bulk actions"
+        noun="proposal"
+        count={stagePlan.selected}
+        eligible={[
+          { label: 'stageable', count: stagePlan.eligible },
+          { label: 'releasable', count: releasePlan.eligible },
+        ]}
+        // Deliberately NOT the stage plan's exclusions: an ambient list of
+        // reasons would belong to one of the two rules and silently misdescribe
+        // the other. Each action reports its own — release in the confirmation
+        // below, the queue moves in the W5 outcome the page keeps.
+        onClear={onClear}
+        actions={
+          <>
+            <Popover label="Assign reviewer" icon="user-round" width="22rem">
+              {(close) => (
+                <AssignPanel
+                  eventSlug={eventSlug}
+                  proposalIds={ids}
+                  onResult={onResult}
+                  onDone={() => {
+                    close()
+                    onClear()
+                  }}
+                />
+              )}
+            </Popover>
+
+            <Button
+              size="sm"
+              disabled={busy !== null}
+              onClick={() => move('acceptQueue', 'moved to the accept queue')}
             >
-              {stagePlan.excluded
-                .map((item) => `${item.count} ${item.reason}`)
-                .join(' · ')}
-            </span>
-          ) : null}
-        </span>
+              {busy === 'acceptQueue' ? 'Moving…' : 'Accept queue'}
+            </Button>
+            <Button
+              size="sm"
+              disabled={busy !== null}
+              onClick={() => move('declineQueue', 'moved to the decline queue')}
+            >
+              {busy === 'declineQueue' ? 'Moving…' : 'Decline queue'}
+            </Button>
+            <Button
+              size="sm"
+              disabled={busy !== null}
+              onClick={() => move('pending', 'moved back to Submitted')}
+            >
+              {busy === 'pending' ? 'Moving…' : 'Back to Submitted'}
+            </Button>
 
-        <Popover label="Assign reviewer" icon="user-round" width="22rem">
-          {(close) => (
-            <AssignPanel
-              eventSlug={eventSlug}
-              proposalIds={ids}
-              onResult={onResult}
-              onDone={() => {
-                close()
-                onClear()
-              }}
-            />
-          )}
-        </Popover>
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={busy !== null || staged.length === 0}
+              onClick={() => setConfirming(true)}
+            >
+              Release decisions
+            </Button>
 
-        <Button
-          size="sm"
-          disabled={busy !== null}
-          onClick={() => move('acceptQueue', 'moved to the accept queue')}
-        >
-          {busy === 'acceptQueue' ? 'Moving…' : 'Accept queue'}
-        </Button>
-        <Button
-          size="sm"
-          disabled={busy !== null}
-          onClick={() => move('declineQueue', 'moved to the decline queue')}
-        >
-          {busy === 'declineQueue' ? 'Moving…' : 'Decline queue'}
-        </Button>
-        <Button
-          size="sm"
-          disabled={busy !== null}
-          onClick={() => move('pending', 'moved back to Submitted')}
-        >
-          {busy === 'pending' ? 'Moving…' : 'Back to Submitted'}
-        </Button>
-
-        <Button
-          size="sm"
-          variant="primary"
-          disabled={busy !== null || staged.length === 0}
-          onClick={() => setConfirming(true)}
-        >
-          Release decisions
-        </Button>
-
-        <span style={{ flex: 1 }} />
-        {error !== null ? (
-          <span style={{ color: 'var(--text-danger)', font: 'var(--type-caption)' }}>
-            {error}
-          </span>
-        ) : null}
-        <Button size="sm" variant="ghost" onClick={onClear}>
-          Clear
-        </Button>
-      </div>
+            {error !== null ? (
+              <span
+                style={{
+                  color: 'var(--text-danger)',
+                  font: 'var(--type-caption)',
+                }}
+              >
+                {error}
+              </span>
+            ) : null}
+          </>
+        }
+      />
 
       {confirming ? (
         <Modal

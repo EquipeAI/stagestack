@@ -31,6 +31,12 @@ function isTaskStatus(value: string): value is TaskStatus {
 export type TasksSearch = {
   tab?: TaskTab
   status?: TaskStatus | DerivedTaskFilter
+  /** The requirement narrowing. W8 left this one out because the control
+   * shipped before the vocabulary did; W12 owns filter state, so it is in the
+   * URL now like every other filter on the page. Not validated against the
+   * event's requirement ids — those are per-event and only the route can know
+   * them, so an id that matches nothing simply shows an empty list. */
+  requirement?: string
 }
 
 /** Route-level validateSearch: unknown params are dropped, never trusted. */
@@ -47,6 +53,14 @@ export function parseTasksSearch(input: Record<string, unknown>): TasksSearch {
     } else if (isTaskStatus(status)) {
       out.status = status
     }
+  }
+  const requirement = input.requirement
+  if (
+    typeof requirement === 'string' &&
+    requirement !== '' &&
+    requirement !== 'all'
+  ) {
+    out.requirement = requirement.slice(0, 64)
   }
   return out
 }
