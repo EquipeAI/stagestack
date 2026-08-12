@@ -6,6 +6,7 @@ import type { EventCaller } from "../lib/functions";
 import { requireOrganizer } from "../lib/functions";
 import { assertEventActive, takeAll } from "./validation";
 import { logAudit } from "./audit";
+import { formatLabel, formatsById } from "./library";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public program (M7). StageStack stays authoritative; the public page, read
@@ -201,6 +202,11 @@ export async function computeProgram(
     ]);
   const trackName = new Map(tracks.map((t) => [t._id, t.name]));
   const roomName = new Map(rooms.map((r) => [r._id, r.name]));
+  // The public blob carries the RENDERED format label — the library row's name
+  // when the session is linked, the free text otherwise — so every widget goes
+  // on reading one `format` string and a library rename reaches the public
+  // page without touching the sessions.
+  const formatById = await formatsById(ctx, eventId);
   const contactById = new Map(contacts.map((c) => [c._id, c]));
   // `by_eventId` and `by_sessionId` both order by `_creationTime` within their
   // prefix, so grouping the event-wide read preserves the per-session order the
@@ -280,7 +286,7 @@ export async function computeProgram(
       sessionId: session._id,
       title: session.title,
       description: session.description,
-      format: session.format,
+      format: formatLabel(session, formatById),
       trackName:
         session.trackId === undefined
           ? undefined

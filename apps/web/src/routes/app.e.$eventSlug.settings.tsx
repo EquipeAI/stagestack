@@ -674,12 +674,13 @@ function LibrarySections({ eventSlug }: { eventSlug: string }) {
       <TracksSection eventSlug={eventSlug} items={library.tracks} />
       <TagsSection eventSlug={eventSlug} items={library.tags} />
       <RoomsSection eventSlug={eventSlug} items={library.rooms} />
+      <FormatsSection eventSlug={eventSlug} items={library.formats} />
       <CustomFieldsSection eventSlug={eventSlug} items={library.customFields} />
     </>
   )
 }
 
-type LibraryTable = 'tracks' | 'tags' | 'rooms' | 'customFields'
+type LibraryTable = 'tracks' | 'tags' | 'rooms' | 'formats' | 'customFields'
 
 /** What the confirmation dialog is about to delete. */
 type RemoveTarget = { table: LibraryTable; id: string; kind: string; label: string }
@@ -1150,6 +1151,131 @@ function RoomsSection({
         <div>
           <Button iconLeft="plus" onClick={addItem} disabled={lib.pending}>
             {lib.pending ? 'Working…' : 'Add room'}
+          </Button>
+        </div>
+      </div>
+      <RemoveConfirm
+        target={lib.confirming}
+        onCancel={() => lib.askRemove(null)}
+        onConfirm={lib.remove}
+      />
+    </LibraryShell>
+  )
+}
+
+function FormatsSection({
+  eventSlug,
+  items,
+}: {
+  eventSlug: string
+  items: Array<Doc<'formats'>>
+}) {
+  const lib = useLibrary(eventSlug)
+  const [name, setName] = useState('')
+  const [minutes, setMinutes] = useState('')
+
+  const addItem = () => {
+    if (name.trim() === '') return lib.setError('Name the format.')
+    const trimmed = minutes.trim()
+    let parsed: number | undefined
+    if (trimmed !== '') {
+      const value = Number(trimmed)
+      if (!Number.isInteger(value) || value < 1 || value > 1440) {
+        return lib.setError(
+          'A default length must be a whole number of minutes between 1 and 1440.',
+        )
+      }
+      parsed = value
+    }
+    void lib.run(async () => {
+      await lib.add({
+        eventSlug,
+        table: 'formats',
+        item: { name: name.trim(), defaultDurationMinutes: parsed },
+      })
+      setName('')
+      setMinutes('')
+    })
+  }
+
+  return (
+    <LibraryShell
+      title="Formats"
+      subtitle="Session types and how long each one runs. The default length is what assisted placement books, and the name is what the CFP form offers — including any “(120 min)” you put in it."
+      error={lib.error}
+      count={items.length}
+    >
+      {items.length === 0 ? (
+        <Muted>
+          No formats yet. Add one and sessions can carry a length the scheduler
+          understands.
+        </Muted>
+      ) : (
+        <List>
+          {items.map((item) => (
+            <ItemRow
+              key={item._id}
+              removing={lib.removingId === item._id}
+              onRemove={() =>
+                lib.askRemove({
+                  table: 'formats',
+                  id: item._id,
+                  kind: 'format',
+                  label: item.name,
+                })
+              }
+            >
+              <span
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 'var(--space-3)',
+                }}
+              >
+                {item.name}
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-xs)',
+                    color: 'var(--text-tertiary)',
+                  }}
+                >
+                  {item.defaultDurationMinutes === undefined
+                    ? 'no default length'
+                    : `${item.defaultDurationMinutes} min`}
+                </span>
+              </span>
+            </ItemRow>
+          ))}
+        </List>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+        <div style={twoCol}>
+          <Field label="Format name" htmlFor="lib-format-name">
+            <Input
+              id="lib-format-name"
+              value={name}
+              placeholder="Workshop (120 min)"
+              onChange={(e) => setName(e.target.value)}
+            />
+          </Field>
+          <Field
+            label="Default length (minutes)"
+            htmlFor="lib-format-min"
+            optional
+            hint="Left blank, a “(120 min)” in the name is used."
+          >
+            <Input
+              id="lib-format-min"
+              type="number"
+              value={minutes}
+              onChange={(e) => setMinutes(e.target.value)}
+            />
+          </Field>
+        </div>
+        <div>
+          <Button iconLeft="plus" onClick={addItem} disabled={lib.pending}>
+            {lib.pending ? 'Working…' : 'Add format'}
           </Button>
         </div>
       </div>

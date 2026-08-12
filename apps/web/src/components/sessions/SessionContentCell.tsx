@@ -14,6 +14,7 @@ import {
 import { usePending } from '~/lib/usePending'
 import { formatDateTime } from '~/lib/datetime'
 import { pushToast } from '~/components/toast'
+import { FormatField } from '~/components/sessions/FormatField'
 
 // Session content management (W5: CNT-09/11/12): the organizer's editorial
 // controls over what the public program will print. Editing records a
@@ -140,21 +141,40 @@ function EditContentDialog({
   onClose: () => void
 }) {
   const updateContent = useMutation(api.sessions.updateContent)
+  const library = useQuery(api.library.list, { eventSlug })
   const { pending, error, setError, run } = usePending()
   const [title, setTitle] = useState(session.title)
   const [description, setDescription] = useState(session.description ?? '')
   const [format, setFormat] = useState(session.format ?? '')
+  const [minutes, setMinutes] = useState(
+    session.durationMinutes === undefined
+      ? ''
+      : String(session.durationMinutes),
+  )
 
   const save = () => {
     if (title.trim() === '') return setError('The session needs a title.')
+    const trimmedMinutes = minutes.trim()
+    let durationMinutes: number | null = null
+    if (trimmedMinutes !== '') {
+      const parsed = Number(trimmedMinutes)
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1440) {
+        return setError(
+          'A length must be a whole number of minutes between 1 and 1440.',
+        )
+      }
+      durationMinutes = parsed
+    }
     void run(async () => {
-      // Empty description/format is the backend's explicit "clear this field".
+      // Empty description/format is the backend's explicit "clear this field";
+      // a null length clears the override and falls back to the format's.
       await updateContent({
         eventSlug,
         sessionId: session._id,
         title: title.trim(),
         description: description.trim(),
         format: format.trim(),
+        durationMinutes,
       })
       pushToast(
         'Content saved',
@@ -221,18 +241,27 @@ function EditContentDialog({
           />
         </Field>
 
+        <FormatField
+          id="content-format"
+          value={format}
+          formats={library?.formats ?? []}
+          disabled={pending}
+          onChange={setFormat}
+        />
+
         <Field
-          label="Format"
-          htmlFor="content-format"
+          label="Length (minutes)"
+          htmlFor="content-minutes"
           optional
-          hint="Talk, Workshop, Panel — whatever your programme calls it."
+          hint="Overrides the format’s default length for this session only. Blank uses the format’s."
         >
           <Input
-            id="content-format"
-            value={format}
+            id="content-minutes"
+            type="number"
+            value={minutes}
             disabled={pending}
             onChange={(e) => {
-              setFormat(e.target.value)
+              setMinutes(e.target.value)
             }}
           />
         </Field>

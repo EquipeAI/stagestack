@@ -105,6 +105,10 @@ function CfpLoader({
 /** Everything a section or field row needs to mutate the draft. */
 type Ctl = {
   def: FormDef
+  /** Format names from the event library, verbatim — what "Use the formats
+   * library" writes into a choice question's options. Exact strings matter:
+   * conditional logic compares answers to these literally. */
+  formatNames: Array<string>
   openFieldId: string | null
   setOpenFieldId: (id: string | null) => void
   updateSection: (si: number, patch: Partial<SectionDef>) => void
@@ -127,6 +131,7 @@ function Builder({
 }) {
   const saveForm = useMutation(api.cfp.updateWorkingForm)
   const publishForm = useMutation(api.cfp.publishForm)
+  const library = useQuery(api.library.list, { eventSlug })
   const saving = usePending()
   const publishing = usePending()
 
@@ -171,6 +176,7 @@ function Builder({
 
   const ctl: Ctl = {
     def: draft,
+    formatNames: (library?.formats ?? []).map((f) => f.name),
     openFieldId,
     setOpenFieldId,
     updateSection: (si, patch) =>
@@ -765,6 +771,35 @@ function FieldRow({
                 onChange={(e) => patch({ options: e.target.value.split('\n') })}
               />
             </Field>
+          ) : null}
+
+          {isChoiceKind(field.kind) && ctl.formatNames.length > 0 ? (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--space-3)',
+                flexWrap: 'wrap',
+              }}
+            >
+              <Button
+                size="sm"
+                iconLeft="list-checks"
+                onClick={() => patch({ options: ctl.formatNames })}
+              >
+                Use the formats library
+              </Button>
+              <span
+                style={{
+                  font: 'var(--type-caption)',
+                  color: 'var(--text-tertiary)',
+                }}
+              >
+                Replaces the options above with {ctl.formatNames.join(' · ')} —
+                exactly as named in Settings, so answers keep matching the
+                library and any conditional logic that reads them.
+              </span>
+            </div>
           ) : null}
 
           {field.kind === 'file' ? (

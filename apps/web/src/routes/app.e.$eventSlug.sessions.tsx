@@ -22,6 +22,7 @@ import { PARTICIPANT_STATE_LABEL } from '~/lib/labels'
 import { pushToast } from '~/components/toast'
 import { SessionPortalDialog } from '~/components/portal/SessionPortalDialog'
 import { SessionContentCell } from '~/components/sessions/SessionContentCell'
+import { FormatField } from '~/components/sessions/FormatField'
 
 // The event's sessions (M2). A session is what a proposal becomes once it is
 // accepted, or what a directly invited speaker is invited to — scheduling
@@ -299,6 +300,7 @@ function InviteSpeakerDialog({
   onClose: () => void
 }) {
   const createDirect = useMutation(api.sessions.createDirect)
+  const library = useQuery(api.library.list, { eventSlug })
   const { pending, error, setError, run } = usePending()
 
   const [title, setTitle] = useState('')
@@ -397,21 +399,13 @@ function InviteSpeakerDialog({
           />
         </Field>
 
-        <Field
-          label="Format"
-          htmlFor="session-format"
-          optional
-          hint="Talk, Workshop, Panel — whatever your programme calls it."
-        >
-          <Input
-            id="session-format"
-            value={format}
-            placeholder="Talk"
-            onChange={(e) => {
-              setFormat(e.target.value)
-            }}
-          />
-        </Field>
+        <FormatField
+          id="session-format"
+          value={format}
+          formats={library?.formats ?? []}
+          disabled={pending}
+          onChange={setFormat}
+        />
 
         <div
           style={{

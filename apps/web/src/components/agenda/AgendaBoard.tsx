@@ -20,6 +20,7 @@ import { PlaceDialog } from './PlaceDialog'
 import { AgendaItemDialog } from './AgendaItemDialog'
 import { ReleaseDialog } from './ReleaseDialog'
 import { SessionDetailDialog } from './SessionDetailDialog'
+import { SuggestDialog } from './SuggestDialog'
 import {
   AGENDA_KEYBOARD_CODES,
   AGENDA_SCREEN_READER_INSTRUCTIONS,
@@ -58,6 +59,7 @@ import type {
   Over,
   UniqueIdentifier,
 } from '@dnd-kit/core'
+import type { AppliedRun } from './SuggestDialog'
 import type { Id } from '@convex/_generated/dataModel'
 import { pushToast } from '~/components/toast'
 import { Button, Callout, Card, EmptyState, Select, Tabs, Toolbar } from '~/ds'
@@ -75,6 +77,7 @@ type Modal =
   | { type: 'place'; session: BoardSession }
   | { type: 'item'; item?: BoardAgendaItem }
   | { type: 'release'; sessions: Array<BoardSession> }
+  | { type: 'suggest' }
   | null
 
 export function AgendaBoard({
@@ -93,9 +96,12 @@ export function AgendaBoard({
   onDay: (day: string) => void
 }) {
   const scheduleSession = useMutation(api.agenda.scheduleSession)
-  const autoPlace = useMutation(api.agenda.autoPlace)
-  const autoPlacing = usePending()
+  const undoPlacement = useMutation(api.agenda.undoPlacement)
+  const undoing = usePending()
   const updateItem = useMutation(api.agenda.updateAgendaItem)
+  // An applied suggestion leaves a persistent result on the page, not a toast:
+  // undo has to still be there after the organizer has looked at the board.
+  const [lastRun, setLastRun] = useState<AppliedRun | null>(null)
   // A drop is a mutation like any other: it can be refused (locked event, a
   // blocker the backend won't take), and the refusal has to reach the screen.
   const { error, setError, run } = usePending()
@@ -293,21 +299,10 @@ export function AgendaBoard({
         <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
           <Button
             iconLeft="sparkles"
-            disabled={tray.length === 0 || autoPlacing.pending}
-            onClick={() => {
-              void autoPlacing.run(async () => {
-                const result = await autoPlace({ eventSlug })
-                pushToast(
-                  'Auto-place finished',
-                  `${result.placed.length} placed` +
-                    (result.unplaced.length > 0
-                      ? ` · ${result.unplaced.length} without a free slot`
-                      : ' — review and drag to adjust.'),
-                )
-              })
-            }}
+            disabled={tray.length === 0}
+            onClick={() => setModal({ type: 'suggest' })}
           >
-            {autoPlacing.pending ? 'Placing…' : 'Auto-place'}
+            Suggest schedule
           </Button>
           <Button iconLeft="plus" onClick={() => setModal({ type: 'item' })}>
             Add block
@@ -330,6 +325,46 @@ export function AgendaBoard({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
       {toolbar}
+
+      {lastRun !== null ? (
+        <Callout
+          tone="success"
+          title={`${lastRun.placed} ${lastRun.placed === 1 ? 'session' : 'sessions'} placed`}
+          actions={
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              <Button
+                size="sm"
+                disabled={undoing.pending}
+                onClick={() => {
+                  void undoing.run(async () => {
+                    const result = await undoPlacement({
+                      eventSlug,
+                      runId: lastRun.runId,
+                    })
+                    pushToast('Placement undone', result.message, 'refresh-cw')
+                    setLastRun(null)
+                  })
+                }}
+              >
+                {undoing.pending ? 'Undoing…' : 'Undo'}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setLastRun(null)
+                }}
+              >
+                Dismiss
+              </Button>
+            </div>
+          }
+        >
+          Nothing was sent — these are draft placements. Undo puts back exactly
+          what this run wrote and leaves anything you have moved since alone.
+          {undoing.error === null ? null : ` ${undoing.error}`}
+        </Callout>
+      ) : null}
 
       {error !== null ? (
         <Callout
@@ -373,6 +408,7 @@ export function AgendaBoard({
           tracksById={tracksById}
           onOpenBlock={openBlock}
           onOpenSession={(session) => setModal({ type: 'detail', session })}
+          onPlace={(session) => setModal({ type: 'place', session })}
         />
       ) : (
         <DndContext
@@ -482,6 +518,15 @@ export function AgendaBoard({
           rooms={board.rooms}
           item={modal.item}
           onClose={() => setModal(null)}
+        />
+      ) : null}
+
+      {modal?.type === 'suggest' ? (
+        <SuggestDialog
+          eventSlug={eventSlug}
+          board={board}
+          onClose={() => setModal(null)}
+          onApplied={setLastRun}
         />
       ) : null}
 

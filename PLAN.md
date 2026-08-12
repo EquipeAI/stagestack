@@ -185,7 +185,7 @@ The single biggest remaining trust issue in the review.
 
 ## W2 — Assisted placement you can trust
 
-- [ ] **Formats become a library type with default durations** (decision 7).
+- [x] **Formats become a library type with default durations** (decision 7).
       Today `sessions.format` is a free-text optional string
       (`convex/schema.ts:675`) and no duration **default** exists anywhere in
       the schema — placed sessions carry an implicit one via `startsAt`/`endsAt`
@@ -198,7 +198,7 @@ The single biggest remaining trust issue in the review.
       free-text values into library rows per event (distinct strings → formats,
       unmatched left as free text so nothing is lost), and keep the free-text
       display fallback for any session that never matched.
-- [ ] **Wire formats through the surfaces that already show them**: the CFP form
+- [x] **Wire formats through the surfaces that already show them**: the CFP form
       offers the library's formats where it currently takes free text
       (`components/cfp/CfpForm.tsx`), the public blob and widgets render the
       library label (`convex/model/publish.ts`, `components/public/widgets/`),
@@ -208,28 +208,28 @@ The single biggest remaining trust issue in the review.
       conditional logic matches by exact string
       (`convex/shared/formDef.ts:83-106`). Migrated library rows must render
       exactly the existing labels; do not normalize away the "(120 min)".
-- [ ] **Duration-aware placement.** `autoPlace` (`convex/model/agenda.ts:1729`)
+- [x] **Duration-aware placement.** `autoPlace` (`convex/model/agenda.ts:1729`)
       walks an hourly grid and writes `endsAt = startsAt + HOUR_MS` for every
       session, which is how a 10-minute Lightning Talk landed in a 60-minute
       slot. Derive the block from session override → format default → event
       default, and keep the slot walk independent of the block length so short
       sessions pack instead of each consuming an hour.
-- [ ] **Respect the constraints we already model.** The conflict engine
+- [x] **Respect the constraints we already model.** The conflict engine
       (`conflictsFor`) is consulted for blockers; extend the candidate scoring to
       prefer track grouping and speaker gaps rather than taking the first
       non-blocking cell.
-- [ ] **Propose before writing.** Turn the action into "Suggest schedule" →
+- [x] **Propose before writing.** Turn the action into "Suggest schedule" →
       preview list (session · day · time · room · why) → Apply / Discard. The
       mutation stays one call; the preview is a query over the same planner, so
       there is no second placement implementation.
-- [ ] **Explain the leftovers.** `unplaced` currently returns only
+- [x] **Explain the leftovers.** `unplaced` currently returns only
       `{sessionId, title}`. Add a reason per entry (no free room of that length,
       speaker double-booked at every candidate, outside event bounds) and render
       it — an unexplained "unplaced 2" is the thing the review objected to.
-- [ ] **Undo.** One action reverting exactly the placements this run wrote
+- [x] **Undo.** One action reverting exactly the placements this run wrote
       (the audit row at `convex/model/agenda.ts:1822` already records the run;
       extend its `meta` to carry the placement set).
-- [ ] **Surface the non-drag path that already exists.** `PlaceDialog.tsx` and
+- [x] **Surface the non-drag path that already exists.** `PlaceDialog.tsx` and
       keyboard placement (`keyboardDrag.ts`) both work; what is missing is a
       *visible* "Place…" action on every unscheduled session, so the alternative
       to dragging is discoverable rather than only keyboard-reachable. (Also W6,

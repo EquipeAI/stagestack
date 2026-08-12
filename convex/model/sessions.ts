@@ -9,6 +9,11 @@ import { logAudit } from "./audit";
 import { sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
 import { proposalAbstract, proposalLink } from "./cfp";
+import {
+  assertDurationMinutes,
+  normalizeFormatLabel,
+  resolveFormatId,
+} from "./library";
 import { republishIfPublished } from "./publish";
 import { instantiateForSession } from "./tasks";
 import { eventUserDisplayName } from "./userDisplay";
@@ -710,6 +715,7 @@ export type DirectSessionArgs = {
   title: string;
   description?: string;
   format?: string;
+  durationMinutes?: number;
   trackId?: Id<"tracks">;
   speaker: {
     firstName: string;
@@ -762,11 +768,22 @@ export async function createDirectSession(
     }
   }
 
+  // Normalized once, then stored and matched from the same value — the direct
+  // path used to store the raw string, which could differ from what the
+  // matcher looked up.
+  const format = normalizeFormatLabel(args.format);
   const sessionId = await ctx.db.insert("sessions", {
     eventId: event._id,
     title,
     description: args.description,
-    format: args.format,
+    format,
+    // A label that exactly matches a library format links to it, so the
+    // scheduler knows how long this session is; anything else stays free text.
+    formatId: await resolveFormatId(ctx, event._id, format),
+    durationMinutes:
+      args.durationMinutes === undefined
+        ? undefined
+        : assertDurationMinutes(args.durationMinutes),
     trackId: args.trackId,
     source: "direct",
     status: "planned",
@@ -1070,7 +1087,13 @@ export async function updateContent(
   ctx: MutationCtx,
   caller: EventCaller,
   sessionId: Id<"sessions">,
-  patch: { title?: string; description?: string; format?: string },
+  patch: {
+    title?: string;
+    description?: string;
+    format?: string;
+    /** null clears the override and falls back to the format's default. */
+    durationMinutes?: number | null;
+  },
 ): Promise<void> {
   requireOrganizer(caller);
   assertEventActive(caller.event);
@@ -1089,25 +1112,59 @@ export async function updateContent(
         : patch.description.trim() === ""
           ? undefined
           : patch.description.slice(0, 10000),
+    // Trim-and-refuse through the shared helper: the same normalization the
+    // library, the portal and the matcher apply, so a label can never be
+    // stored in a shape that stops resolving (and is never TRUNCATED into a
+    // different resolvable one).
     format:
       patch.format === undefined
         ? session.format
-        : patch.format.trim() === ""
-          ? undefined
-          : patch.format.slice(0, 80),
+        : normalizeFormatLabel(patch.format),
   };
-  const unchanged =
+  // `formatId` and `durationMinutes` are scheduling facts, not content: they
+  // ride along on the same save but are deliberately NOT part of the revision
+  // snapshot, which versions title/description/format only (schema.ts).
+  //
+  // An unchanged label keeps the link it already has rather than re-resolving:
+  // a title-only edit must never be able to drop a session's format link
+  // because the denormalized copy drifted.
+  const nextFormatId =
+    next.format !== undefined &&
+    next.format === session.format &&
+    session.formatId !== undefined
+      ? session.formatId
+      : await resolveFormatId(ctx, caller.event._id, next.format);
+  const nextDuration =
+    patch.durationMinutes === undefined
+      ? session.durationMinutes
+      : patch.durationMinutes === null
+        ? undefined
+        : assertDurationMinutes(patch.durationMinutes);
+
+  const contentUnchanged =
     next.title === session.title &&
     next.description === session.description &&
     next.format === session.format;
-  if (unchanged) return;
-  await recordRevision(ctx, {
-    event: caller.event,
-    session,
-    after: next,
-    editedBy: caller.user._id,
+  if (
+    contentUnchanged &&
+    nextFormatId === session.formatId &&
+    nextDuration === session.durationMinutes
+  ) {
+    return;
+  }
+  if (!contentUnchanged) {
+    await recordRevision(ctx, {
+      event: caller.event,
+      session,
+      after: next,
+      editedBy: caller.user._id,
+    });
+  }
+  await ctx.db.patch("sessions", sessionId, {
+    ...next,
+    formatId: nextFormatId,
+    durationMinutes: nextDuration,
   });
-  await ctx.db.patch("sessions", sessionId, next);
   await republishIfPublished(ctx, caller.event._id);
   await logAudit(ctx, {
     orgId: caller.org._id,

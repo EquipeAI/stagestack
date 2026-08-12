@@ -241,6 +241,18 @@ export default defineSchema({
     order: v.number(),
   }).index("by_eventId", ["eventId"]),
 
+  // Session formats (W2). The NAME is the verbatim organizer-facing label —
+  // "Workshop (120 min)" keeps its parenthetical, because the CFP form's
+  // conditional logic matches option strings exactly and the eval asserts
+  // those labels verbatim. `defaultDurationMinutes` is the parsed number, kept
+  // as a separate field precisely so nothing has to re-parse the label.
+  formats: defineTable({
+    eventId: v.id("events"),
+    name: v.string(),
+    defaultDurationMinutes: v.optional(v.number()),
+    order: v.number(),
+  }).index("by_eventId", ["eventId"]),
+
   customFields: defineTable({
     eventId: v.id("events"),
     name: v.string(),
@@ -672,7 +684,15 @@ export default defineSchema({
     eventId: v.id("events"),
     title: v.string(),
     description: v.optional(v.string()),
+    // Free-text format label. Kept as the DISPLAY FALLBACK forever: sessions
+    // that predate the formats library (or whose label never matched a row)
+    // still show what the organizer typed. When `formatId` is set this string
+    // is the library row's name, denormalized so revisions stay readable.
     format: v.optional(v.string()),
+    /** Link to the formats library — what carries the default duration. */
+    formatId: v.optional(v.id("formats")),
+    /** Per-session override of the format's default block length. */
+    durationMinutes: v.optional(v.number()),
     trackId: v.optional(v.id("tracks")),
     tagIds: v.optional(v.array(v.id("tags"))),
     proposalId: v.optional(v.id("proposals")),

@@ -104,6 +104,8 @@ export const updateContent = eventMutation({
     title: v.optional(v.string()),
     description: v.optional(v.string()),
     format: v.optional(v.string()),
+    /** null clears the per-session length override. */
+    durationMinutes: v.optional(v.union(v.number(), v.null())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -189,6 +191,7 @@ export const createDirect = eventMutation({
     title: v.string(),
     description: v.optional(v.string()),
     format: v.optional(v.string()),
+    durationMinutes: v.optional(v.number()),
     trackId: v.optional(v.id("tracks")),
     speaker: v.object({
       firstName: v.string(),
