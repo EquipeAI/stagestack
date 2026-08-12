@@ -110,7 +110,10 @@ export type PublicProgram = {
 const flagKey = (targetType: string, targetId: string) =>
   `${targetType}:${targetId}`;
 
-async function publicationFlags(
+/** The event's publication flags, keyed `targetType:targetId`. Exported for
+ * model/readiness.ts, which derives the publication VOCABULARY from the same
+ * rows this file publishes from — the two must never read different state. */
+export async function publicationFlags(
   ctx: QueryCtx,
   eventId: Id<"events">,
 ): Promise<Map<string, boolean>> {
@@ -127,7 +130,7 @@ async function publicationFlags(
   return map;
 }
 
-function isPublished(
+export function isPublished(
   flags: Map<string, boolean>,
   targetType: string,
   targetId: string,

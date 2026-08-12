@@ -15,7 +15,7 @@
     "dev:convex": "convex dev",
     "build:web": "npm run build -w apps/web",
     "build:worker": "npm run build -w apps/worker",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "tsc -p convex/tsconfig.json --noEmit && npm run typecheck --workspaces --if-present",
     "codegen": "convex codegen",
     "test": "vitest run"
   },

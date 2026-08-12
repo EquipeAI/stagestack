@@ -266,28 +266,40 @@ The single biggest remaining trust issue in the review.
 
 The backbone the M9 surfaces consume. Build it before the control center.
 
-- [ ] **Extend `convex/model/readiness.ts`** — which already derives
+- [x] **Extend `convex/model/readiness.ts`** — which already derives
       `{status, reasons}` and is explicitly never stored — with a **publication**
-      dimension: `whyNotPublic(session)` returning structured reasons, each with
-      a machine `code`, a rendered sentence, and a repair target (route + params)
-      so every count and every blocker can deep-link.
-- [ ] **Compose the exact sentences the review asked for**, from the real
-      dependency chain (content approval · speaker confirmation · lineup toggle ·
-      slot release · public event state · agenda publication state):
-      "Not public: content is Draft. Speaker and schedule are ready." /
-      "Public in lineup, not agenda: its session is approved and lineup-enabled,
-      but the slot has not been released."
-- [ ] **One producer, many surfaces.** Render the same strings in the sessions
-      table, the session workspace (W7), the Publish Center (W8), and the
-      dashboard/control center (W6). Any surface that re-words a state in TSX is
-      a bug in this workstream.
-- [ ] **A cheap counts query for the nav rail** (consumed by W7): per-module
-      attention counts via `takeCapped` (truncating, never `event_too_large`),
-      no ticking argument, derived from the same model code — the full
-      `dashboard()` scan stays a per-page query and is never subscribed from
-      the shell.
-- [ ] Convex tests: one case per reason code, plus the all-ready case, plus a
-      negative-authz case per new query.
+      dimension: `whyNotPublic(session, deps)` returning structured reasons, each
+      with a machine `code`, a rendered sentence, and a repair target
+      (`{tab, params}`, tab ids taken from the shell's `TAB_PATHS`) so every
+      count and every blocker can deep-link. Six codes: `session_cancelled`,
+      `content_draft`, `session_not_published`, `lineup_not_published`,
+      `slot_not_released`, `agenda_not_published`. Still derived-only: no
+      schema change, no stored status.
+- [x] **Compose the exact sentences the review asked for**, from the real
+      dependency chain, mirroring `computeProgram` gate for gate. One
+      correction the code forced: **lineup and agenda really do publish
+      independently** — turning the public page off empties the lineup while a
+      released session goes on being served in a published schedule — so each
+      reason carries `blocks: both | lineup | agenda` and there is a fourth
+      summary shape ("Public in agenda, not lineup: the public page is off.").
+      Speaker confirmation is deliberately not a blocker (publish serves a
+      session as "speaker to be announced"); it shows up in `toBeAnnounced` and
+      in the summary's ready clause.
+- [x] **One producer, many surfaces.** `api.readiness.publication` returns the
+      per-session `{inLineup, inAgenda, toBeAnnounced, reasons, summary}` the
+      sessions table and the publish console now print verbatim; the publish
+      console's re-derived speaker/slot badges are gone. W7/W8/W9/W10 consume
+      the same query.
+- [x] **A cheap counts query for the nav rail** (consumed by W7):
+      `api.readiness.attention` — per-module counts via `takeCapped`
+      (truncating, with a `capped` flag, never `event_too_large`), no ticking
+      argument, and the three publication counts charge each session to the
+      repair tab of its FIRST unresolved blocker, so a badge can never disagree
+      with the sentence on the row. NOT wired into the nav here (W7 does that).
+- [x] Convex tests (`convex/readiness.test.ts`): one case per reason code, the
+      all-ready case, agreement asserted against `publish.preview`
+      (`computeProgram`) / `publish.state` / the served blob rather than a
+      re-implementation, counts + `capped`, and negative authz per new query.
 
 ## W5 — Rough edges from the 100% run
 

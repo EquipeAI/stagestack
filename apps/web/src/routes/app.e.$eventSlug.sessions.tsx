@@ -44,6 +44,13 @@ function Sessions() {
     api.sessions.list,
     isOrganizer ? { eventSlug } : 'skip',
   )
+  // W4: one producer for publication state. The Public column prints the
+  // sentence convex/model/readiness.ts composed — this file derives nothing
+  // from flags, slots or content status.
+  const publication = useQuery(
+    api.readiness.publication,
+    isOrganizer ? { eventSlug } : 'skip',
+  )
   const [inviting, setInviting] = useState(false)
   const [portalFor, setPortalFor] = useState<string | null>(null)
   const archived = event?.event.archivedAt !== undefined
@@ -65,6 +72,9 @@ function Sessions() {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading sessions…</p>
   }
 
+  const summaries = new Map(
+    (publication ?? []).map((row) => [row.sessionId as string, row.publication]),
+  )
   const rows: Array<Row> = sessions.map((row) => ({
     ...row,
     id: row.session._id,
@@ -206,6 +216,30 @@ function Sessions() {
                     archived={archived}
                   />
                 ),
+              },
+              {
+                key: 'public',
+                header: 'Public',
+                cell: (row: Row) => {
+                  // While the publication query is still loading, say so —
+                  // a dash would read as "no publication state", which is a
+                  // different (and false) claim.
+                  if (publication === undefined) {
+                    return (
+                      <span style={{ color: 'var(--text-tertiary)' }}>
+                        Loading…
+                      </span>
+                    )
+                  }
+                  const summary = summaries.get(row.session._id)?.summary
+                  return summary === undefined ? (
+                    <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                  ) : (
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      {summary}
+                    </span>
+                  )
+                },
               },
               {
                 key: 'participants',

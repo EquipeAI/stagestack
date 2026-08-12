@@ -54,6 +54,7 @@ import type * as model_validation from "../model/validation.js";
 import type * as orgs from "../orgs.js";
 import type * as portal from "../portal.js";
 import type * as publish from "../publish.js";
+import type * as readiness from "../readiness.js";
 import type * as reminders from "../reminders.js";
 import type * as reviews from "../reviews.js";
 import type * as sessions from "../sessions.js";
@@ -125,6 +126,7 @@ declare const fullApi: ApiFromModules<{
   orgs: typeof orgs;
   portal: typeof portal;
   publish: typeof publish;
+  readiness: typeof readiness;
   reminders: typeof reminders;
   reviews: typeof reviews;
   sessions: typeof sessions;

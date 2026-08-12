@@ -59,6 +59,13 @@ function PublishConsole() {
     isOrganizer ? { eventSlug } : 'skip',
   )
   const board = useQuery(api.agenda.board, isOrganizer ? { eventSlug } : 'skip')
+  // W4: publication state is composed once in convex/model/readiness.ts and
+  // printed verbatim here. This console must never re-derive "is it public"
+  // from flags and slots in TSX — that is how the surfaces drifted apart.
+  const publication = useQuery(
+    api.readiness.publication,
+    isOrganizer ? { eventSlug } : 'skip',
+  )
 
   if (data === undefined) {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>
@@ -71,7 +78,12 @@ function PublishConsole() {
       </Callout>
     )
   }
-  if (state === undefined || preview === undefined || board === undefined) {
+  if (
+    state === undefined ||
+    preview === undefined ||
+    board === undefined ||
+    publication === undefined
+  ) {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>
   }
 
@@ -95,6 +107,9 @@ function PublishConsole() {
         sessions={board.sessions}
         publishedIds={new Set(state.publishedSessionIds)}
         lineupPublished={state.lineupPublished}
+        summaries={
+          new Map(publication.map((row) => [row.sessionId, row.publication]))
+        }
       />
       <AgendaItemsCard
         eventSlug={eventSlug}
@@ -888,8 +903,13 @@ function NewEmbedDialog({
 type BoardSession = {
   sessionId: string
   title: string
-  releasedSlot?: unknown
-  participants: Array<{ state: string }>
+}
+
+/** The shared publication vocabulary (convex/model/readiness.ts). Rendered,
+ * never re-derived: no flag arithmetic in this file. */
+type PublicationSummary = {
+  summary: string
+  reasons: Array<{ sentence: string }>
 }
 
 function SessionsCard({
@@ -897,11 +917,13 @@ function SessionsCard({
   sessions,
   publishedIds,
   lineupPublished,
+  summaries,
 }: {
   eventSlug: string
   sessions: Array<BoardSession>
   publishedIds: Set<string>
   lineupPublished: boolean
+  summaries: Map<string, PublicationSummary>
 }) {
   return (
     <Card
@@ -934,6 +956,7 @@ function SessionsCard({
               eventSlug={eventSlug}
               session={session}
               published={publishedIds.has(session.sessionId)}
+              publication={summaries.get(session.sessionId)}
             />
           ))}
         </div>
@@ -946,18 +969,15 @@ function SessionRow({
   eventSlug,
   session,
   published,
+  publication,
 }: {
   eventSlug: string
   session: BoardSession
   published: boolean
+  publication?: PublicationSummary
 }) {
   const setSession = useMutation(api.publish.setSession)
   const { pending, error, run } = usePending()
-  const confirmed = session.participants.filter(
-    (p) => p.state === 'confirmed',
-  ).length
-  const released =
-    session.releasedSlot !== undefined && session.releasedSlot !== null
 
   return (
     <div
@@ -983,18 +1003,16 @@ function SessionRow({
         >
           {session.title}
         </span>
-        <div
-          style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}
-        >
-          <Badge tone={confirmed > 0 ? 'success' : 'neutral'}>
-            {confirmed > 0
-              ? `${confirmed} confirmed speaker${confirmed === 1 ? '' : 's'}`
-              : 'Speaker to be announced'}
-          </Badge>
-          <Badge tone={released ? 'info' : 'neutral'}>
-            {released ? 'Slot released' : 'Not on agenda until released'}
-          </Badge>
-        </div>
+        {publication === undefined ? null : (
+          <span
+            style={{
+              font: 'var(--type-caption)',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            {publication.summary}
+          </span>
+        )}
         {error !== null ? (
           <span
             style={{ font: 'var(--type-caption)', color: 'var(--text-danger)' }}
