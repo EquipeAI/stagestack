@@ -30,6 +30,7 @@ export function BlockCard({
   secondary,
   fill,
   dragging,
+  clamped,
 }: {
   block: PlacedBlock
   zone: string
@@ -40,6 +41,10 @@ export function BlockCard({
   /** Stretch to the positioned wrapper's height (grid use). */
   fill?: boolean
   dragging?: boolean
+  /** The grid drew this block taller than its duration to keep it readable
+   * (TimeGrid's MIN_BLOCK_PX floor). Say so — the height is the only thing on
+   * the board that reads as a duration, so a silent clamp is a wrong length. */
+  clamped?: boolean
 }) {
   const isItem = block.kind === 'item'
   const blocker = hasBlocker(block.conflicts)
@@ -132,6 +137,26 @@ export function BlockCard({
         }}
       >
         {clockLabel(block.startsAt, zone)}–{clockLabel(block.endsAt, zone)}
+        {clamped === true ? (
+          <span
+            // role="img" with the note as its name: a bare <span aria-label>
+            // has no role, and assistive tech is free to ignore the label on
+            // one. The visible "10m" becomes the image's alternative text.
+            role="img"
+            data-clamped="true"
+            title={clampNote(block)}
+            aria-label={clampNote(block)}
+            style={{
+              marginLeft: 'var(--space-1)',
+              padding: 'var(--space-0) var(--space-1)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--surface-sunken)',
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            {`${durationMinutes(block)}m`}
+          </span>
+        ) : null}
       </span>
 
       <span
@@ -165,6 +190,17 @@ export function BlockCard({
       ) : null}
     </div>
   )
+}
+
+/** The block's real length in whole minutes. */
+function durationMinutes(block: PlacedBlock): number {
+  return Math.max(1, Math.round((block.endsAt - block.startsAt) / 60000))
+}
+
+/** Why this block is drawn taller than it is. Said out loud, because height is
+ * the only thing on the grid that reads as a duration. */
+function clampNote(block: PlacedBlock): string {
+  return `${durationMinutes(block)} minutes — drawn taller so it stays readable.`
 }
 
 function ConflictMark({ block }: { block: PlacedBlock }) {

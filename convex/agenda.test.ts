@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { boardScheduledThings, conflictsFor } from "./shared/agenda";
 import {
   auditActions,
   createEvent,
@@ -428,6 +429,115 @@ describe("agenda.board conflicts", () => {
     board = await alice.query(api.agenda.board, { eventSlug });
     expect(board.agendaItems).toHaveLength(0);
     expect(board.sessions[0].conflicts).toEqual([]);
+  });
+
+  // W13. The phone board highlights eligible cells by running the SHARED
+  // conflict engine over the board projection it already subscribes to. That is
+  // only safe while the client's `BoardSession → ScheduledThing` adapter agrees
+  // with the server's `Doc → ScheduledThing` one — including the participant
+  // filter, which is the single rule the projection does not pre-apply. This is
+  // that agreement, asserted against the real board query rather than against a
+  // hand-written expectation.
+  test("the client adapter reproduces the server's conflict map exactly", async () => {
+    const { t, alice, eventSlug, mainStage, sideRoom, platformTrack } =
+      await setup();
+    const bob = {
+      firstName: "Bob",
+      lastName: "Speaker",
+      email: "bob@example.com",
+    };
+    // Room clash + same-track warning + a shared speaker, all at once.
+    const a = await directSession(alice, eventSlug, "Talk A", bob, platformTrack);
+    const b = await directSession(
+      alice,
+      eventSlug,
+      "Talk B",
+      { firstName: "Carol", lastName: "Speaker", email: "carol@example.com" },
+      platformTrack,
+    );
+    const c = await directSession(alice, eventSlug, "Talk C", {
+      firstName: "Cal",
+      lastName: "Speaker",
+      email: "cal@example.com",
+    });
+    // Unplaced: the adapter must skip it, exactly as `toScheduledThings` does.
+    await directSession(alice, eventSlug, "Talk D", {
+      firstName: "Dee",
+      lastName: "Speaker",
+      email: "dee@example.com",
+    });
+    await place(alice, eventSlug, a, {
+      startsAt: T10,
+      endsAt: T11,
+      roomId: mainStage,
+    });
+    await place(alice, eventSlug, b, {
+      startsAt: T1030,
+      endsAt: T12,
+      roomId: mainStage,
+    });
+    await place(alice, eventSlug, c, {
+      startsAt: T1030,
+      endsAt: T11,
+      roomId: sideRoom,
+    });
+    await alice.mutation(api.agenda.createAgendaItem, {
+      eventSlug,
+      title: "Lunch",
+      startsAt: T1030,
+      endsAt: T12,
+      roomId: sideRoom,
+    });
+    // A withdrawn co-speaker on both A and C: shared between two overlapping
+    // blocks, and therefore a speaker blocker if — and only if — the adapter
+    // forgets the withdrawn/declined filter.
+    for (const sessionId of [a, c]) {
+      await addCoSpeaker(t, sessionId, {
+        firstName: "Wanda",
+        lastName: "Withdrawn",
+        email: "wanda@example.com",
+      });
+    }
+    await t.run(async (ctx) => {
+      for (const sessionId of [a, c]) {
+        const rows = await ctx.db
+          .query("sessionParticipants")
+          .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+          .collect();
+        for (const row of rows) {
+          const contact = await ctx.db.get("eventContacts", row.eventContactId);
+          if (contact?.email === "wanda@example.com") {
+            await ctx.db.patch("sessionParticipants", row._id, {
+              state: "withdrawn",
+            });
+          }
+        }
+      }
+    });
+
+    const board = await alice.query(api.agenda.board, { eventSlug });
+    const fromClient = conflictsFor(boardScheduledThings(board));
+
+    // Every block the server annotated, and nothing more.
+    for (const session of board.sessions) {
+      expect(fromClient.get(session.sessionId) ?? []).toEqual(
+        session.conflicts,
+      );
+    }
+    for (const item of board.agendaItems) {
+      expect(fromClient.get(item.itemId) ?? []).toEqual(item.conflicts);
+    }
+    const serverIds = new Set([
+      ...board.sessions.filter((s) => s.conflicts.length > 0).map((s) => s.sessionId as string),
+      ...board.agendaItems.filter((i) => i.conflicts.length > 0).map((i) => i.itemId as string),
+    ]);
+    expect([...fromClient.keys()].sort()).toEqual([...serverIds].sort());
+    // The fixture is only meaningful if it really collides.
+    expect(serverIds.size).toBeGreaterThan(0);
+    // …and the withdrawn speaker is shared by two overlapping blocks without
+    // producing a speaker conflict on either side.
+    const rowA = board.sessions.find((s) => s.sessionId === a);
+    expect(rowA?.conflicts.some((x) => x.kind === "speaker")).toBe(false);
   });
 
   test("an agenda item's room can be cleared with roomId: null", async () => {

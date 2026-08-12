@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   DragOverlay,
@@ -27,29 +27,35 @@ import {
   agendaCollisionDetection,
   agendaKeyboardCoordinates,
 } from './keyboardDrag'
+import { ConflictList } from './ConflictList'
 import {
-  DEFAULT_DURATION_MS,
+  HOUR_PX,
+  HOUR_PX_PLACING,
   TRAY_DROPPABLE,
   VIEW_ICON,
   VIEW_LABEL,
   clockLabel,
   dayKey,
   dayLabel,
-  durationOf,
+  eligibleSlots,
   eventDayKeys,
   hourRange,
   parseDraggableId,
   parseSlotDroppableId,
   placedBlocks,
+  placementRequest,
   sessionBlock,
+  slotIsEligible,
   traySessions,
 } from './model'
 import type { GridColumn } from './TimeGrid'
 import type {
   Board,
   BoardAgendaItem,
+  BoardConflict,
   BoardSession,
   PlacedBlock,
+  PlacementRequest,
   ViewId,
 } from './model'
 import type {
@@ -64,6 +70,7 @@ import type { Id } from '@convex/_generated/dataModel'
 import { pushToast } from '~/components/toast'
 import { Button, Callout, Card, EmptyState, Select, Tabs, Toolbar } from '~/ds'
 import { usePending } from '~/lib/usePending'
+import { announce } from '~/lib/announce'
 
 // The whole agenda builder (M6): one board subscription, five projections of
 // it, and a single drag surface shared by the Room/Track/Day/Week grids. Drops
@@ -85,15 +92,21 @@ export function AgendaBoard({
   board,
   view,
   day,
+  room,
   onView,
   onDay,
+  onRoom,
 }: {
   eventSlug: string
   board: Board
   view: ViewId
   day: string | undefined
+  /** The one column the grid is scoped to (a roomId, a trackId, or the
+   * synthetic "noroom"/"notrack"); undefined shows every column. */
+  room: string | undefined
   onView: (view: ViewId) => void
   onDay: (day: string) => void
+  onRoom: (room: string | undefined) => void
 }) {
   const scheduleSession = useMutation(api.agenda.scheduleSession)
   const undoPlacement = useMutation(api.agenda.undoPlacement)
@@ -108,6 +121,16 @@ export function AgendaBoard({
 
   const [activeId, setActiveId] = useState<string | null>(null)
   const [modal, setModal] = useState<Modal>(null)
+  /** The tray session armed for tap-to-place, by id. */
+  const [picked, setPicked] = useState<string | null>(null)
+  /** The last ineligible cell tapped, and why it was refused. */
+  const [refused, setRefused] = useState<{
+    where: string
+    conflicts: Array<BoardConflict>
+  } | null>(null)
+  /** Everything an armed placement may be tapped on; a pointer landing outside
+   * it cancels, which is what "tap elsewhere" means on a phone. */
+  const boardRef = useRef<HTMLDivElement | null>(null)
   // A completed drag fires a synthetic click on the block; swallow it so a
   // reschedule doesn't also open the detail dialog.
   const draggedAt = useRef(0)
@@ -140,10 +163,26 @@ export function AgendaBoard({
     return map
   }, [allPlaced, tray])
 
-  const columns = useMemo(
+  const allColumns = useMemo(
     () => buildColumns(view, board, allPlaced, selectedDay, days, roomsById, tracksById),
     [view, board, allPlaced, selectedDay, days, roomsById, tracksById],
   )
+
+  // ── Scoping (W13) ────────────────────────────────────────────────────────
+  // At 375px a multi-column grid is a sliver of a two-dimensional layout, so
+  // the organizer can reduce it to ONE column. This is a filter over the same
+  // column projection the wide board uses — not a second rendering — so the
+  // droppable ids, the drag mechanics and the keyboard walk are unchanged on
+  // the scoped view. Available at every width; the URL carries it.
+  const scopable = view === 'room' || view === 'track'
+  const columns = useMemo(() => {
+    if (!scopable || room === undefined) return allColumns
+    const scoped = allColumns.filter((c) => c.key === room)
+    // A stale link (a deleted room, an emptied "Unassigned") still resolves:
+    // it shows the whole board rather than an empty one.
+    return scoped.length > 0 ? scoped : allColumns
+  }, [allColumns, room, scopable])
+  const scopeActive = scopable && columns.length < allColumns.length
 
   // Mouse and touch are split rather than handled by one PointerSensor,
   // because the right activation gesture is genuinely different per input.
@@ -207,9 +246,38 @@ export function AgendaBoard({
     (s) => s.pendingRelease && s.startsAt !== undefined,
   )
 
+  /**
+   * The ONE caller of the placement mutations. A drop, an arrow-key drop and a
+   * tap on a highlighted slot all build a `PlacementRequest` (model.ts) and
+   * arrive here, so the three gestures cannot diverge in what they write.
+   *
+   * Resolves TRUE only once the backend has taken the placement — a refused
+   * move (locked event, a blocker the mutation won't accept) resolves false and
+   * has already been announced by `usePending`, so no caller may say "placed"
+   * without waiting for this.
+   */
+  const submitPlacement = (request: PlacementRequest): Promise<boolean> =>
+    request.kind === 'session'
+      ? run(() =>
+          scheduleSession({
+            eventSlug,
+            sessionId: request.sessionId,
+            slot: request.slot,
+          }),
+        )
+      : run(() =>
+          updateItem({
+            eventSlug,
+            itemId: request.itemId,
+            patch: request.patch,
+          }),
+        )
+
   const onDragStart = (e: DragStartEvent) => {
     setActiveId(String(e.active.id))
     setError(null)
+    // A pointer or keyboard drag supersedes an armed tap-to-place.
+    setPicked(null)
   }
 
   const onDragEnd = (e: DragEndEvent) => {
@@ -223,48 +291,153 @@ export function AgendaBoard({
     if (overId === TRAY_DROPPABLE) {
       // Agenda items always carry a time; only sessions return to the tray.
       if (parsed.kind === 'session') {
-        void run(() =>
-          scheduleSession({
-            eventSlug,
-            sessionId: parsed.id as Id<'sessions'>,
-            slot: null,
-          }),
-        )
+        void submitPlacement({
+          kind: 'session',
+          sessionId: parsed.id as Id<'sessions'>,
+          slot: null,
+        })
       }
       return
     }
 
     const slot = parseSlotDroppableId(overId)
     if (slot === null) return
-    const dragged = blockLookup.get(activeRaw)
-    const duration = dragged === undefined ? DEFAULT_DURATION_MS : durationOf(dragged)
-    const startsAt = slot.ms
-    const endsAt = startsAt + duration
-    // Only the Room view rewrites the room on drop; the other grids keep it.
-    const roomId =
-      view === 'room'
-        ? slot.columnKey === 'noroom'
-          ? undefined
-          : (slot.columnKey as Id<'rooms'>)
-        : dragged?.roomId
+    const dragged =
+      blockLookup.get(activeRaw) ??
+      ({
+        kind: parsed.kind,
+        id: parsed.id,
+        title: '',
+        startsAt: 0,
+        endsAt: 0,
+        conflicts: [],
+      } satisfies PlacedBlock)
+    void submitPlacement(
+      placementRequest({
+        view,
+        block: dragged,
+        columnKey: slot.columnKey,
+        ms: slot.ms,
+      }),
+    )
+  }
 
-    if (parsed.kind === 'session') {
-      void run(() =>
-        scheduleSession({
-          eventSlug,
-          sessionId: parsed.id as Id<'sessions'>,
-          slot: { startsAt, endsAt, roomId },
-        }),
-      )
-    } else {
-      void run(() =>
-        updateItem({
-          eventSlug,
-          itemId: parsed.id as Id<'agendaItems'>,
-          patch: { startsAt, endsAt, roomId },
-        }),
-      )
+  // ── Tap to place (W13) ───────────────────────────────────────────────────
+  // Select a tray session, every visible cell says whether it would be legal,
+  // tap one to place it. The eligibility answer comes from the SHARED conflict
+  // engine (convex/shared/agenda.ts) — the same function that produced the
+  // conflicts already on the board — so a green cell and the backend agree.
+  const armed = picked === null ? null : tray.find((s) => s.sessionId === picked)
+  const eligibility = useMemo(
+    () =>
+      armed === undefined || armed === null
+        ? null
+        : eligibleSlots({
+            board,
+            session: armed,
+            view,
+            columns,
+            hours,
+            zone,
+          }),
+    [armed, board, view, columns, hours, zone],
+  )
+  const freeCount =
+    eligibility === null
+      ? 0
+      : [...eligibility.values()].filter(slotIsEligible).length
+
+  const disarm = () => {
+    setPicked(null)
+    setRefused(null)
+  }
+
+  const pick = (session: BoardSession) => {
+    if (picked === session.sessionId) {
+      disarm()
+      announce(`Cancelled placing "${session.title}".`)
+      return
     }
+    setPicked(session.sessionId)
+    setRefused(null)
+  }
+
+  // Announced once the cells have been computed, so the count is the real one.
+  // The board's dnd-kit announcement channel only exists during a dnd drag —
+  // tap-to-place is not one, so it speaks through the app's live region (W6).
+  const spokenFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (armed === null || armed === undefined) {
+      spokenFor.current = null
+      return
+    }
+    if (spokenFor.current === armed.sessionId) return
+    spokenFor.current = armed.sessionId
+    announce(
+      `Placing "${armed.title}". ${freeCount} free ${
+        freeCount === 1 ? 'slot' : 'slots'
+      } on this view. Tap a highlighted slot to place it, or press escape to cancel.`,
+    )
+  }, [armed, freeCount])
+
+  // Escape cancels, wherever focus is.
+  useEffect(() => {
+    if (picked === null) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      disarm()
+      announce('Placement cancelled.')
+    }
+    const onDown = (e: Event) => {
+      const target = e.target
+      if (
+        target instanceof Node &&
+        boardRef.current !== null &&
+        boardRef.current.contains(target)
+      ) {
+        return
+      }
+      disarm()
+    }
+    window.addEventListener('keydown', onKey)
+    document.addEventListener('pointerdown', onDown)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.removeEventListener('pointerdown', onDown)
+    }
+  })
+
+  const onSlotTap = (slotId: string, ms: number) => {
+    if (armed === null || armed === undefined) return
+    const conflicts = eligibility?.get(slotId) ?? []
+    const slot = parseSlotDroppableId(slotId)
+    if (slot === null) return
+    const column = columns.find((c) => c.key === slot.columnKey)
+    const where = `${clockLabel(ms, zone)}${column === undefined ? '' : ` in ${column.label}`}`
+    if (!slotIsEligible(conflicts)) {
+      // The reason, inline and tap-reachable — never a hover tooltip (W6).
+      setRefused({ where, conflicts })
+      announce(
+        `${where} is not free. ${conflicts.map((c) => c.message).join(' ')}`,
+        'assertive',
+      )
+      return
+    }
+    // Disarm now — the gesture is over — but say "placed" only once the
+    // backend has taken it. A refusal is announced exactly once, by
+    // `usePending`, which already speaks the backend's own message assertively.
+    const title = armed.title
+    disarm()
+    void submitPlacement(
+      placementRequest({
+        view,
+        block: sessionBlock(armed),
+        columnKey: slot.columnKey,
+        ms,
+      }),
+    ).then((ok) => {
+      if (ok) announce(`"${title}" placed at ${where}. Nothing was sent.`)
+    })
   }
 
   const openBlock = (block: PlacedBlock) => {
@@ -288,9 +461,29 @@ export function AgendaBoard({
           />
           {showDaySelect && days.length > 1 ? (
             <Select
+              aria-label="Day"
               options={days.map((d) => ({ value: d, label: dayLabel(d, zone) }))}
               value={selectedDay}
               onChange={(e) => onDay(e.target.value)}
+            />
+          ) : null}
+          {/* One column at a time. The board keeps every column in the URL's
+              default state; this is the phone's way out of a grid it cannot
+              see, and a focus control on a desktop. */}
+          {scopable && allColumns.length > 1 ? (
+            <Select
+              aria-label={view === 'room' ? 'Room' : 'Track'}
+              options={[
+                {
+                  value: '',
+                  label: view === 'room' ? 'All rooms' : 'All tracks',
+                },
+                ...allColumns.map((c) => ({ value: c.key, label: c.label })),
+              ]}
+              value={scopeActive ? (room ?? '') : ''}
+              onChange={(e) =>
+                onRoom(e.target.value === '' ? undefined : e.target.value)
+              }
             />
           ) : null}
         </div>
@@ -323,8 +516,46 @@ export function AgendaBoard({
   )
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+    <div
+      ref={boardRef}
+      style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}
+    >
       {toolbar}
+
+      {armed === null || armed === undefined ? null : (
+        <Callout
+          tone="info"
+          title={`Placing "${armed.title}"`}
+          actions={
+            <Button size="sm" onClick={disarm}>
+              Cancel
+            </Button>
+          }
+        >
+          {`Tap a highlighted slot to place it — ${freeCount} ${
+            freeCount === 1 ? 'slot is' : 'slots are'
+          } free on this view. Tap any other slot to see what is in the way. Escape cancels. Nothing is sent: this is a draft placement.`}
+        </Callout>
+      )}
+
+      {refused === null ? null : (
+        <Callout
+          tone="blocked"
+          title={`${refused.where} isn't free`}
+          actions={
+            <Button
+              size="sm"
+              onClick={() => {
+                setRefused(null)
+              }}
+            >
+              Dismiss
+            </Button>
+          }
+        >
+          <ConflictList conflicts={refused.conflicts} />
+        </Callout>
+      )}
 
       {lastRun !== null ? (
         <Callout
@@ -427,6 +658,8 @@ export function AgendaBoard({
               sessions={tray}
               activeId={activeId}
               disabled={false}
+              selectedId={picked}
+              onSelect={pick}
               onOpen={(session) => setModal({ type: 'detail', session })}
               onPlace={(session) => setModal({ type: 'place', session })}
             />
@@ -464,6 +697,9 @@ export function AgendaBoard({
                       secondary={view === 'room' ? 'track' : 'room'}
                       activeId={activeId}
                       onOpenBlock={openBlock}
+                      eligibility={eligibility}
+                      onSlotTap={onSlotTap}
+                      hourPx={eligibility === null ? HOUR_PX : HOUR_PX_PLACING}
                     />
                   </div>
                 </Card>

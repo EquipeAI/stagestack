@@ -701,17 +701,17 @@ it, not a new interaction model. What exists today:
 
 What is genuinely missing:
 
-- [ ] **Scoping pickers.** The grid still renders every room as a column and
+- [x] **Scoping pickers.** The grid still renders every room as a column and
       relies on horizontal scroll, so at 375px the organizer sees a sliver of a
       two-dimensional layout. Add day and room/track pickers that reduce the
       phone view to one column of time — reusing `ListView`'s data shaping rather
       than writing a third rendering of the board.
-- [ ] **Tap-to-place.** Select a session from the tray → eligible slots highlight
+- [x] **Tap-to-place.** Select a session from the tray → eligible slots highlight
       → tap to place. Keyboard pick-up exists; select-then-tap does not, and
       neither does slot **eligibility highlighting** (today the board shows
       conflicts for placements that already exist, not which empty cells would be
       legal).
-- [ ] **Client-visible eligibility.** That highlighting needs the conflict math
+- [x] **Client-visible eligibility.** That highlighting needs the conflict math
       where the client can call it. `conflictsFor` is pure but lives in
       `convex/model/agenda.ts`; move the pure part to `convex/shared/agenda.ts` —
       the repo already shares `formDef`, `scorecard`, `importPlan` and `jobTypes`
@@ -723,15 +723,15 @@ What is genuinely missing:
       `BoardSession → ScheduledThing` adapter replicating the `counts()`
       withdrawn/declined filter at `agenda.ts:184-186`; the existing
       `api.agenda.board` subscription already carries every required field.)
-- [ ] **Touch-reachable conflict explanations.** `Tooltip` reveals on
+- [x] **Touch-reachable conflict explanations.** `Tooltip` reveals on
       `:hover`/`:focus-within` only (`feedback.css`), which a touch device never
       triggers — so any conflict reason carried by a tooltip is invisible on a
       phone. Render blocker reasons inline on the block or in the sheet, using
       W4's sentences.
-- [ ] **Duration-accurate blocks** once W2 lands: block height and the
+- [x] **Duration-accurate blocks** once W2 lands: block height and the
       `PlaceDialog` default end come from the format's duration rather than a
       fixed hour (`PlaceDialog.tsx:34` `DEFAULT_DURATION_MS`).
-- [ ] Verify at 375px and 320px, both orientations, with `pointer: coarse` target
+- [x] Verify at 375px and 320px, both orientations, with `pointer: coarse` target
       sizes from W6.
 
 ---

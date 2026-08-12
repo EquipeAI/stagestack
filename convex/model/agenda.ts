@@ -4,6 +4,14 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
+import {
+  blockers,
+  candidateConflicts,
+  conflictsFor,
+  overlaps,
+  type Conflict,
+  type ScheduledThing,
+} from "../shared/agenda";
 import { mailFromAddress } from "../emails";
 import { logAudit } from "./audit";
 import { routeParticipant } from "./audiences";
@@ -144,42 +152,23 @@ async function validateSlot(
 }
 
 // ── Conflicts (pure) ─────────────────────────────────────────────────────
+//
+// The engine itself — `conflictsFor`, `overlaps`, `blockers`,
+// `candidateConflicts` and the `Conflict`/`ScheduledThing` types — moved to
+// `convex/shared/agenda.ts` (W13) so the phone board can ask the SAME function
+// whether an empty cell would be legal. Nothing about it changed; what changed
+// is who can call it. Re-exported here because this module is still the
+// server's front door to the schedule (`model/readiness.ts` imports from the
+// shared module directly).
 
-export type ConflictKind = "room" | "speaker" | "track";
-/** Speaker/room collisions are non-overridable for release and publication;
- * same-track overlap is a warning the organizer may accept (MILESTONES M6). */
-export type ConflictLevel = "blocker" | "warning";
-export type ScheduledKind = "session" | "agendaItem";
-
-export type Conflict = {
-  kind: ConflictKind;
-  level: ConflictLevel;
-  /** The other block involved, so the board can highlight both ends. */
-  withType: ScheduledKind;
-  withId: string;
-  withTitle: string;
-  message: string;
-};
-
-export type ScheduledThing = {
-  type: ScheduledKind;
-  id: string;
-  title: string;
-  startsAt: number;
-  endsAt: number;
-  roomId?: Id<"rooms">;
-  trackId?: Id<"tracks">;
-  /** Speakers who still count — withdrawn/declined participants can't collide. */
-  speakerIds: Array<Id<"eventContacts">>;
-};
-
-/** Half-open [start, end): back-to-back blocks do NOT overlap. */
-export function overlaps(
-  a: { startsAt: number; endsAt: number },
-  b: { startsAt: number; endsAt: number },
-): boolean {
-  return a.startsAt < b.endsAt && b.startsAt < a.endsAt;
-}
+export type {
+  Conflict,
+  ConflictKind,
+  ConflictLevel,
+  ScheduledKind,
+  ScheduledThing,
+} from "../shared/agenda";
+export { blockers, conflictsFor, overlaps } from "../shared/agenda";
 
 /** Participants that can be double-booked or owed an invitation. */
 function counts(participant: Doc<"sessionParticipants">): boolean {
@@ -226,76 +215,6 @@ export function toScheduledThings(args: {
     });
   }
   return things;
-}
-
-/**
- * Every collision on the board, keyed by block id. Pairwise over the placed
- * blocks — an event's schedule is hundreds of rows, not millions, and keeping
- * it pure means the same function answers for the board, the release gate and
- * the readiness dashboard.
- */
-export function conflictsFor(
-  things: ReadonlyArray<ScheduledThing>,
-): Map<string, Conflict[]> {
-  const out = new Map<string, Conflict[]>();
-  const push = (id: string, conflict: Conflict): void => {
-    const list = out.get(id) ?? [];
-    list.push(conflict);
-    out.set(id, list);
-  };
-  const pair = (
-    a: ScheduledThing,
-    b: ScheduledThing,
-    kind: ConflictKind,
-    level: ConflictLevel,
-    message: (other: ScheduledThing) => string,
-  ): void => {
-    push(a.id, {
-      kind,
-      level,
-      withType: b.type,
-      withId: b.id,
-      withTitle: b.title,
-      message: message(b),
-    });
-    push(b.id, {
-      kind,
-      level,
-      withType: a.type,
-      withId: a.id,
-      withTitle: a.title,
-      message: message(a),
-    });
-  };
-
-  for (let i = 0; i < things.length; i += 1) {
-    for (let j = i + 1; j < things.length; j += 1) {
-      const a = things[i];
-      const b = things[j];
-      if (!overlaps(a, b)) continue;
-
-      if (a.roomId !== undefined && a.roomId === b.roomId) {
-        pair(a, b, "room", "blocker", (o) => `Same room as "${o.title}".`);
-      }
-      if (a.speakerIds.some((id) => b.speakerIds.includes(id))) {
-        pair(
-          a,
-          b,
-          "speaker",
-          "blocker",
-          (o) => `The same speaker is booked on "${o.title}".`,
-        );
-      }
-      if (a.trackId !== undefined && a.trackId === b.trackId) {
-        pair(a, b, "track", "warning", (o) => `Same track as "${o.title}".`);
-      }
-    }
-  }
-  return out;
-}
-
-export function blockers(conflicts: ReadonlyArray<Conflict>): Conflict[] {
-  return conflicts.filter((c) => c.level === "blocker");
 }
 
 // ── Board ────────────────────────────────────────────────────────────────
@@ -1862,21 +1781,6 @@ function fingerprintOf(input: PlannerInput): string {
     );
   }
   return digest(parts.join("\n"));
-}
-
-/**
- * Conflicts for one candidate placement. Restricted to the blocks it actually
- * overlaps before handing them to `conflictsFor`: collisions only ever arise
- * between overlapping pairs, so this is the same answer the whole-board call
- * gives — `conflictsFor` stays the single producer of what blocks what.
- */
-function candidateConflicts(
-  things: ReadonlyArray<ScheduledThing>,
-  candidate: ScheduledThing,
-): Conflict[] {
-  const overlapping = things.filter((thing) => overlaps(thing, candidate));
-  if (overlapping.length === 0) return [];
-  return conflictsFor([...overlapping, candidate]).get(candidate.id) ?? [];
 }
 
 /** Gap between two non-overlapping blocks, in ms. */

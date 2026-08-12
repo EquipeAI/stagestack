@@ -331,6 +331,34 @@
 .agenda-draggable {
   touch-action: none;
 }
+/* The tray card's drag handle. It exists so the card itself can stop being a
+   role="button" wrapped around three real buttons (nested interactive
+   controls); dnd-kit's activator lives here instead. 28px clears WCAG 2.2's
+   24px floor with a mouse, 44px with a finger. */
+.agenda-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: var(--space-0);
+  border: var(--space-px) solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-canvas);
+  color: var(--text-tertiary);
+  cursor: grab;
+}
+.agenda-drag-handle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+@media (pointer: coarse) {
+  .agenda-drag-handle {
+    width: 44px;
+    height: 44px;
+  }
+}
 @media (pointer: coarse) {
   .agenda-draggable {
     touch-action: manipulation;

@@ -5,15 +5,23 @@ import {
   HOUR_PX,
   MIN_BLOCK_PX,
   MIN_COL_PX,
-  MIN_MS,
   SNAP_MIN,
   TIME_GUTTER_PX,
+  clockLabel,
+  columnSlotTimes,
   dayStartMs,
   draggableId,
   slotDroppableId,
+  slotIsEligible,
 } from './model'
 import type { CSSProperties, KeyboardEvent } from 'react'
-import type { BoardRoom, BoardTrack, HourRange, PlacedBlock } from './model'
+import type {
+  BoardRoom,
+  BoardTrack,
+  HourRange,
+  PlacedBlock,
+  SlotEligibility,
+} from './model'
 
 // The shared time-axis grid behind the Room, Track, Day and Week views. Columns
 // differ per view; the vertical axis and the drag mechanics do not. Slots are a
@@ -84,6 +92,9 @@ export function TimeGrid({
   secondary,
   activeId,
   onOpenBlock,
+  eligibility = null,
+  onSlotTap,
+  hourPx = HOUR_PX,
 }: {
   columns: Array<GridColumn>
   hours: HourRange
@@ -94,9 +105,15 @@ export function TimeGrid({
   /** The draggable currently being dragged, so its source can be dimmed. */
   activeId: string | null
   onOpenBlock: (block: PlacedBlock) => void
+  /** Non-null while a session is armed for tap-to-place: every visible cell's
+   * would-be conflicts, keyed by droppable id. Cells become buttons. */
+  eligibility?: SlotEligibility | null
+  onSlotTap?: (slotId: string, ms: number) => void
+  /** Taller while armed, so one 15-minute cell is a thumb-sized target. */
+  hourPx?: number
 }) {
   const span = Math.max(1, hours.endHour - hours.startHour)
-  const totalPx = span * HOUR_PX
+  const totalPx = span * hourPx
   const hourMarks = Array.from({ length: span + 1 }, (_, i) => hours.startHour + i)
 
   return (
@@ -117,7 +134,7 @@ export function TimeGrid({
                 key={hour}
                 style={{
                   position: 'absolute',
-                  top: `${i * HOUR_PX}px`,
+                  top: `${i * hourPx}px`,
                   right: 'var(--space-2)',
                   transform: 'translateY(-50%)',
                   fontFamily: 'var(--font-mono)',
@@ -146,6 +163,9 @@ export function TimeGrid({
               secondary={secondary}
               activeId={activeId}
               onOpenBlock={onOpenBlock}
+              eligibility={eligibility}
+              onSlotTap={onSlotTap}
+              hourPx={hourPx}
             />
           ))}
         </div>
@@ -164,6 +184,9 @@ function Column({
   secondary,
   activeId,
   onOpenBlock,
+  eligibility,
+  onSlotTap,
+  hourPx,
 }: {
   column: GridColumn
   hours: HourRange
@@ -174,18 +197,39 @@ function Column({
   secondary: 'room' | 'track'
   activeId: string | null
   onOpenBlock: (block: PlacedBlock) => void
+  eligibility: SlotEligibility | null
+  onSlotTap?: (slotId: string, ms: number) => void
+  hourPx: number
 }) {
   const base = dayStartMs(column.dayKey, zone) + hours.startHour * HOUR_MS
-  const span = Math.max(1, hours.endHour - hours.startHour)
-  const slotCount = (span * 60) / SNAP_MIN
-  const slots = Array.from({ length: slotCount }, (_, i) => ({
-    index: i,
-    ms: base + i * SNAP_MIN * MIN_MS,
+  // One walk of the lattice, shared with the eligibility map (model.ts).
+  const slots = columnSlotTimes(column.dayKey, hours, zone).map((ms, index) => ({
+    index,
+    ms,
   }))
   const lanes = layoutLanes(column.blocks)
+  const slotPx = (SNAP_MIN / 60) * hourPx
+
+  /**
+   * The lattice cell `offsetPx` down this column. Blocks are painted OVER the
+   * cells, so while a session is armed a tap that lands on a block has to
+   * resolve to the cell underneath it — otherwise the block's own footprint is
+   * a dead zone that can neither be placed into nor asked why not. Derived
+   * from the geometry the column already computed, so it needs no measurement.
+   */
+  const slotAt = (offsetPx: number): { id: string; ms: number } | null => {
+    if (slots.length === 0) return null
+    const index = Math.min(
+      slots.length - 1,
+      Math.max(0, Math.floor(offsetPx / slotPx)),
+    )
+    const ms = slots[index].ms
+    return { id: slotDroppableId(column.key, ms), ms }
+  }
 
   return (
     <div
+      data-column={column.key}
       style={{
         flex: `1 1 ${MIN_COL_PX}px`,
         minWidth: `${MIN_COL_PX}px`,
@@ -237,23 +281,38 @@ function Column({
         }}
       >
         {/* Droppable slot lattice */}
-        {slots.map((slot) => (
-          <SlotCell
-            key={slot.index}
-            id={slotDroppableId(column.key, slot.ms)}
-            onHour={slot.index % (60 / SNAP_MIN) === 0}
-            dropping={activeId !== null}
-          />
-        ))}
+        {slots.map((slot) => {
+          const id = slotDroppableId(column.key, slot.ms)
+          const conflicts = eligibility?.get(id)
+          return (
+            <SlotCell
+              key={slot.index}
+              id={id}
+              onHour={slot.index % (60 / SNAP_MIN) === 0}
+              dropping={activeId !== null}
+              hourPx={hourPx}
+              tap={
+                conflicts === undefined || onSlotTap === undefined
+                  ? undefined
+                  : {
+                      eligible: slotIsEligible(conflicts),
+                      label: `${clockLabel(slot.ms, zone)} in ${column.label}`,
+                      onTap: () => {
+                        onSlotTap(id, slot.ms)
+                      },
+                    }
+              }
+            />
+          )
+        })}
 
         {/* Positioned blocks */}
         {column.blocks.map((block) => {
           const lane = lanes.get(block.id) ?? { laneIndex: 0, laneCount: 1 }
-          const top = Math.max(
-            0,
-            ((block.startsAt - base) / HOUR_MS) * HOUR_PX,
-          )
-          const rawHeight = ((block.endsAt - block.startsAt) / HOUR_MS) * HOUR_PX
+          const top = Math.max(0, ((block.startsAt - base) / HOUR_MS) * hourPx)
+          const rawHeight = ((block.endsAt - block.startsAt) / HOUR_MS) * hourPx
+          // Duration-accurate, with one floor: below MIN_BLOCK_PX the block is
+          // drawn taller than it is, and BlockCard says so rather than lying.
           const height = Math.max(MIN_BLOCK_PX, rawHeight)
           const widthPct = 100 / lane.laneCount
           return (
@@ -266,6 +325,21 @@ function Column({
               secondary={secondary}
               activeId={activeId}
               onOpenBlock={onOpenBlock}
+              clamped={rawHeight < MIN_BLOCK_PX}
+              // While armed, a tap on this block belongs to the cell under the
+              // finger, not to the block: `top` locates the block in the
+              // column, the pointer's own offset locates the finger in the
+              // block. With no geometry (jsdom, a synthetic event) that
+              // resolves to the block's first cell, which is the honest answer
+              // for "somewhere on this block".
+              onArmedTap={
+                eligibility === null || onSlotTap === undefined
+                  ? undefined
+                  : (offsetWithinBlock) => {
+                      const cell = slotAt(top + offsetWithinBlock)
+                      if (cell !== null) onSlotTap(cell.id, cell.ms)
+                    }
+              }
               style={{
                 position: 'absolute',
                 top: `${top}px`,
@@ -281,27 +355,61 @@ function Column({
   )
 }
 
+/** One 15-minute cell: always a droppable, and additionally a button while a
+ * session is armed for tap-to-place. An ineligible cell stays tappable on
+ * purpose — tapping it is how a phone asks "why not here?". */
 function SlotCell({
   id,
   onHour,
   dropping,
+  hourPx,
+  tap,
 }: {
   id: string
   onHour: boolean
   dropping: boolean
+  hourPx: number
+  tap?: { eligible: boolean; label: string; onTap: () => void }
 }) {
   const { setNodeRef, isOver } = useDroppable({ id })
+  const style: CSSProperties = {
+    display: 'block',
+    boxSizing: 'border-box',
+    width: '100%',
+    height: `${(SNAP_MIN / 60) * hourPx}px`,
+    padding: 'var(--space-0)',
+    borderTop: onHour
+      ? 'var(--space-px) solid var(--border-default)'
+      : 'var(--space-px) solid transparent',
+    background:
+      dropping && isOver ? 'var(--surface-selected)' : 'transparent',
+    transition: 'background var(--dur-1, 80ms) linear',
+  }
+  if (tap === undefined) {
+    return <div ref={setNodeRef} style={style} />
+  }
   return (
-    <div
+    <button
       ref={setNodeRef}
+      type="button"
+      // The state is in the name, not only in the fill: "free" and "taken" are
+      // what a screen reader hears, and colour is never the only signal (W6).
+      aria-label={`${tap.eligible ? 'Free' : 'Taken'} — ${tap.label}`}
+      data-slot-eligible={tap.eligible ? 'true' : 'false'}
+      onClick={tap.onTap}
       style={{
-        height: `${(SNAP_MIN / 60) * HOUR_PX}px`,
-        borderTop: onHour
-          ? 'var(--space-px) solid var(--border-default)'
-          : 'var(--space-px) solid transparent',
-        background:
-          dropping && isOver ? 'var(--surface-selected)' : 'transparent',
-        transition: 'background var(--dur-1, 80ms) linear',
+        ...style,
+        borderLeft: 'var(--space-0) solid transparent',
+        borderRight: 'var(--space-0) solid transparent',
+        borderBottom: 'var(--space-0) solid transparent',
+        cursor: 'pointer',
+        background: tap.eligible
+          ? 'var(--status-success-bg)'
+          : 'var(--surface-sunken)',
+        boxShadow: tap.eligible
+          ? 'inset 0 0 0 var(--space-px) var(--status-success-fg)'
+          : undefined,
+        opacity: tap.eligible ? 1 : 0.6,
       }}
     />
   )
@@ -315,6 +423,8 @@ function GridBlock({
   secondary,
   activeId,
   onOpenBlock,
+  clamped,
+  onArmedTap,
   style,
 }: {
   block: PlacedBlock
@@ -324,11 +434,17 @@ function GridBlock({
   secondary: 'room' | 'track'
   activeId: string | null
   onOpenBlock: (block: PlacedBlock) => void
+  /** Drawn taller than its real duration (see MIN_BLOCK_PX). */
+  clamped: boolean
+  /** Set while a session is armed for tap-to-place: a tap on this block is a
+   * tap on the cell beneath it, at `offset` px from the block's own top. */
+  onArmedTap?: (offset: number) => void
   style: CSSProperties
 }) {
   const id = draggableId(block)
   const { setNodeRef, listeners, attributes } = useDraggable({ id })
   const isSource = activeId === id
+  const armed = onArmedTap !== undefined
 
   // dnd-kit already makes the block a focusable role="button"; space is its
   // pick-up key (see keyboardDrag.ts), so Enter is what opens the block. While
@@ -343,7 +459,10 @@ function GridBlock({
     if (e.defaultPrevented || activeId !== null) return
     if (e.key !== 'Enter') return
     e.preventDefault()
-    onOpenBlock(block)
+    // While armed, Enter means the same thing a tap does: the cell this block
+    // starts on. Opening the dialog would strand a keyboard user mid-placement.
+    if (armed) onArmedTap(0)
+    else onOpenBlock(block)
   }
 
   return (
@@ -352,9 +471,16 @@ function GridBlock({
       {...attributes}
       {...listeners}
       onKeyDown={onKeyDown}
-      onClick={() => {
-        onOpenBlock(block)
+      // A block never swallows a tap while a session is armed: the tap is for
+      // the cell underneath, which either places or explains what is in the
+      // way. `offsetY` is the finger's position inside this block.
+      onClick={(e) => {
+        if (armed) onArmedTap(e.nativeEvent.offsetY)
+        else onOpenBlock(block)
       }}
+      aria-label={
+        armed ? `${block.title} — choose the slot underneath it` : undefined
+      }
       // `touch-action` lives in a class, not here: on a coarse pointer it has
       // to become `manipulation` so a finger that lands on a block can still
       // scroll the grid (see .agenda-draggable in app.css). An inline
@@ -368,6 +494,7 @@ function GridBlock({
         roomsById={roomsById}
         tracksById={tracksById}
         secondary={secondary}
+        clamped={clamped}
         fill
       />
     </div>

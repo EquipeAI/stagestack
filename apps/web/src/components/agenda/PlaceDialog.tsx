@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation } from 'convex/react'
 import { api } from '@convex/_generated/api'
-import { DEFAULT_DURATION_MS, slotClock } from './model'
+import { sessionDurationMs, slotClock } from './model'
 import type { BoardEvent, BoardRoom, BoardSession } from './model'
 import type { Id } from '@convex/_generated/dataModel'
 import { Button, Callout, Dialog, Field, Input, Select } from '~/ds'
@@ -31,7 +31,12 @@ export function PlaceDialog({
   const zone = event.timezone
 
   const defaultStart = session.startsAt ?? roundToHour(event.startsAt)
-  const defaultEnd = session.endsAt ?? defaultStart + DEFAULT_DURATION_MS
+  // The end offered is the session's OWN length — its duration override, else
+  // its format's default (W2, resolved server-side into `durationMinutes`) —
+  // not a fixed hour. A 10-minute Lightning Talk that lands in a 60-minute
+  // block is the exact defect this closes; the hour survives only as
+  // `sessionDurationMs`'s last fallback.
+  const defaultEnd = session.endsAt ?? defaultStart + sessionDurationMs(session)
   const [start, setStart] = useState(toInputValue(defaultStart, zone))
   const [end, setEnd] = useState(toInputValue(defaultEnd, zone))
   const [roomId, setRoomId] = useState<string>(session.roomId ?? '')

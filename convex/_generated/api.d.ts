@@ -61,6 +61,7 @@ import type * as readiness from "../readiness.js";
 import type * as reminders from "../reminders.js";
 import type * as reviews from "../reviews.js";
 import type * as sessions from "../sessions.js";
+import type * as shared_agenda from "../shared/agenda.js";
 import type * as shared_brandColor from "../shared/brandColor.js";
 import type * as shared_bulkDecisions from "../shared/bulkDecisions.js";
 import type * as shared_bulkOutreach from "../shared/bulkOutreach.js";
@@ -138,6 +139,7 @@ declare const fullApi: ApiFromModules<{
   reminders: typeof reminders;
   reviews: typeof reviews;
   sessions: typeof sessions;
+  "shared/agenda": typeof shared_agenda;
   "shared/brandColor": typeof shared_brandColor;
   "shared/bulkDecisions": typeof shared_bulkDecisions;
   "shared/bulkOutreach": typeof shared_bulkOutreach;

@@ -51,11 +51,20 @@ function Agenda() {
       board={board}
       view={search.view}
       day={search.day}
+      room={search.room}
       onView={(view) => {
-        void navigate({ search: (prev: AgendaSearch) => ({ ...prev, view }), replace: true })
+        // A room/track scope belongs to the axis it was chosen on: keeping it
+        // across a view switch would silently hide most of the new grid.
+        void navigate({
+          search: (prev: AgendaSearch) => ({ ...prev, view, room: undefined }),
+          replace: true,
+        })
       }}
       onDay={(day) => {
         void navigate({ search: (prev: AgendaSearch) => ({ ...prev, day }), replace: true })
+      }}
+      onRoom={(room) => {
+        void navigate({ search: (prev: AgendaSearch) => ({ ...prev, room }), replace: true })
       }}
     />
   )
