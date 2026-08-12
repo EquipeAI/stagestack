@@ -112,7 +112,7 @@ const TypeCard: React.FC<{
   );
 };
 
-const Caption: React.FC<{ text: string }> = ({ text }) => {
+const Caption: React.FC<{ text: string; top?: number }> = ({ text, top = 930 }) => {
   const frame = useCurrentFrame();
   return (
     <div
@@ -120,7 +120,7 @@ const Caption: React.FC<{ text: string }> = ({ text }) => {
         position: "absolute",
         left: 68,
         right: 68,
-        top: 930,
+        top,
         fontFamily: font.display,
         fontWeight: 600,
         fontSize: 56,
@@ -185,9 +185,18 @@ const Beat: React.FC<{ beat: SocialBeat; durationInFrames: number }> = ({
       >
         <Img src={staticFile("brand/logo-inverse.svg")} style={{ width: 270 }} />
       </div>
-      <div style={{ position: "absolute", inset: 0, top: 200, bottom: 480 }}>
+      {/* The split needs two 16:9 panels stacked, so it borrows the caption's
+          room and puts its caption at the very bottom instead. */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          top: beat.kind === "split" ? 140 : 200,
+          bottom: beat.kind === "split" ? 272 : 480,
+        }}
+      >
         {beat.kind === "split" ? (
-          <Split durationInFrames={durationInFrames} />
+          <Split durationInFrames={durationInFrames} stacked />
         ) : beat.kind === "clip" ? (
           <Clip
             clip={beat.shot as string}
@@ -215,19 +224,25 @@ const Beat: React.FC<{ beat: SocialBeat; durationInFrames: number }> = ({
           />
         )}
       </div>
-      {beat.caption ? <Caption text={beat.caption} /> : null}
-      <div
-        style={{
-          position: "absolute",
-          left: 68,
-          bottom: 66,
-          fontFamily: font.mono,
-          fontSize: 30,
-          color: c.amber400,
-        }}
-      >
-        stagestack.dev
-      </div>
+      {beat.caption ? (
+        <Caption text={beat.caption} top={beat.kind === "split" ? 1112 : 930} />
+      ) : null}
+      {/* The split fills the frame to the caption, so the URL would collide
+          with it — the close card carries the address anyway. */}
+      {beat.kind === "split" ? null : (
+        <div
+          style={{
+            position: "absolute",
+            left: 68,
+            bottom: 66,
+            fontFamily: font.mono,
+            fontSize: 30,
+            color: c.amber400,
+          }}
+        >
+          stagestack.dev
+        </div>
+      )}
     </Ground>
   );
 };

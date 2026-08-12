@@ -40,9 +40,10 @@ const Panel: React.FC<{
     <div
       style={{
         flex: 1,
+        minHeight: 0,
         display: "flex",
         flexDirection: "column",
-        gap: 14,
+        gap: 10,
         opacity: interpolate(frame, [delay, delay + 10], [0, 1], {
           extrapolateLeft: "clamp",
           extrapolateRight: "clamp",
@@ -90,17 +91,30 @@ const Panel: React.FC<{
   );
 };
 
-export const Split: React.FC<{ durationInFrames: number }> = ({
-  durationInFrames,
-}) => (
+export const Split: React.FC<{
+  durationInFrames: number;
+  /** Portrait stacks the two screens instead of setting them side by side:
+   *  at 1080 wide, two 16:9 panels are ~470px each and nothing in them can be
+   *  read. Stacked, each gets the full width. */
+  stacked?: boolean;
+}> = ({ durationInFrames, stacked = false }) => (
   <AbsoluteFill
     style={{
       justifyContent: "center",
       alignItems: "center",
-      padding: "150px 90px 330px",
+      padding: stacked ? "0px 30px" : "150px 90px 330px",
     }}
   >
-    <div style={{ display: "flex", gap: 40, width: "100%" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: stacked ? "column" : "row",
+        gap: stacked ? 26 : 40,
+        // Stacked panels keep 16:9 and give up width instead of height, which
+        // is the trade that keeps them readable at all.
+        width: stacked ? 760 : "100%",
+      }}
+    >
       <Panel
         clip="realtime-speaker"
         label="The speaker"
