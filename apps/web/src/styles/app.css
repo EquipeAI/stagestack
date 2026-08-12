@@ -16,8 +16,8 @@
 
 /* ── Event shell ──────────────────────────────────────────────────────────
    Desktop: a sticky 236px nav rail beside a scrolling page.
-   Phone (<=860px): the rail becomes a sticky horizontal tab strip stacked
-   above the page. Same DOM either way — only the axis changes. */
+   Phone (<=860px): the rail is gone — .app-shell__bar (menu button + current
+   location) replaces it, and navigation happens in the NavDrawer (W7). */
 .app-shell {
   flex: 1;
   min-height: 0;
@@ -42,14 +42,50 @@
   min-width: 0;
 }
 
+/* The phone bar that replaces the rail: one row, sticky under the topbar,
+   holding the menu button and where-am-I. Hidden on desktop, where the rail
+   itself answers both. */
+.app-shell__bar {
+  display: none;
+}
+
 @media (max-width: 860px) {
   .app-shell {
     flex-direction: column;
   }
+  /* The rail is gone below 860px — not restyled into a strip. See the note in
+     ds/components/navigation/navigation.css: a horizontal strip cannot show
+     the lifecycle groups, and hiding them was what made fifteen entries a
+     memory test on a phone. The same rail is rendered in full inside the
+     drawer this bar opens, so nothing is unreachable and there is exactly one
+     nav implementation. */
   .app-shell__nav {
-    height: auto;
-    width: 100%;
-    align-self: stretch;
+    display: none;
+  }
+  .app-shell__bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    position: sticky;
+    top: calc(var(--topbar-height) + var(--safe-top));
+    z-index: var(--z-sticky);
+    padding: var(--space-2) var(--page-gutter);
+    background: var(--surface-card);
+    border-bottom: var(--space-px) solid var(--border-default);
+  }
+  /* Where you are, in the drawer's own words: group then entry. Truncates
+     rather than wrapping — the bar is one row at every width. */
+  .app-shell__where {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: var(--type-caption);
+    color: var(--text-tertiary);
+  }
+  .app-shell__where strong {
+    color: var(--text-primary);
+    font-weight: var(--weight-medium);
   }
 }
 

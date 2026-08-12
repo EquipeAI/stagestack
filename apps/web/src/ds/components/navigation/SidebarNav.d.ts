@@ -6,6 +6,10 @@ export interface SidebarNavItem {
   icon?: string;
   /** Trailing count, mono, tabular. */
   count?: number | string;
+  /** Previous label for a renamed entry — spoken, never shown. */
+  alias?: string;
+  /** What `count` counts, spoken — the badge itself is a bare number. */
+  countHint?: string;
 }
 export interface SidebarNavProps extends React.HTMLAttributes<HTMLElement> {
   /** Event switcher / logo block at the top. */

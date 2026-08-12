@@ -1,6 +1,14 @@
 import React from "react";
 import { Icon } from "../core/Icon.jsx";
 
+// Undefined unless the entry carries something the label alone does not say —
+// so the overwhelmingly common entry keeps its name computed from its contents
+// and there is no second copy of the label to drift.
+function accessibleName(it) {
+  const extra = [it.alias ? "also called " + it.alias : null, it.countHint || null].filter(Boolean);
+  return extra.length === 0 ? undefined : [it.label].concat(extra).join(", ");
+}
+
 export function SidebarNav({ header, groups = [], activeId, onSelect, footer, className = "", ...rest }) {
   return (
     <nav className={["ss-sidebar", className].filter(Boolean).join(" ")} {...rest}>
@@ -23,6 +31,12 @@ export function SidebarNav({ header, groups = [], activeId, onSelect, footer, cl
                     // without this the only signal of where you are is colour
                     // — and there is none at all for a screen reader.
                     aria-current={activeId === it.id ? "page" : undefined}
+                    // The visible label is the start of the accessible name
+                    // (WCAG 2.5.3), followed by what the page does not show:
+                    // the entry's previous wording, so a rename never makes a
+                    // capability unfindable by its old name, and what the bare
+                    // number in the badge is counting.
+                    aria-label={accessibleName(it)}
                     onClick={function () { if (onSelect) onSelect(it.id); }}
                   >
                     {it.icon ? <Icon name={it.icon} size={15} /> : null}

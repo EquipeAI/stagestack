@@ -22,60 +22,56 @@
 .ss-crumbs a:hover{color:var(--text-primary);text-decoration:none}
 .ss-crumbs__current{color:var(--text-primary)}
 
-/* ── Sidebar on a phone ───────────────────────────────────────────────────
-   A 236px fixed rail beside the content leaves ~139px for the page on a
-   375px viewport, which is unusable. Under 860px the same markup becomes a
-   horizontally-scrolling tab strip pinned under the topbar: no layout
-   duplication, no separate mobile nav component, and the active item is
-   scrolled into view by the shell.
+/* ── Sidebar on a phone: the drawer ───────────────────────────────────────
+   The rail used to become a horizontally-scrolling strip under 860px, with
+   `.ss-sidebar__head` and `.ss-sidebar__group` set to `display:none` because
+   neither fits on one line. That was survivable while the rail was one flat
+   list. It stopped being survivable when the entries were grouped by
+   lifecycle (W7): the strip hid the grouping — the whole point of the change —
+   and fifteen unlabelled chips in a scroller is a memory test, not
+   navigation. THE STRIP IS GONE. The shell hides the rail below 860px
+   (.app-shell__nav in styles/app.css) and offers a menu button that opens
+   this drawer, which shows every group label, every entry and every count.
 
-   `overflow-x:auto` + `flex-wrap:nowrap` is the strip; `scroll-snap` makes it
-   settle on a whole item instead of mid-label; `overscroll-behavior-x:contain`
-   stops a horizontal swipe at the end of the strip from triggering the
-   browser's back-navigation gesture. */
-@media (max-width:860px){
-  .ss-sidebar{
-    width:100%;
-    height:auto;
-    border-right:0;
-    border-bottom:1px solid var(--border-default);
-    background:var(--surface-card);
+   The drawer is `Dialog` in a different shape, so the focus trap, Escape,
+   focus return and scroll lock are the audited ones rather than a second
+   implementation. These rules only move the surface: `.ss-dialog.ss-drawer`
+   outranks `.ss-dialog`, and navigation.css is imported after feedback.css, so
+   they also beat the bottom-sheet rules at equal specificity. */
+.ss-dialog.ss-drawer{
+  position:fixed;
+  inset-block:0;
+  inset-inline-start:0;
+  width:min(20rem,86vw);
+  max-width:none;
+  max-height:none;
+  height:100dvh;
+  border-radius:0;
+  padding-top:var(--safe-top);
+  padding-bottom:var(--safe-bottom);
+  animation:ss-drawer-in var(--duration-normal) var(--ease-out);
+}
+.ss-drawer .ss-dialog__body{padding:0;flex:1;min-height:0}
+/* Inside the drawer the rail is the whole surface: no fixed width, no border
+   against a page that is not beside it, and it scrolls within the body. */
+.ss-sidebar--drawer{width:100%;height:100%;border-right:0;background:none}
+@keyframes ss-drawer-in{from{transform:translateX(-100%)}to{transform:none}}
+
+@media (max-width:640px){
+  /* Undo the bottom-sheet shape Dialog takes at this width — a sheet is the
+     wrong container for a full navigation tree. */
+  .ss-dialog.ss-drawer{
+    max-width:none;
+    max-height:none;
+    border-radius:0;
+    animation:ss-drawer-in var(--duration-normal) var(--ease-out);
   }
-  /* The event name is already the <h1> of every page under this nav. */
-  .ss-sidebar__head{display:none}
-  .ss-sidebar__scroll{
-    display:flex;
-    flex-wrap:nowrap;
-    gap:var(--space-1);
-    overflow-x:auto;
-    overflow-y:hidden;
-    padding:var(--space-2) var(--page-gutter);
-    scroll-snap-type:x proximity;
-    overscroll-behavior-x:contain;
-    scrollbar-width:none;
-  }
-  .ss-sidebar__scroll::-webkit-scrollbar{display:none}
-  .ss-sidebar__scroll>div{display:flex;gap:var(--space-1)}
-  .ss-sidebar__group{display:none}
-  .ss-navitem{
-    width:auto;
-    flex:none;
-    white-space:nowrap;
-    scroll-snap-align:center;
-    border:1px solid transparent;
-  }
-  /* The desktop active marker is a bar on the left edge of the rail, which
-     means nothing in a horizontal strip. */
-  .ss-navitem[data-active=true]::before{display:none}
-  /* Amber alone would make "where am I" a colour-only signal in the strip
-     (WCAG 1.4.1). Neighbours carry a transparent border, so a drawn one is a
-     second, non-colour difference — the presence of an outline, not its hue. */
-  .ss-navitem[data-active=true]{
-    background:var(--surface-brand);
-    color:var(--gray-900);
-    box-shadow:none;
-    border-color:var(--gray-900);
-  }
+  /* The sheet's grab handle says "swipe me down", which this cannot do. */
+  .ss-drawer::before{display:none}
+  .ss-drawer .ss-dialog__body{padding:0}
+}
+@media (prefers-reduced-motion:reduce){
+  .ss-dialog.ss-drawer{animation:none}
 }
 
 /* Tab bars overflow the same way — many screens have more tabs than a phone

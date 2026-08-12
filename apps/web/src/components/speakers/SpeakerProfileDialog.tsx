@@ -239,7 +239,7 @@ export function SpeakerProfileDialog({
         {error !== null ? <Callout tone="blocked">{error}</Callout> : null}
         {archived ? (
           <Callout tone="attention" title="This event is archived">
-            Archived events are read-only — unarchive from Overview to edit.
+            Archived events are read-only — unarchive from Event details to edit.
           </Callout>
         ) : null}
 

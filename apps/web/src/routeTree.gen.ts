@@ -28,6 +28,7 @@ import { Route as AppEEventSlugAgendaRouteImport } from './routes/app.e.$eventSl
 import { Route as AppEEventSlugCfpRouteImport } from './routes/app.e.$eventSlug.cfp'
 import { Route as AppEEventSlugCommsRouteImport } from './routes/app.e.$eventSlug.comms'
 import { Route as AppEEventSlugDashboardRouteImport } from './routes/app.e.$eventSlug.dashboard'
+import { Route as AppEEventSlugDetailsRouteImport } from './routes/app.e.$eventSlug.details'
 import { Route as AppEEventSlugImportRouteImport } from './routes/app.e.$eventSlug.import'
 import { Route as AppEEventSlugProposalsRouteImport } from './routes/app.e.$eventSlug.proposals'
 import { Route as AppEEventSlugPublishRouteImport } from './routes/app.e.$eventSlug.publish'
@@ -134,6 +135,11 @@ const AppEEventSlugDashboardRoute = AppEEventSlugDashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => AppEEventSlugRoute,
 } as any)
+const AppEEventSlugDetailsRoute = AppEEventSlugDetailsRouteImport.update({
+  id: '/details',
+  path: '/details',
+  getParentRoute: () => AppEEventSlugRoute,
+} as any)
 const AppEEventSlugImportRoute = AppEEventSlugImportRouteImport.update({
   id: '/import',
   path: '/import',
@@ -205,6 +211,7 @@ export interface FileRoutesByFullPath {
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
   '/app/e/$eventSlug/comms': typeof AppEEventSlugCommsRoute
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
+  '/app/e/$eventSlug/details': typeof AppEEventSlugDetailsRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/publish': typeof AppEEventSlugPublishRoute
@@ -233,6 +240,7 @@ export interface FileRoutesByTo {
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
   '/app/e/$eventSlug/comms': typeof AppEEventSlugCommsRoute
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
+  '/app/e/$eventSlug/details': typeof AppEEventSlugDetailsRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/publish': typeof AppEEventSlugPublishRoute
@@ -265,6 +273,7 @@ export interface FileRoutesById {
   '/app/e/$eventSlug/cfp': typeof AppEEventSlugCfpRoute
   '/app/e/$eventSlug/comms': typeof AppEEventSlugCommsRoute
   '/app/e/$eventSlug/dashboard': typeof AppEEventSlugDashboardRoute
+  '/app/e/$eventSlug/details': typeof AppEEventSlugDetailsRoute
   '/app/e/$eventSlug/import': typeof AppEEventSlugImportRoute
   '/app/e/$eventSlug/proposals': typeof AppEEventSlugProposalsRoute
   '/app/e/$eventSlug/publish': typeof AppEEventSlugPublishRoute
@@ -298,6 +307,7 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug/cfp'
     | '/app/e/$eventSlug/comms'
     | '/app/e/$eventSlug/dashboard'
+    | '/app/e/$eventSlug/details'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/publish'
@@ -326,6 +336,7 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug/cfp'
     | '/app/e/$eventSlug/comms'
     | '/app/e/$eventSlug/dashboard'
+    | '/app/e/$eventSlug/details'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/publish'
@@ -357,6 +368,7 @@ export interface FileRouteTypes {
     | '/app/e/$eventSlug/cfp'
     | '/app/e/$eventSlug/comms'
     | '/app/e/$eventSlug/dashboard'
+    | '/app/e/$eventSlug/details'
     | '/app/e/$eventSlug/import'
     | '/app/e/$eventSlug/proposals'
     | '/app/e/$eventSlug/publish'
@@ -516,6 +528,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEEventSlugDashboardRouteImport
       parentRoute: typeof AppEEventSlugRoute
     }
+    '/app/e/$eventSlug/details': {
+      id: '/app/e/$eventSlug/details'
+      path: '/details'
+      fullPath: '/app/e/$eventSlug/details'
+      preLoaderRoute: typeof AppEEventSlugDetailsRouteImport
+      parentRoute: typeof AppEEventSlugRoute
+    }
     '/app/e/$eventSlug/import': {
       id: '/app/e/$eventSlug/import'
       path: '/import'
@@ -594,6 +613,7 @@ interface AppEEventSlugRouteChildren {
   AppEEventSlugCfpRoute: typeof AppEEventSlugCfpRoute
   AppEEventSlugCommsRoute: typeof AppEEventSlugCommsRoute
   AppEEventSlugDashboardRoute: typeof AppEEventSlugDashboardRoute
+  AppEEventSlugDetailsRoute: typeof AppEEventSlugDetailsRoute
   AppEEventSlugImportRoute: typeof AppEEventSlugImportRoute
   AppEEventSlugProposalsRoute: typeof AppEEventSlugProposalsRoute
   AppEEventSlugPublishRoute: typeof AppEEventSlugPublishRoute
@@ -611,6 +631,7 @@ const AppEEventSlugRouteChildren: AppEEventSlugRouteChildren = {
   AppEEventSlugCfpRoute: AppEEventSlugCfpRoute,
   AppEEventSlugCommsRoute: AppEEventSlugCommsRoute,
   AppEEventSlugDashboardRoute: AppEEventSlugDashboardRoute,
+  AppEEventSlugDetailsRoute: AppEEventSlugDetailsRoute,
   AppEEventSlugImportRoute: AppEEventSlugImportRoute,
   AppEEventSlugProposalsRoute: AppEEventSlugProposalsRoute,
   AppEEventSlugPublishRoute: AppEEventSlugPublishRoute,

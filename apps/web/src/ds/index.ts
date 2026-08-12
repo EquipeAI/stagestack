@@ -35,5 +35,6 @@ export { Toast } from './components/feedback/Toast.jsx'
 export { Tooltip } from './components/feedback/Tooltip.jsx'
 
 export { Breadcrumb } from './components/navigation/Breadcrumb.jsx'
+export { NavDrawer } from './components/navigation/NavDrawer.jsx'
 export { SidebarNav } from './components/navigation/SidebarNav.jsx'
 export { Tabs } from './components/navigation/Tabs.jsx'

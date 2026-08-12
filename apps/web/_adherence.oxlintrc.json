@@ -143,6 +143,10 @@
         "message": "<Logo> tone must be one of 'default' | 'inverse'."
       },
       {
+        "selector": "JSXOpeningElement[name.name='NavDrawer'] > JSXAttribute > JSXIdentifier[name!=/^(?:open|id|title|groups|activeId|onSelect|onClose|footer|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<NavDrawer> doesn't accept that prop. Declared props: open, id, title, groups, activeId, onSelect, onClose, footer, plus ARIA attributes and role."
+      },
+      {
         "selector": "JSXOpeningElement[name.name='PageHeader'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|description|breadcrumbs|meta|actions|key|ref|className|style|children|aria-[a-z]+|role)$/]",
         "message": "<PageHeader> doesn't accept that prop. Declared props: title, description, breadcrumbs, meta, actions, plus ARIA attributes and role."
       },
@@ -175,8 +179,8 @@
         "message": "<Select> size must be one of 'sm' | 'md' | 'lg'."
       },
       {
-        "selector": "JSXOpeningElement[name.name='SidebarNavItem'] > JSXAttribute > JSXIdentifier[name!=/^(?:id|label|icon|count|key|ref|className|style|children|aria-[a-z]+|role)$/]",
-        "message": "<SidebarNavItem> doesn't accept that prop. Declared props: id, label, icon, count, plus ARIA attributes and role."
+        "selector": "JSXOpeningElement[name.name='SidebarNavItem'] > JSXAttribute > JSXIdentifier[name!=/^(?:id|label|icon|count|alias|countHint|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<SidebarNavItem> doesn't accept that prop. Declared props: id, label, icon, count, alias, countHint, plus ARIA attributes and role."
       },
       {
         "selector": "JSXOpeningElement[name.name='StatusPill'] > JSXAttribute > JSXIdentifier[name!=/^(?:status|size|tone|key|ref|className|style|children|aria-[a-z]+|role)$/]",
