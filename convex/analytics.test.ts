@@ -611,6 +611,120 @@ describe("turnaround — each interval, computed from the rows already written",
     expect(stat.p50).toBeLessThan(2.1 * DAY);
     expect(stat.capped).toBe(true);
     expect(stat.sentence).toContain("across at least 1 session");
+    // REGRESSION (codex, W4): the session that could not be timed was counted
+    // into the cap but never handed to the sentence, so the panel printed a
+    // floor without ever saying what it was a floor OF.
+    expect(stat.untimeableCount).toBe(1);
+    expect(stat.sentence).toContain(
+      "1 session carries no publication moment this history can time",
+    );
+    expect(panel.capped).toBe(true);
+  });
+
+  test("a re-approval before a republication is a cycle of its own, and is timed", async () => {
+    // REGRESSION (codex, W4): the unpublish guard only ran when NO per-session
+    // publish row existed, so an explicit republication walked straight past
+    // it. It should: both ends of this pair belong to the SECOND cycle, and a
+    // re-approval followed a day later by a republication is exactly the
+    // interval this stat is for.
+    const s = await seed();
+    const sessionId = await addSession(s, "Pulled and reworked", {
+      contentStatus: "approved",
+    });
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(2);
+    // Cycle one: bulk publish, so the flag is the only per-session record.
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("publicationFlags", {
+        eventId: s.eventId,
+        targetType: "session",
+        targetId: sessionId,
+        published: true,
+        updatedAt: Date.now(),
+      });
+    });
+    at(3);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: false },
+    });
+    at(10);
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(11);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: true },
+    });
+
+    const panel = (await s.alice.query(api.analytics.turnaround, {
+      eventSlug: s.eventSlug,
+    })) as Panel;
+    const stat = statOf(panel, "publish");
+
+    // Day 10 → day 11, both from the second cycle. Nothing here is the first
+    // cycle's, which is why it is a number at all.
+    expect(stat.count).toBe(1);
+    expect(stat.untimeableCount).toBe(0);
+    expect(stat.capped).toBe(false);
+    expect(stat.sentence).toBe(
+      "Sessions published in a median of 1 day after their content was approved, across 1 session; the slowest tenth took 1 day; none are approved but not published.",
+    );
+  });
+
+  test("a republication with no re-approval straddles two cycles, and is not a number", async () => {
+    // REGRESSION (codex, W4): same shape as above MINUS the re-approval, and
+    // it is the one that used to lie. The governing approval is then day 0 —
+    // the approval that released the FIRST, bulk-published, untimeable
+    // publication — while the end is the republication on day 11, so the
+    // reported "11 days" would be one cycle's start and another's finish with
+    // eight days of being unpublished in the middle.
+    const s = await seed();
+    const sessionId = await addSession(s, "Pulled and restored", {
+      contentStatus: "approved",
+    });
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(2);
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("publicationFlags", {
+        eventId: s.eventId,
+        targetType: "session",
+        targetId: sessionId,
+        published: true,
+        updatedAt: Date.now(),
+      });
+    });
+    at(3);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: false },
+    });
+    at(11);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: true },
+    });
+
+    const panel = (await s.alice.query(api.analytics.turnaround, {
+      eventSlug: s.eventSlug,
+    })) as Panel;
+    const stat = statOf(panel, "publish");
+
+    expect(stat.count).toBe(0);
+    expect(stat.openCount).toBe(0);
+    expect(stat.untimeableCount).toBe(1);
+    expect(stat.capped).toBe(true);
+    // The session EXISTS and is published: the empty state may not deny it.
+    expect(stat.sentence).toBe(
+      "This event records at least 1 session with no publication moment this history can time, so there is no median to report.",
+    );
     expect(panel.capped).toBe(true);
   });
 });

@@ -584,7 +584,11 @@ export async function turnaround(
   // An explicit unpublish is the one thing that can have moved a flag's
   // `updatedAt` off the first publication. Bulk publishing only ever sets
   // flags true (convex/model/publishBulk.ts), so this is the whole list.
-  const unpublished = firstByTarget(
+  //
+  // Every one of them, not the earliest: an unpublish is also the boundary
+  // between publication CYCLES, and the pair below has to be checked against
+  // whichever one falls between its two ends.
+  const unpublished = allByTarget(
     rows,
     (r) => r.action === "publish.session" && metaField(r, "published") === false,
     sessionIdMeta,
@@ -623,6 +627,25 @@ export async function turnaround(
         ? session.contentStatusSetAt
         : undefined);
     if (approvedAt === undefined) continue;
+    // The pair must belong to ONE publication cycle. `governing` picks the
+    // latest approval at or before this publish, which is right whenever the
+    // two ends live in the same cycle — re-approve on day 9, republish on day
+    // 10 is a real ten-hour interval and is counted. But an unpublish BETWEEN
+    // them says this approval was already standing while the session was
+    // public, so the publication it actually governed is an earlier one this
+    // history cannot time, and `end` belongs to the cycle after it. Measuring
+    // across that boundary would print the first cycle's wait plus however
+    // long the session sat withdrawn.
+    const publishedAt = end;
+    if (
+      publishedAt !== undefined &&
+      (unpublished.get(session._id) ?? []).some(
+        (at) => at > approvedAt && at < publishedAt,
+      )
+    ) {
+      publishUntimeable += 1;
+      continue;
+    }
     const closed = interval(approvedAt, end);
     if (closed === null) publishOpen += 1;
     else publishDurations.push(closed);
@@ -644,7 +667,13 @@ export async function turnaround(
       ),
       statSentence("confirmation", confirmDurations, confirmOpen, confirmCapped),
       statSentence("task", taskDurations, taskOpen, taskCapped),
-      statSentence("publish", publishDurations, publishOpen, publishCapped),
+      statSentence(
+        "publish",
+        publishDurations,
+        publishOpen,
+        publishCapped,
+        publishUntimeable,
+      ),
     ],
     capped: panelCapped,
     summary: audit.capped
