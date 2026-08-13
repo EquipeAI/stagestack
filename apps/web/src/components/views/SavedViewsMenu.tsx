@@ -45,6 +45,12 @@ export function SavedViewsMenu({
 
   const [dialog, setDialog] = useState<'save' | 'rename' | null>(null)
   const [name, setName] = useState('')
+  // WHICH view is on screen, carried rather than inferred. Two views can hold
+  // the same filters, and the URL cannot tell them apart — so the picker
+  // remembers the row that was picked, and `activeView` drops it the moment the
+  // params stop matching it. Switching views is still pure URL navigation:
+  // `onApply` does the same thing it always did, this only names the result.
+  const [selectedViewId, setSelectedViewId] = useState<string | null>(null)
 
   const saved: Array<StoredView> = (data?.views ?? []).map((view) => ({
     viewId: view.viewId,
@@ -52,7 +58,13 @@ export function SavedViewsMenu({
     params: view.params,
     isDefault: view.isDefault,
   }))
-  const active = activeView(module, params, saved)
+  const active = activeView(module, params, saved, selectedViewId)
+
+  /** Pick a saved view: its params go to the URL, its id stays here. */
+  const applySaved = (view: { viewId: string; params: ViewParams }) => {
+    setSelectedViewId(view.viewId)
+    onApply(view.params)
+  }
 
   // The personal default, applied on a first visit that carries no filters of
   // its own. A link's own params always win — this only ever fires on the bare
@@ -67,7 +79,7 @@ export function SavedViewsMenu({
     const preferred = data.views.find(
       (view) => view.viewId === data.defaultViewId,
     )
-    if (preferred !== undefined) onApply(preferred.params)
+    if (preferred !== undefined) applySaved(preferred)
     // Keyed on the query landing, not on `params`: this is a first-visit
     // decision, not a rule the URL has to keep satisfying afterwards.
   }, [data, module, params, onApply])
@@ -88,7 +100,10 @@ export function SavedViewsMenu({
         active.kind === 'preset' && active.id === preset.id
           ? `${preset.name} — current`
           : preset.name,
-      onSelect: () => onApply(preset.params),
+      onSelect: () => {
+        setSelectedViewId(null)
+        onApply(preset.params)
+      },
     })),
     saved.length > 0 && {
       id: 'saved',
@@ -100,12 +115,16 @@ export function SavedViewsMenu({
       id: `saved:${view.viewId}`,
       label: [
         view.name,
-        active.kind === 'saved' && active.id === view.viewId ? '— current' : '',
+        active.kind === 'saved' && active.id === view.viewId
+          ? '— current'
+          : active.kind === 'ambiguous' && active.ids.includes(view.viewId)
+            ? '— same filters'
+            : '',
         view.isDefault ? '· default' : '',
       ]
         .filter((part) => part !== '')
         .join(' '),
-      onSelect: () => onApply(view.params),
+      onSelect: () => applySaved(view),
     })),
     { id: 'actions', label: 'This view', onSelect: () => {}, disabled: true },
     {
@@ -171,6 +190,8 @@ export function SavedViewsMenu({
             eventSlug,
             viewId: active.id as Id<'savedViews'>,
           })
+          // The row it named is gone; nothing is picked any more.
+          setSelectedViewId(null)
           report(result.message)
         })
       },
@@ -200,6 +221,9 @@ export function SavedViewsMenu({
               name: trimmed,
             })
           : await create({ eventSlug, module, name: trimmed, params })
+      // A view just saved from these params IS the one on screen — including
+      // when an identical one already existed under another name.
+      if (dialog !== 'rename') setSelectedViewId(result.viewId)
       report(result.message)
       setDialog(null)
     })
@@ -215,8 +239,14 @@ export function SavedViewsMenu({
         width="21rem"
         label={active.name}
         // The trigger's text is a view name, which says nothing about what it
-        // is on its own. The accessible name says both.
-        aria-label={`Saved views. Current view: ${active.name}.`}
+        // is on its own. The accessible name says both — and when the filters
+        // belong to more than one saved view it says THAT, instead of picking
+        // a name the organizer never chose.
+        aria-label={
+          active.kind === 'ambiguous'
+            ? `Saved views. These filters match ${active.ids.length} saved views — pick one from this menu to work on it.`
+            : `Saved views. Current view: ${active.name}.`
+        }
         items={items}
       />
       {dialog === null ? null : (

@@ -121,6 +121,48 @@ describe('the picker’s state', () => {
     })
   })
 
+  it('never collapses two views with identical params onto the first', () => {
+    // REGRESSION (codex, W2): identity was inferred from the params alone, so
+    // two views holding the same filters both resolved to the FIRST row —
+    // rename, default and delete then acted on a view nobody pointed at.
+    const twins = [
+      { viewId: 'v1', name: 'Wave 1', params: { status: 'pending' }, isDefault: false },
+      { viewId: 'v2', name: 'Wave 2', params: { status: 'pending' }, isDefault: true },
+    ]
+    // Nothing picked: naming one would be a guess, so neither is named.
+    expect(activeView('proposals', { status: 'pending' }, twins)).toEqual({
+      kind: 'ambiguous',
+      name: '2 saved views match',
+      ids: ['v1', 'v2'],
+    })
+    // The id the picker carries decides it — including for the second row.
+    expect(activeView('proposals', { status: 'pending' }, twins, 'v2')).toEqual({
+      kind: 'saved',
+      id: 'v2',
+      name: 'Wave 2',
+      isDefault: true,
+    })
+    expect(activeView('proposals', { status: 'pending' }, twins, 'v1')).toMatchObject({
+      id: 'v1',
+      name: 'Wave 1',
+    })
+  })
+
+  it('drops a carried id the moment the URL stops matching that view', () => {
+    const saved = [
+      { viewId: 'v1', name: 'Wave 1', params: { status: 'pending' }, isDefault: false },
+    ]
+    // Switching views is URL navigation; a stale selection must not survive it.
+    expect(activeView('proposals', { q: 'ada' }, saved, 'v1')).toMatchObject({
+      kind: 'custom',
+    })
+    // …nor may an id for a view that no longer exists.
+    expect(activeView('proposals', { status: 'pending' }, saved, 'gone')).toMatchObject({
+      kind: 'saved',
+      id: 'v1',
+    })
+  })
+
   it('applies a default only on a URL that narrows nothing', () => {
     expect(isUnnarrowed('proposals', {})).toBe(true)
     expect(isUnnarrowed('proposals', { status: 'pending' })).toBe(false)

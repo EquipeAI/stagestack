@@ -30,6 +30,10 @@ export function paramsFromSearch(search: Record<string, unknown>): ViewParams {
 export type ActiveView =
   | { kind: 'preset'; id: string; name: string }
   | { kind: 'saved'; id: string; name: string; isDefault: boolean }
+  /** The params belong to SEVERAL saved views and nothing says which one is
+   * being looked at. Naming one would be a guess, and rename/default/delete
+   * would then act on a row the organizer never pointed at. */
+  | { kind: 'ambiguous'; name: string; ids: ReadonlyArray<string> }
   | { kind: 'custom'; name: 'Custom view' }
 
 /**
@@ -37,19 +41,40 @@ export type ActiveView =
  *
  * A saved view WINS over a preset with the same params: the organizer named it,
  * so the name they chose is the one the toolbar says.
+ *
+ * IDENTITY COMES FROM THE PICK, NOT FROM THE PARAMS. Two views can hold exactly
+ * the same filters under two names — a rehearsal copy, a rename in progress —
+ * and params alone cannot tell them apart, so inferring backwards from the URL
+ * silently collapsed them onto the first row and pointed Delete at it.
+ * `selectedViewId` is what the organizer actually chose in the picker; it stays
+ * authoritative only while the URL still carries that view's params, so any
+ * navigation away from it drops the selection instead of keeping a stale name.
  */
 export function activeView(
   module: ViewModule,
   params: ViewParams,
   saved: ReadonlyArray<StoredView>,
+  selectedViewId: string | null = null,
 ): ActiveView {
-  const mine = saved.find((view) => sameParams(view.params, params))
+  const matching = saved.filter((view) => sameParams(view.params, params))
+  const picked =
+    selectedViewId === null
+      ? undefined
+      : matching.find((view) => view.viewId === selectedViewId)
+  const mine = picked ?? (matching.length === 1 ? matching[0] : undefined)
   if (mine !== undefined) {
     return {
       kind: 'saved',
       id: mine.viewId,
       name: mine.name,
       isDefault: mine.isDefault,
+    }
+  }
+  if (matching.length > 1) {
+    return {
+      kind: 'ambiguous',
+      name: `${matching.length} saved views match`,
+      ids: matching.map((view) => view.viewId),
     }
   }
   const preset = presetsFor(module).find((view) =>

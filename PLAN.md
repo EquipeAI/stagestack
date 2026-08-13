@@ -154,7 +154,12 @@ Finishes what W12 started: table state already lives in typed
       sessions, speakers, tasks. Reviews and Agenda have no toolbar to put it
       in — the backend supports both modules, the picker is not drawn there.
       Also added: "update this view to what is on screen", separate from
-      rename so neither silently does the other's job.)
+      rename so neither silently does the other's job. The picker CARRIES the
+      id of the view it applied rather than inferring it from the params:
+      two views can hold identical filters, and inferring backwards named —
+      and renamed, defaulted, deleted — whichever came first. With nothing
+      picked and several views matching, the toolbar says so and offers no
+      destructive action against a guess.)
 - [x] **Decisions entry stays a saved view** (W7 decision 6) — migrate it to
       this mechanism rather than keeping a bespoke filter link. (It is now a
       code-level PRESET in `convex/shared/viewParams.ts`; `DECISIONS_SEARCH`

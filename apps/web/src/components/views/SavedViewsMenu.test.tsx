@@ -143,6 +143,50 @@ describe('SavedViewsMenu', () => {
     expect(screen.getByRole('menuitem', { name: 'Delete “Wave 1”' })).toBeTruthy()
   })
 
+  it('deletes the view that was PICKED, not the first one with those filters', async () => {
+    // REGRESSION (codex, W2): two views can hold identical params, and identity
+    // used to be inferred from the params — so Delete pointed at whichever row
+    // came first, whatever the organizer had picked.
+    state.list = listResult({
+      views: [
+        {
+          viewId: 'v1',
+          name: 'Wave 1',
+          params: { status: 'pending' },
+          isDefault: false,
+          updatedAt: 1,
+        },
+        {
+          viewId: 'v2',
+          name: 'Wave 2',
+          params: { status: 'pending' },
+          isDefault: false,
+          updatedAt: 2,
+        },
+      ],
+    })
+    mount({ status: 'pending' })
+
+    // Ambiguous until one is picked: no row is named, and nothing destructive
+    // is offered against a guess.
+    expect(
+      screen.getByRole('button', {
+        name: 'Saved views. These filters match 2 saved views — pick one from this menu to work on it.',
+      }),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button'))
+    expect(screen.queryByRole('menuitem', { name: /^Delete/ })).toBeNull()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Wave 2/ }))
+    fireEvent.click(screen.getByRole('button'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete “Wave 2”' }))
+    await waitFor(() => expect(mutations.calls).toHaveLength(1))
+    expect(mutations.calls[0]).toEqual({
+      name: 'savedViews:remove',
+      args: { eventSlug: 'devconf', viewId: 'v2' },
+    })
+  })
+
   it('saves the params on screen under a name, and reports the model’s sentence', async () => {
     state.list = listResult()
     mount({ status: 'withdrawn' })
