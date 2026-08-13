@@ -160,6 +160,10 @@ function Palette({
     }
 
     for (const group of results?.groups ?? []) {
+      // A capped group with no hits carries an admission, not a jump target.
+      // Its truth is already in `results.summary`, which is printed verbatim
+      // above the list; a header with nothing under it would be noise.
+      if (group.hits.length === 0) continue
       built.push({
         id: group.kind,
         label: group.label,

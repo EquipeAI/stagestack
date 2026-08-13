@@ -84,6 +84,9 @@ export type SearchHit = {
 export type SearchGroup = {
   kind: SearchKind;
   label: string;
+  /** May be EMPTY on a capped group: a scan that stopped at its ceiling and
+   * matched nothing there still has something to say, and saying it needs a
+   * group to say it in. A group with no hits is an admission, not a result. */
   hits: Array<SearchHit>;
   /** True when more rows were read than shown, or than could be read. */
   capped: boolean;
@@ -136,24 +139,37 @@ function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
 }
 
+/** How a group names itself in a sentence. `one` is the thing a hit is
+ * ("Session"); `many` is the population that was read ("sessions"); `where` is
+ * the surface holding the full list. */
+type GroupWords = { one: string; many: string; where: string };
+
 /**
  * What a group is showing, and — when it is showing a prefix — that it is.
  *
  * A capped group never claims a total. It says the list is the top few and
  * names the surface that holds the complete answer, because "5 sessions" when
  * there are 60 is the quiet lie this codebase spends its comments avoiding.
+ *
+ * ZERO shown and capped is the case that used to be dropped on the floor: a
+ * scan that stopped at its ceiling and matched nothing there knows only that it
+ * did not look everywhere, and "no matches" would be a claim it cannot make. It
+ * says how far it looked instead.
  */
 function groupSentence(
-  label: string,
+  words: GroupWords,
   shown: number,
   capped: boolean,
-  where: string,
+  scanned: number,
 ): string {
   const noun = plural(shown, "match", "matches");
   if (!capped) {
-    return `${shown} ${label.toLowerCase()} ${noun}.`;
+    return `${shown} ${words.one.toLowerCase()} ${noun}.`;
   }
-  return `Showing the first ${shown} of more ${label.toLowerCase()} matches — ${where} has the full list.`;
+  if (shown === 0) {
+    return `Searched the first ${scanned} ${words.many} — no matches there; more ${words.many} exist than could be searched. ${words.where} has the full list.`;
+  }
+  return `Showing the first ${shown} of more ${words.one.toLowerCase()} matches — ${words.where} has the full list.`;
 }
 
 function summarySentence(
@@ -163,9 +179,14 @@ function summarySentence(
 ): string {
   const total = groups.reduce((sum, group) => sum + group.hits.length, 0);
   if (total === 0) {
-    return `Nothing matches “${term}”.`;
+    // A capped read that matched nothing has not earned "nothing matches".
+    return capped
+      ? `Nothing matches “${term}” in the rows that could be searched — more exist than one pass reads.`
+      : `Nothing matches “${term}”.`;
   }
-  const kinds = groups.length;
+  // Groups that carry only a capped admission are not groups of results, so
+  // they are not counted as one here.
+  const kinds = groups.filter((group) => group.hits.length > 0).length;
   const head = `${capped ? "At least " : ""}${total} ${plural(total, "result", "results")} in ${kinds} ${plural(kinds, "group", "groups")}.`;
   return `${head} Use the arrow keys to pick one, Enter to open it.`;
 }
@@ -185,24 +206,31 @@ async function accessibleEvents(
   ctx: QueryCtx,
   user: Doc<"users">,
 ): Promise<{ events: Array<Doc<"events">>; capped: boolean }> {
+  // The membership scans are capped like every other read here: an account in
+  // more organizations than one pass reads cannot see its 51st org's events,
+  // and that omission has to travel with the answer instead of being dropped.
   const [orgMemberships, eventMemberships] = await Promise.all([
-    ctx.db
-      .query("members")
-      .withIndex("by_userId", (q) => q.eq("userId", user._id))
-      .take(ORG_MEMBERSHIP_SCAN),
-    ctx.db
-      .query("eventMembers")
-      .withIndex("by_userId", (q) => q.eq("userId", user._id))
-      .take(EVENT_MEMBERSHIP_SCAN),
+    takeCapped(
+      ctx.db
+        .query("members")
+        .withIndex("by_userId", (q) => q.eq("userId", user._id)),
+      ORG_MEMBERSHIP_SCAN,
+    ),
+    takeCapped(
+      ctx.db
+        .query("eventMembers")
+        .withIndex("by_userId", (q) => q.eq("userId", user._id)),
+      EVENT_MEMBERSHIP_SCAN,
+    ),
   ]);
 
   const events: Array<Doc<"events">> = [];
   const seen = new Set<string>();
   let budget = EVENT_SCAN;
-  let capped = false;
+  let capped = orgMemberships.capped || eventMemberships.capped;
 
   const orgIds = new Set<string>();
-  for (const membership of orgMemberships) {
+  for (const membership of orgMemberships.rows) {
     if (budget <= 0) {
       capped = true;
       break;
@@ -223,7 +251,7 @@ async function accessibleEvents(
     }
   }
 
-  for (const membership of eventMemberships) {
+  for (const membership of eventMemberships.rows) {
     // An org membership already pulled in every event of that org.
     if (orgIds.has(membership.orgId) || seen.has(membership.eventId)) continue;
     if (budget <= 0) {
@@ -263,14 +291,19 @@ function eventGroup(
       };
     }),
   );
-  if (hits.length === 0) return null;
   const capped = more || readCapped;
+  if (hits.length === 0 && !capped) return null;
   return {
     kind: "event",
     label: "Events",
     hits,
     capped,
-    sentence: groupSentence("Event", hits.length, capped, "My StageStack"),
+    sentence: groupSentence(
+      { one: "Event", many: "events", where: "My StageStack" },
+      hits.length,
+      capped,
+      events.length,
+    ),
   };
 }
 
@@ -305,14 +338,19 @@ async function sessionGroup(
       };
     }),
   );
-  if (hits.length === 0) return null;
   const capped = more || read.capped;
+  if (hits.length === 0 && !capped) return null;
   return {
     kind: "session",
     label: "Sessions",
     hits,
     capped,
-    sentence: groupSentence("Session", hits.length, capped, "Sessions"),
+    sentence: groupSentence(
+      { one: "Session", many: "sessions", where: "Sessions" },
+      hits.length,
+      capped,
+      read.rows.length,
+    ),
   };
 }
 
@@ -352,14 +390,19 @@ async function speakerGroup(
       };
     }),
   );
-  if (hits.length === 0) return null;
   const capped = more || read.capped;
+  if (hits.length === 0 && !capped) return null;
   return {
     kind: "speaker",
     label: "Speakers",
     hits,
     capped,
-    sentence: groupSentence("Speaker", hits.length, capped, "Speakers"),
+    sentence: groupSentence(
+      { one: "Speaker", many: "speakers", where: "Speakers" },
+      hits.length,
+      capped,
+      read.rows.length,
+    ),
   };
 }
 
@@ -407,14 +450,19 @@ async function proposalGroup(
       };
     }),
   );
-  if (hits.length === 0) return null;
   const capped = more || read.capped;
+  if (hits.length === 0 && !capped) return null;
   return {
     kind: "proposal",
     label: "Proposals",
     hits,
     capped,
-    sentence: groupSentence("Proposal", hits.length, capped, "Proposals"),
+    sentence: groupSentence(
+      { one: "Proposal", many: "proposals", where: "Proposals" },
+      hits.length,
+      capped,
+      read.rows.length,
+    ),
   };
 }
 
@@ -466,18 +514,22 @@ async function assignedProposalGroup(
       };
     }),
   );
-  if (hits.length === 0) return null;
   const capped = more || read.capped;
+  if (hits.length === 0 && !capped) return null;
   return {
     kind: "review",
     label: "Your reviews",
     hits,
     capped,
     sentence: groupSentence(
-      "Assigned proposal",
+      {
+        one: "Assigned proposal",
+        many: "assigned proposals",
+        where: "Reviews",
+      },
       hits.length,
       capped,
-      "Reviews",
+      read.rows.length,
     ),
   };
 }

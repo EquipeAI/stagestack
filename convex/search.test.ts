@@ -234,6 +234,95 @@ describe("search:everything", () => {
     expect(group(results, "session")?.sentence).toBe("1 session match.");
   });
 
+  test("a capped scan that matched nothing admits the unread remainder instead of saying no matches", async () => {
+    // REGRESSION (codex, W1): the group was dropped whenever it had no hits,
+    // taking its `capped` with it — so an exact title sitting past the 500th
+    // session rendered as "Nothing matches", which the read cannot know.
+    const { t, alice, eventSlug, eventId } = await seed();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 500; i += 1) {
+        await ctx.db.insert("sessions", {
+          eventId,
+          title: `Filler ${i}`,
+          format: "Talk",
+          source: "direct",
+          status: "planned",
+        });
+      }
+    });
+    // The 501st, which the scan never reaches.
+    await addSession(t, eventId, "Zebra keynote");
+
+    const results = (await alice.query(api.search.everything, {
+      term: "zebra",
+      eventSlug,
+    })) as Results;
+
+    const sessions = group(results, "session");
+    expect(sessions?.hits).toEqual([]);
+    expect(sessions?.capped).toBe(true);
+    expect(sessions?.sentence).toBe(
+      "Searched the first 500 sessions — no matches there; more sessions exist than could be searched. Sessions has the full list.",
+    );
+    expect(results.summary).toBe(
+      "Nothing matches “zebra” in the rows that could be searched — more exist than one pass reads.",
+    );
+  });
+
+  test("a group with no hits is not counted as a group of results", async () => {
+    const { t, alice, eventSlug, eventId } = await seed();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 501; i += 1) {
+        await ctx.db.insert("sessions", {
+          eventId,
+          title: `Filler ${i}`,
+          format: "Talk",
+          source: "direct",
+          status: "planned",
+        });
+      }
+    });
+    await addProposal(t, eventId, "Zebra economics");
+
+    const results = (await alice.query(api.search.everything, {
+      term: "zebra",
+      eventSlug,
+    })) as Results;
+
+    expect(titles(results, "proposal")).toEqual(["Zebra economics"]);
+    expect(group(results, "session")?.hits).toEqual([]);
+    // One result, in one group — the capped session admission is not a second.
+    expect(results.summary).toBe(
+      "At least 1 result in 1 group. Use the arrow keys to pick one, Enter to open it.",
+    );
+  });
+
+  test("more memberships than one pass reads is admitted, not silently dropped", async () => {
+    // REGRESSION (codex, W1): the membership scans were bare `.take(50)` /
+    // `.take(200)`, so an event in the 51st organization was unreachable AND
+    // unmentioned.
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    let lastOrg = "";
+    for (let i = 0; i < 51; i += 1) {
+      lastOrg = await createOrg(alice, `Org number ${i}`);
+    }
+    // In the organization whose membership row the scan never reaches.
+    await createEvent(alice, lastOrg, "Zebra Summit");
+
+    const results = (await alice.query(api.search.everything, {
+      term: "zebra",
+    })) as Results;
+
+    const events = group(results, "event");
+    expect(events?.hits).toEqual([]);
+    expect(events?.capped).toBe(true);
+    expect(events?.sentence).toContain("more events exist than could be searched");
+    expect(results.summary).toBe(
+      "Nothing matches “zebra” in the rows that could be searched — more exist than one pass reads.",
+    );
+  });
+
   test("a term shorter than two characters is refused in words, not results", async () => {
     const { alice, eventSlug } = await seed();
     const results = (await alice.query(api.search.everything, {
