@@ -52,8 +52,12 @@ function AppLayout() {
         {/* The wordmark costs 104px of a 375px bar [measured], which is most of
             what the event title needs. Below 640px the mark alone stands in for
             it — the same collapsed-sidebar affordance the DS already ships —
-            and one of the two is always hidden, so the link keeps one name. */}
-        <Link to="/app" className="topbar__home">
+            and one of the two is always hidden, so the link keeps one name.
+            That name is on the LINK: the wordmark's text disappears at exactly
+            the width where the remaining mark is aria-hidden, which left the
+            home link with no accessible name on a phone and nowhere else. An
+            explicit label is the same at every width. */}
+        <Link to="/app" className="topbar__home" aria-label="StageStack home">
           <span className="topbar__logo topbar__logo--full">
             <Logo size={18} />
           </span>

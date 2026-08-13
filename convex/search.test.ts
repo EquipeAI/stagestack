@@ -300,7 +300,10 @@ describe("search:everything", () => {
   test("more memberships than one pass reads is admitted, not silently dropped", async () => {
     // REGRESSION (codex, W1): the membership scans were bare `.take(50)` /
     // `.take(200)`, so an event in the 51st organization was unreachable AND
-    // unmentioned.
+    // unmentioned. And then (codex, round 3) the admission overshot: unread
+    // MEMBERSHIPS are not unread EVENTS — fifty-one empty organizations would
+    // have had this sentence promise events that do not exist — so it now
+    // claims only the thing the read established.
     const t = setupTest();
     const alice = await signIn(t, "alice");
     let lastOrg = "";
@@ -317,7 +320,10 @@ describe("search:everything", () => {
     const events = group(results, "event");
     expect(events?.hits).toEqual([]);
     expect(events?.capped).toBe(true);
-    expect(events?.sentence).toContain("more events exist than could be searched");
+    expect(events?.sentence).toBe(
+      "Nothing could be searched here; more memberships remained unread, so any events they carry were not searched. My StageStack has the full list.",
+    );
+    expect(events?.sentence).not.toContain("more events exist");
     expect(results.summary).toBe(
       "Nothing matches “zebra” in the rows that could be searched — more exist than one pass reads.",
     );

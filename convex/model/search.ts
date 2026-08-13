@@ -155,21 +155,38 @@ type GroupWords = { one: string; many: string; where: string };
  * scan that stopped at its ceiling and matched nothing there knows only that it
  * did not look everywhere, and "no matches" would be a claim it cannot make. It
  * says how far it looked instead.
+ *
+ * `unread` is WHAT went unread, and the events group is why it is a parameter:
+ * its ceiling is on MEMBERSHIPS, and an unread membership is not an unread
+ * event — fifty-one organizations with nothing in them would have the sentence
+ * promise events that do not exist. A sentence may admit only what its read
+ * actually establishes.
  */
 function groupSentence(
   words: GroupWords,
   shown: number,
   capped: boolean,
   scanned: number,
+  unread?: string,
 ): string {
   const noun = plural(shown, "match", "matches");
   if (!capped) {
     return `${shown} ${words.one.toLowerCase()} ${noun}.`;
   }
+  const missing = unread ?? `more ${words.many} exist than could be searched`;
   if (shown === 0) {
-    return `Searched the first ${scanned} ${words.many} — no matches there; more ${words.many} exist than could be searched. ${words.where} has the full list.`;
+    // "The first 0 events" is not a sentence anyone should read. A capped read
+    // that got through nothing at all says that, and only that.
+    return scanned === 0
+      ? `Nothing could be searched here; ${missing}. ${words.where} has the full list.`
+      : `Searched the first ${scanned} ${words.many} — no matches there; ${missing}. ${words.where} has the full list.`;
   }
-  return `Showing the first ${shown} of more ${words.one.toLowerCase()} matches — ${words.where} has the full list.`;
+  if (unread === undefined) {
+    return `Showing the first ${shown} of more ${words.one.toLowerCase()} matches — ${words.where} has the full list.`;
+  }
+  // Hits AND an admission that is not about matches: the count is what was
+  // found, not a prefix of a larger known set.
+  return `Showing ${shown} ${words.one.toLowerCase()} ${noun}; ${missing}. ${words.where} has the full list.`;
 }
 
 function summarySentence(
@@ -201,11 +218,21 @@ function summarySentence(
  *
  * Budgeted rather than per-org capped: one sweep spends at most EVENT_SCAN
  * document reads no matter how many organizations the account belongs to.
+ *
+ * The two ceilings are reported apart because they know different things. A
+ * truncated EVENT read has seen events it could not search. A truncated
+ * MEMBERSHIP read has seen no such thing: the organizations it never reached
+ * may hold no events at all, so it may say only that it stopped reading.
  */
 async function accessibleEvents(
   ctx: QueryCtx,
   user: Doc<"users">,
-): Promise<{ events: Array<Doc<"events">>; capped: boolean }> {
+): Promise<{
+  events: Array<Doc<"events">>;
+  capped: boolean;
+  /** Capped, and ONLY by the membership reads. */
+  membershipsOnly: boolean;
+}> {
   // The membership scans are capped like every other read here: an account in
   // more organizations than one pass reads cannot see its 51st org's events,
   // and that omission has to travel with the answer instead of being dropped.
@@ -227,12 +254,13 @@ async function accessibleEvents(
   const events: Array<Doc<"events">> = [];
   const seen = new Set<string>();
   let budget = EVENT_SCAN;
-  let capped = orgMemberships.capped || eventMemberships.capped;
+  const membershipsCapped = orgMemberships.capped || eventMemberships.capped;
+  let eventsCapped = false;
 
   const orgIds = new Set<string>();
   for (const membership of orgMemberships.rows) {
     if (budget <= 0) {
-      capped = true;
+      eventsCapped = true;
       break;
     }
     orgIds.add(membership.orgId);
@@ -242,7 +270,7 @@ async function accessibleEvents(
         .withIndex("by_orgId", (q) => q.eq("orgId", membership.orgId)),
       budget,
     );
-    capped = capped || page.capped;
+    eventsCapped = eventsCapped || page.capped;
     for (const event of page.rows) {
       if (seen.has(event._id)) continue;
       seen.add(event._id);
@@ -255,7 +283,7 @@ async function accessibleEvents(
     // An org membership already pulled in every event of that org.
     if (orgIds.has(membership.orgId) || seen.has(membership.eventId)) continue;
     if (budget <= 0) {
-      capped = true;
+      eventsCapped = true;
       break;
     }
     const event = await ctx.db.get("events", membership.eventId);
@@ -265,13 +293,19 @@ async function accessibleEvents(
     budget -= 1;
   }
 
-  return { events, capped };
+  return {
+    events,
+    capped: eventsCapped || membershipsCapped,
+    membershipsOnly: membershipsCapped && !eventsCapped,
+  };
 }
 
 function eventGroup(
   events: Array<Doc<"events">>,
   readCapped: boolean,
   term: string,
+  /** The read stopped at the MEMBERSHIP ceiling and nowhere else. */
+  membershipsOnly: boolean,
 ): SearchGroup | null {
   const { hits, more } = collect(
     events.map((event) => {
@@ -303,6 +337,11 @@ function eventGroup(
       hits.length,
       capped,
       events.length,
+      // Only the memberships ran out: what is known is that the reading
+      // stopped, NOT that there are more events on the other side of it.
+      membershipsOnly && !more
+        ? "more memberships remained unread, so any events they carry were not searched"
+        : undefined,
     ),
   };
 }
@@ -559,7 +598,12 @@ export async function search(
 
   const reachable = await accessibleEvents(ctx, user);
   const groups: Array<SearchGroup> = [];
-  const events = eventGroup(reachable.events, reachable.capped, term);
+  const events = eventGroup(
+    reachable.events,
+    reachable.capped,
+    term,
+    reachable.membershipsOnly,
+  );
   if (events !== null) groups.push(events);
 
   if (eventCaller !== null) {
