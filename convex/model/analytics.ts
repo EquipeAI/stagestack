@@ -15,12 +15,24 @@ import { takeCapped } from "./validation";
 //
 // The intervals and the rows that anchor them:
 //
-//   decision      cfp.submit                 → decision.release      (proposal)
+//   decision      cfp.submit / cfp.manualAdd → decision.release      (proposal)
 //   confirmation  decision.release           → participation.setState confirmed
 //   task          taskInstance creation      → task.markProvided / upload /
 //                                              approve               (instance)
 //   publish       sessions.setContentStatus  → publish.session       (session)
 //                 (to "approved")
+//
+// A proposal reaches an event two ways and BOTH are an arrival: the speaker
+// submits it (`cfp.submit`), or an organizer records one that came to them
+// outside the CFP (`cfp.manualAdd`, convex/model/cfp.ts). The manual-add row is
+// written in the same mutation as the insert, so it is the exact moment the
+// proposal started existing for the organizer who now owes it a decision —
+// which is what "after the proposal arrived" has always meant here. Timing only
+// `cfp.submit` left every hand-added proposal out of the population, and an
+// event whose proposals were ALL hand-added then printed "No proposal has been
+// submitted yet" while the control center counted those same proposals waiting
+// for a decision. Two panels, one history, opposite claims: the empty state was
+// the false one.
 //
 // Two of those needed a DOCUMENT timestamp because the audit trail alone
 // cannot answer, and both fallbacks are named at their call site below:
@@ -46,6 +58,10 @@ import { takeCapped } from "./validation";
 //     folded into the median as a zero or as "so far".
 //   • An empty population produces an empty-state SENTENCE, never a zero. A
 //     median of 0 days across 0 proposals is a lie with a number on it.
+//   • "Nothing has started" is a claim about the WORLD, not about this read.
+//     A row that exists but cannot be timed is counted in `untimeableCount` and
+//     said out loud, so the empty state can only ever be printed when the thing
+//     it denies really is absent.
 //   • Every sentence states its population size, and a capped read renders as
 //     "at least N" — the same vocabulary the control center already uses.
 //     CAPPED IS PER STATISTIC, not per panel: a session ceiling says nothing
@@ -62,6 +78,7 @@ import { takeCapped } from "./validation";
 const AUDIT_SCAN = 4000;
 const SESSION_SCAN = 500;
 const PARTICIPANT_SCAN = 1000;
+const PROPOSAL_SCAN = 2000;
 const INSTANCE_SCAN = 2000;
 const FLAG_SCAN = 2000;
 
@@ -79,6 +96,10 @@ export type TurnaroundStat = {
   count: number;
   /** Started and not finished. Never a data point; always spoken. */
   openCount: number;
+  /** Exists, but nothing in the history says when its clock started. Never a
+   * data point, never silent: it is what stops an empty median from claiming
+   * the thing itself never happened. */
+  untimeableCount: number;
   /** Milliseconds, or null when the population is empty. */
   p50: number | null;
   p90: number | null;
@@ -231,6 +252,9 @@ type Wording = {
   openState: string;
   /** Said when nothing has even STARTED — the honest empty state. */
   nothingStarted: string;
+  /** What a row that exists but cannot be timed is MISSING. Said instead of
+   * `nothingStarted`, which would deny the row itself. */
+  noStart: string;
 };
 
 const WORDING: Record<TurnaroundId, Wording> = {
@@ -243,6 +267,7 @@ const WORDING: Record<TurnaroundId, Wording> = {
     openState: "still undecided",
     nothingStarted:
       "No proposal has been submitted yet, so there is no decision turnaround to report.",
+    noStart: "no arrival this history can time",
   },
   confirmation: {
     label: "Speaker confirmation",
@@ -253,6 +278,7 @@ const WORDING: Record<TurnaroundId, Wording> = {
     openState: "still to answer",
     nothingStarted:
       "No decision has reached a speaker yet, so there is no confirmation turnaround to report.",
+    noStart: "no released decision this history can time",
   },
   task: {
     label: "Task completion",
@@ -263,6 +289,7 @@ const WORDING: Record<TurnaroundId, Wording> = {
     openState: "still open",
     nothingStarted:
       "No task has been assigned yet, so there is no completion turnaround to report.",
+    noStart: "no assignment this history can time",
   },
   publish: {
     label: "Publish latency",
@@ -273,6 +300,7 @@ const WORDING: Record<TurnaroundId, Wording> = {
     openState: "approved but not published",
     nothingStarted:
       "No session content has been approved yet, so there is no publish latency to report.",
+    noStart: "no publication moment this history can time",
   },
 };
 
@@ -294,23 +322,44 @@ export function statSentence(
   durations: number[],
   openCount: number,
   capped: boolean,
+  untimeableCount = 0,
 ): TurnaroundStat {
   const word = WORDING[id];
   const sorted = [...durations].sort((a, b) => a - b);
   const p50 = percentile(sorted, 0.5);
   const p90 = percentile(sorted, 0.9);
   const count = sorted.length;
+  // Said wherever there is a sentence to hang it on. A row nobody can time is
+  // still a row that EXISTS, and every number beside it is a floor because of
+  // it — so it is never dropped in silence.
+  const untimeableClause =
+    untimeableCount === 0
+      ? ""
+      : `; ${amount(untimeableCount, capped)} ` +
+        `${plural(untimeableCount, word.one, word.many)} ` +
+        `${plural(untimeableCount, "carries", "carry")} ${word.noStart}`;
 
   let sentence: string;
   if (count === 0 && openCount === 0) {
     // "Nothing has started" is a claim about the WHOLE history. A stat whose
     // inputs were truncated, or whose rows could not be timed, has not read the
     // whole history and must not make it.
-    sentence = capped
-      ? `No ${word.one} here could be timed from the history that could be read.`
-      : word.nothingStarted;
+    if (untimeableCount > 0) {
+      // The rows EXIST. Denying them — "no proposal has been submitted yet"
+      // while the control center counts one waiting for a decision — is the one
+      // thing this panel may never say, and it outranks the capped wording
+      // below because it is the more specific admission of the two.
+      sentence =
+        `This event records ${amount(untimeableCount, capped)} ` +
+        `${plural(untimeableCount, word.one, word.many)} with ` +
+        `${word.noStart}, so there is no median to report.`;
+    } else if (capped) {
+      sentence = `No ${word.one} here could be timed from the history that could be read.`;
+    } else {
+      sentence = word.nothingStarted;
+    }
   } else if (count === 0) {
-    sentence = `Nothing has completed this step yet, so there is no median to report; ${openClause(word, openCount, capped)}.`;
+    sentence = `Nothing has completed this step yet, so there is no median to report; ${openClause(word, openCount, capped)}${untimeableClause}.`;
   } else {
     const population = `${amount(count, capped)} ${plural(count, word.one, word.many)}`;
     const tail =
@@ -320,7 +369,7 @@ export function statSentence(
     sentence =
       `${word.achievement} in a median of ${durationPhrase(p50 as number)} ` +
       `${word.since}, across ${population}; the slowest tenth took ` +
-      `${durationPhrase(p90 as number)}; ${tail}.`;
+      `${durationPhrase(p90 as number)}; ${tail}${untimeableClause}.`;
   }
 
   return {
@@ -328,6 +377,7 @@ export function statSentence(
     label: word.label,
     count,
     openCount,
+    untimeableCount,
     p50,
     p90,
     capped,
@@ -357,64 +407,107 @@ export async function turnaround(
   requireOrganizer(caller);
   const eventId = caller.event._id;
 
-  const [audit, sessions, participants, instances, flags] = await Promise.all([
-    takeCapped(
-      ctx.db
-        .query("auditLog")
-        .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-        .order("desc"),
-      AUDIT_SCAN,
-    ),
-    takeCapped(
-      ctx.db
-        .query("sessions")
-        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
-      SESSION_SCAN,
-    ),
-    takeCapped(
-      ctx.db
-        .query("sessionParticipants")
-        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
-      PARTICIPANT_SCAN,
-    ),
-    takeCapped(
-      ctx.db
-        .query("taskInstances")
-        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
-      INSTANCE_SCAN,
-    ),
-    takeCapped(
-      ctx.db
-        .query("publicationFlags")
-        .withIndex("by_eventId_and_target", (q) => q.eq("eventId", eventId)),
-      FLAG_SCAN,
-    ),
-  ]);
+  const [audit, proposals, sessions, participants, instances, flags] =
+    await Promise.all([
+      takeCapped(
+        ctx.db
+          .query("auditLog")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+          .order("desc"),
+        AUDIT_SCAN,
+      ),
+      takeCapped(
+        ctx.db
+          .query("proposals")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        PROPOSAL_SCAN,
+      ),
+      takeCapped(
+        ctx.db
+          .query("sessions")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        SESSION_SCAN,
+      ),
+      takeCapped(
+        ctx.db
+          .query("sessionParticipants")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        PARTICIPANT_SCAN,
+      ),
+      takeCapped(
+        ctx.db
+          .query("taskInstances")
+          .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+        INSTANCE_SCAN,
+      ),
+      takeCapped(
+        ctx.db
+          .query("publicationFlags")
+          .withIndex("by_eventId_and_target", (q) => q.eq("eventId", eventId)),
+        FLAG_SCAN,
+      ),
+    ]);
 
   const rows = audit.rows;
   // Each statistic is a floor only if one of the reads IT is computed from hit
   // a ceiling. The panel-level flag is for the panel's own sentence, and is
   // simply "is any figure on it a floor".
-  const decisionCapped = audit.capped;
+  const decisionReadCapped = audit.capped || proposals.capped;
   const confirmCapped = audit.capped || sessions.capped || participants.capped;
   const taskCapped = audit.capped || instances.capped;
   const publishReadCapped = audit.capped || sessions.capped || flags.capped;
 
-  // ── Decision: cfp.submit → decision.release, per proposal ──
+  // ── Decision: arrival → decision.release, per proposal ──
+  // The population is the PROPOSALS TABLE, not the submission rows: a proposal
+  // the history cannot time is still a proposal, and the control center counts
+  // it waiting for a decision on the same screen. Iterating the audit rows made
+  // those proposals invisible here, which is how this panel came to deny them.
+  //
   // A withdrawn proposal is neither timed nor chased: nobody owes it a
   // decision, so counting it as "still undecided" would invent a backlog.
   const submitted = firstByTarget(rows, (r) => r.action === "cfp.submit");
+  const manuallyAdded = firstByTarget(rows, (r) => r.action === "cfp.manualAdd");
   const released = firstByTarget(rows, (r) => r.action === "decision.release");
   const withdrawn = firstByTarget(rows, (r) => r.action === "cfp.withdraw");
 
   const decisionDurations: number[] = [];
   let decisionOpen = 0;
-  for (const [proposalId, at] of submitted) {
-    if (withdrawn.has(proposalId) && !released.has(proposalId)) continue;
-    const closed = interval(at, released.get(proposalId));
+  let decisionUntimeable = 0;
+  for (const proposal of proposals.rows) {
+    // A draft has not arrived anywhere: it is a speaker's private wizard state
+    // until they submit, and nobody owes it a decision.
+    if (proposal.status === "draft") continue;
+    const proposalId = proposal._id;
+    if (
+      (proposal.status === "withdrawn" || withdrawn.has(proposalId)) &&
+      !released.has(proposalId)
+    ) {
+      continue;
+    }
+    // Both arrivals count, earliest wins — a proposal recorded by hand and then
+    // resubmitted through the form arrived when it was first recorded.
+    const submittedAt = submitted.get(proposalId);
+    const addedAt = manuallyAdded.get(proposalId);
+    const start =
+      submittedAt === undefined
+        ? addedAt
+        : addedAt === undefined
+          ? submittedAt
+          : Math.min(submittedAt, addedAt);
+    if (start === undefined) {
+      // It exists and it is not a draft, but nothing readable says when it
+      // arrived. Counted and spoken; never silently dropped, and never allowed
+      // to leave the empty state claiming no proposal was ever submitted.
+      decisionUntimeable += 1;
+      continue;
+    }
+    const closed = interval(start, released.get(proposalId));
     if (closed === null) decisionOpen += 1;
     else decisionDurations.push(closed);
   }
+  // Untimeable proposals make every decision figure a floor, in the same words
+  // a truncated read uses.
+  const decisionCapped = decisionReadCapped || decisionUntimeable > 0;
 
   // ── Confirmation: decision.release → participation.setState confirmed ──
   // The join is document-shaped (participant → session → proposal) but every
@@ -542,7 +635,13 @@ export async function turnaround(
 
   return {
     stats: [
-      statSentence("decision", decisionDurations, decisionOpen, decisionCapped),
+      statSentence(
+        "decision",
+        decisionDurations,
+        decisionOpen,
+        decisionCapped,
+        decisionUntimeable,
+      ),
       statSentence("confirmation", confirmDurations, confirmOpen, confirmCapped),
       statSentence("task", taskDurations, taskOpen, taskCapped),
       statSentence("publish", publishDurations, publishOpen, publishCapped),

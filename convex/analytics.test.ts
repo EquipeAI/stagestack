@@ -20,6 +20,9 @@ import {
 //   • an OPEN interval is never a data point — it is counted separately and
 //     said out loud, never averaged in as a zero or as "so far";
 //   • an EMPTY population produces a sentence, never a median of nothing;
+//   • an empty population never DENIES rows that exist — a proposal the
+//     history cannot time is counted and said, because the control center is
+//     counting that same proposal one panel above;
 //   • every sentence states its population size, and a capped read says
 //     "at least N" in the same vocabulary the control center already uses;
 //   • the panel is organizer-only, like every other control-center panel.
@@ -55,6 +58,7 @@ type Panel = {
     label: string;
     count: number;
     openCount: number;
+    untimeableCount: number;
     p50: number | null;
     p90: number | null;
     capped: boolean;
@@ -275,6 +279,105 @@ describe("turnaround — each interval, computed from the rows already written",
 
     expect(stat.count).toBe(0);
     expect(stat.openCount).toBe(0);
+    expect(stat.sentence).toBe(
+      "No proposal has been submitted yet, so there is no decision turnaround to report.",
+    );
+  });
+
+  test("a proposal added BY HAND is an arrival, and the empty state never denies it", async () => {
+    // REGRESSION (browser walk, W4): a hand-added proposal writes
+    // `cfp.manualAdd`, not `cfp.submit`. Timing only submissions left the
+    // population empty, so this panel printed "No proposal has been submitted
+    // yet" on the same screen where the control center counted that very
+    // proposal waiting for a decision.
+    const s = await seed();
+    const proposalId = await s.alice.mutation(api.cfp.createManualProposal, {
+      eventSlug: s.eventSlug,
+      title: "Arrived by email",
+      speakers: [{ firstName: "Dana", lastName: "Ng" }],
+    });
+
+    const waiting = statOf(
+      (await s.alice.query(api.analytics.turnaround, {
+        eventSlug: s.eventSlug,
+      })) as Panel,
+      "decision",
+    );
+    expect(waiting.count).toBe(0);
+    expect(waiting.openCount).toBe(1);
+    expect(waiting.untimeableCount).toBe(0);
+    expect(waiting.sentence).not.toContain("No proposal has been submitted");
+    expect(waiting.sentence).toBe(
+      "Nothing has completed this step yet, so there is no median to report; 1 proposal is still undecided.",
+    );
+
+    at(3);
+    await audit(s, "decision.release", {
+      targetType: "proposal",
+      targetId: proposalId,
+    });
+
+    const decided = statOf(
+      (await s.alice.query(api.analytics.turnaround, {
+        eventSlug: s.eventSlug,
+      })) as Panel,
+      "decision",
+    );
+    expect(decided.count).toBe(1);
+    expect(decided.openCount).toBe(0);
+    expect(decided.capped).toBe(false);
+    expect(decided.sentence).not.toContain("No proposal has been submitted");
+    expect(decided.sentence).toBe(
+      "Decisions released in a median of 3 days after the proposal arrived, across 1 proposal; the slowest tenth took 3 days; none are still undecided.",
+    );
+  });
+
+  test("a proposal nothing can time is counted and said, never denied", async () => {
+    // The belt to the manual-add braces: a proposal that reached the table by
+    // any route with no arrival row at all (an older import, a submission
+    // scrolled out of the audit window) still EXISTS. Saying so is the only
+    // sentence that cannot contradict the panel above it.
+    const s = await seed();
+    await addProposal(s, "No paper trail");
+
+    const stat = statOf(
+      (await s.alice.query(api.analytics.turnaround, {
+        eventSlug: s.eventSlug,
+      })) as Panel,
+      "decision",
+    );
+    expect(stat.count).toBe(0);
+    expect(stat.openCount).toBe(0);
+    expect(stat.untimeableCount).toBe(1);
+    expect(stat.capped).toBe(true);
+    expect(stat.sentence).not.toContain("No proposal has been submitted");
+    expect(stat.sentence).toBe(
+      "This event records at least 1 proposal with no arrival this history can time, so there is no median to report.",
+    );
+  });
+
+  test("a draft proposal is not an arrival — it is a wizard nobody owes a decision", async () => {
+    const s = await seed();
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("proposals", {
+        eventId: s.eventId,
+        submitterUserId: s.actorUserId,
+        status: "draft",
+        title: "Half-typed",
+        answers: {},
+        formVersion: 1,
+        updatedAt: Date.now(),
+      });
+    });
+
+    const stat = statOf(
+      (await s.alice.query(api.analytics.turnaround, {
+        eventSlug: s.eventSlug,
+      })) as Panel,
+      "decision",
+    );
+    expect(stat.untimeableCount).toBe(0);
+    expect(stat.capped).toBe(false);
     expect(stat.sentence).toBe(
       "No proposal has been submitted yet, so there is no decision turnaround to report.",
     );
@@ -613,9 +716,14 @@ describe("turnaround — the empty event and the capped read", () => {
 
     expect(panel.summary).toContain("floors from a sample");
     for (const stat of panel.stats) expect(stat.capped).toBe(true);
-    // …and an empty capped statistic never claims nothing has started.
+    // …and an empty capped statistic never claims nothing has started. The
+    // proposal row itself is still readable, so the sentence counts it rather
+    // than merely admitting the read was short.
     expect(statOf(panel, "decision").sentence).toBe(
-      "No proposal here could be timed from the history that could be read.",
+      "This event records at least 1 proposal with no arrival this history can time, so there is no median to report.",
+    );
+    expect(statOf(panel, "confirmation").sentence).toBe(
+      "No speaker here could be timed from the history that could be read.",
     );
   });
 });

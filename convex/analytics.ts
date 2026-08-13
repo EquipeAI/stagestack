@@ -32,6 +32,10 @@ export const turnaround = eventQuery({
         count: v.number(),
         // Started and never finished: named in the sentence, never averaged in.
         openCount: v.number(),
+        // Exists, but with no start this history can time. Named in the
+        // sentence too — it is what keeps the empty state from denying rows
+        // another panel is counting.
+        untimeableCount: v.number(),
         // Milliseconds, or null when the population is empty. A null median is
         // the truth an empty population has; zero would be a lie with a number.
         p50: v.union(v.number(), v.null()),
