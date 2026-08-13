@@ -75,11 +75,52 @@ export type ImportRecord = Infer<typeof vImportRecord>;
 export type PlannedRecord = Infer<typeof vPlannedRecord>;
 export type ImportPlan = Infer<typeof vImportPlan>;
 
-export type RecordResult = {
-  id: string;
-  ok: boolean;
-  detail: string;
-};
+// The context worker.importContext serves the planner: event facts, the
+// upload, duplicate-detection hints, and which hint reads hit their scan cap.
+export const vImportContext = v.object({
+  event: v.object({
+    name: v.string(),
+    slug: v.string(),
+    timezone: v.string(),
+  }),
+  filename: v.string(),
+  description: v.union(v.string(), v.null()),
+  fileUrl: v.union(v.string(), v.null()),
+  tracks: v.array(v.string()),
+  tags: v.array(v.string()),
+  contacts: v.array(
+    v.object({
+      firstName: v.string(),
+      lastName: v.string(),
+      email: v.union(v.string(), v.null()),
+    }),
+  ),
+  proposalTitles: v.array(v.string()),
+  truncated: v.object({
+    contacts: v.boolean(),
+    proposals: v.boolean(),
+  }),
+});
+export type ImportContext = Infer<typeof vImportContext>;
+
+// One executed record's outcome; shared by the worker's batch calls and the
+// execution report it stores on the job.
+export const vRecordResult = v.object({
+  id: v.string(),
+  ok: v.boolean(),
+  detail: v.string(),
+});
+export type RecordResult = Infer<typeof vRecordResult>;
+
+// The import-execute job's stored result, written by the worker and read by
+// the organizer's report view.
+export const vExecutionReport = v.object({
+  total: v.number(),
+  ok: v.number(),
+  failed: v.number(),
+  results: v.array(vRecordResult),
+});
+export type ExecutionReport = Infer<typeof vExecutionReport>;
 
 export const IMPORT_LIMITS = {
   maxRecords: 500,

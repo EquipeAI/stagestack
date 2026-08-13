@@ -2,9 +2,9 @@ import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
-import { notFound } from "../lib/functions";
+import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
-import { assertEventActive, assertText, takeAll } from "./validation";
+import { assertEventActive, assertText, takeAll, takeCapped } from "./validation";
 
 // Event library (M0): tracks, tags, rooms, formats, custom fields — one
 // generic CRUD over the five tables since they share shape and rules.
@@ -36,42 +36,67 @@ export type LibraryLists = {
   rooms: Array<Doc<"rooms">>;
   formats: Array<Doc<"formats">>;
   customFields: Array<Doc<"customFields">>;
+  /** Per-kind overflow flags: TRUE means the list is a prefix, never a lie. */
+  capped: Record<LibraryKind, boolean>;
 };
+
+const LIST_SCAN = 200;
 
 export async function listLibrary(
   ctx: QueryCtx,
   eventId: Id<"events">,
 ): Promise<LibraryLists> {
   const [tracks, tags, rooms, formats, customFields] = await Promise.all([
-    ctx.db
-      .query("tracks")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(200),
-    ctx.db
-      .query("tags")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(200),
-    ctx.db
-      .query("rooms")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(200),
-    ctx.db
-      .query("formats")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(200),
-    ctx.db
-      .query("customFields")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(200),
+    takeCapped(
+      ctx.db
+        .query("tracks")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+      LIST_SCAN,
+    ),
+    takeCapped(
+      ctx.db
+        .query("tags")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+      LIST_SCAN,
+    ),
+    takeCapped(
+      ctx.db
+        .query("rooms")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+      LIST_SCAN,
+    ),
+    // Formats carry the REFUSE policy promised in the header: the file's own
+    // comment said a silently truncated formats read mis-labels public sessions,
+    // but the code probed at 200 like the others. The ceiling is FORMAT_SCAN.
+    takeAll(
+      ctx.db
+        .query("formats")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+      FORMAT_SCAN,
+      "formats",
+    ),
+    takeCapped(
+      ctx.db
+        .query("customFields")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+      LIST_SCAN,
+    ),
   ]);
   const byOrder = <T extends { order: number }>(xs: T[]) =>
     [...xs].sort((a, b) => a.order - b.order);
   return {
-    tracks: byOrder(tracks),
-    tags: byOrder(tags),
-    rooms: byOrder(rooms),
+    tracks: byOrder(tracks.rows),
+    tags: byOrder(tags.rows),
+    rooms: byOrder(rooms.rows),
     formats: byOrder(formats),
-    customFields: byOrder(customFields),
+    customFields: byOrder(customFields.rows),
+    capped: {
+      tracks: tracks.capped,
+      tags: tags.capped,
+      rooms: rooms.capped,
+      formats: false, // REFUSE policy: reaching here means the read was complete
+      customFields: customFields.capped,
+    },
   };
 }
 
@@ -148,6 +173,7 @@ export async function addLibraryItem(
   table: LibraryKind,
   input: LibraryItemInput,
 ): Promise<string> {
+  requireOrganizer(caller);
   assertEventActive(caller.event);
   const name = assertName(input.name);
   const eventId = caller.event._id;
@@ -234,6 +260,7 @@ export async function updateLibraryItem(
   id: string,
   patch: Partial<LibraryItemInput> & { order?: number },
 ): Promise<void> {
+  requireOrganizer(caller);
   assertEventActive(caller.event);
   const before = await getScoped(ctx, caller, table, id);
   const update: Record<string, unknown> = {};
@@ -548,6 +575,7 @@ export async function removeLibraryItem(
   table: LibraryKind,
   id: string,
 ): Promise<void> {
+  requireOrganizer(caller);
   assertEventActive(caller.event);
   await getScoped(ctx, caller, table, id);
   await assertNotInUse(ctx, table, caller.event._id, id);

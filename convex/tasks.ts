@@ -3,6 +3,7 @@ import { eventMutation, eventQuery } from "./lib/functions";
 import { vv } from "./lib/validators";
 import * as Tasks from "./model/tasks";
 import * as Readiness from "./model/readiness";
+import { vControlRow } from "./readiness";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public surface for speaker ops (M4). Thin wrappers; the rules live in
@@ -310,11 +311,14 @@ export const dashboard = eventQuery({
     }),
     // W8's "what is blocked" counts, derived in the SAME pass as the readiness
     // rows above so the panel's headline can never disagree with its list.
+    // `rows` carries the sentences the control center prints, composed in the
+    // model (W4: one explanation, one producer).
     blockers: v.object({
       contentDrafts: v.number(),
       unscheduled: v.number(),
       scheduleConflicts: v.number(),
       blockedSessions: v.number(),
+      rows: v.array(vControlRow),
     }),
   }),
   handler: async (ctx, args) => {

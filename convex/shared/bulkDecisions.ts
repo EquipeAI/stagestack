@@ -8,15 +8,12 @@
 // `importPlan` and `sessionContent`. Nothing in this file touches ctx or the
 // database, so the organizer's browser can state the plan before the call and
 // the backend can enforce exactly the same rule when the call lands.
+import type { Doc } from "../_generated/dataModel";
 
-export type ProposalStatus =
-  | "draft"
-  | "pending"
-  | "acceptQueue"
-  | "declineQueue"
-  | "accepted"
-  | "declined"
-  | "withdrawn";
+/** Derived from the schema, not hand-declared: a new proposal status breaks
+ * every consumer at compile time instead of drifting across three literal
+ * unions kept in step by hand. */
+export type ProposalStatus = Doc<"proposals">["status"];
 
 export type StageTarget = "pending" | "acceptQueue" | "declineQueue";
 

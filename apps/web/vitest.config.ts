@@ -6,12 +6,22 @@ import viteReact from '@vitejs/plugin-react'
 // so the Start/nitro/tailwind build plugins never load under test. The root
 // vitest.config.ts only includes convex/**, so the two suites cannot collide —
 // run this one with `npm run test -w apps/web` (or vitest from this directory).
+
+// Kill an ambient NODE_ENV=production BEFORE Vite's transform pipeline starts.
+// Vite reads process.env.NODE_ENV in the PARENT process to decide how to
+// transform each module (baking `import.meta.env.DEV` and choosing how to
+// externalize `node:` builtins), and that decision is taken before the
+// `test.env` pin below ever reaches a worker. An ambient production value
+// (Docker, CI images, `npm ci --omit=dev` shells) therefore flips DEV to false
+// in four suites and makes the two `node:fs`-importing suites die with
+// `No such built-in module: node:` — while the same run passes in a clean
+// shell. Neutralizing it here, at config-load time, makes the transform
+// environment deterministic no matter what the invoking shell exports.
+if (process.env.NODE_ENV === 'production') {
+  process.env.NODE_ENV = 'development'
+}
+
 export default defineConfig({
-  // Pin the mode too, not just NODE_ENV below: Vite derives
-  // `import.meta.env.DEV` from the resolved mode, and an ambient
-  // NODE_ENV=production would otherwise make DEV false inside the tests —
-  // silently inverting any test whose premise is "in development, …".
-  mode: 'development',
   plugins: [
     tsConfigPaths({
       projects: ['./tsconfig.json'],

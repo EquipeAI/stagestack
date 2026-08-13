@@ -1,4 +1,5 @@
 import { ConvexError } from "convex/values";
+import { validate } from "convex-helpers/validators";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
@@ -9,7 +10,7 @@ import type {
   PlannedRecord,
   RecordResult,
 } from "../shared/importPlan";
-import { IMPORT_LIMITS } from "../shared/importPlan";
+import { IMPORT_LIMITS, vImportPlan } from "../shared/importPlan";
 import { logAudit } from "./audit";
 import { createContact } from "./contacts";
 import { addLibraryItem, listLibrary } from "./library";
@@ -65,30 +66,47 @@ export async function resolveJobCaller(
   return { user, org, event, role: "organizer", orgRole: null };
 }
 
-/** Validate a planner result before it becomes an organizer-visible plan.
- * Called from `worker.finish` for `import-plan` jobs: the plan is produced by
- * an LLM on the worker VM, and nothing else on that path is server-validated
- * until `imports.confirm` revalidates the records the organizer picked. A
- * malformed plan fails the job instead of surfacing as a broken review UI. */
+/**
+ * Validate a planner result before it becomes an organizer-visible plan.
+ *
+ * DEEP, against `vImportPlan` itself — every record, every field, unknown
+ * fields rejected. Shape-checking only the three top-level keys used to be
+ * enough because `imports.confirm` took `records: v.array(vPlannedRecord)` and
+ * Convex re-validated each record on the way in. Confirm now sends only ids
+ * and re-derives the records from THIS stored plan, so this is the single
+ * place a record is ever checked: anything that gets past here reaches
+ * `executeRecord`'s `planned.record as ImportRecord` cast unchallenged. The
+ * plan is LLM output relayed by the worker VM — a compromised worker calls
+ * `worker.finish` directly — so it is validated as hostile input.
+ *
+ * Validating against the SAME validator `imports.getJob` returns also keeps
+ * the two ends symmetric: a plan that can be stored is a plan that can be
+ * read back, so a stored-but-unreadable plan can't brick the review page.
+ */
 export function assertPlanShape(plan: unknown): asserts plan is ImportPlan {
-  const p = plan as ImportPlan;
-  if (
-    typeof p !== "object" ||
-    p === null ||
-    typeof p.summary !== "string" ||
-    !Array.isArray(p.records) ||
-    !Array.isArray(p.skippedRows)
-  ) {
+  if (!validate(vImportPlan, plan)) {
     throw new ConvexError({
       code: "invalid_plan",
       message: "The planner returned an unusable plan.",
     });
   }
-  if (p.records.length > IMPORT_LIMITS.maxRecords) {
+  if (plan.records.length > IMPORT_LIMITS.maxRecords) {
     throw new ConvexError({
       code: "invalid_plan",
       message: `Plans are limited to ${IMPORT_LIMITS.maxRecords} records.`,
     });
+  }
+  // Ids are the organizer's selection handles in `imports.confirm`: duplicates
+  // there would make one approved row silently stand for another.
+  const ids = new Set<string>();
+  for (const record of plan.records) {
+    if (ids.has(record.id)) {
+      throw new ConvexError({
+        code: "invalid_plan",
+        message: "The planner returned a plan with duplicate record ids.",
+      });
+    }
+    ids.add(record.id);
   }
 }
 
@@ -99,7 +117,9 @@ async function executeRecord(
   caller: EventCaller,
   planned: PlannedRecord,
 ): Promise<RecordResult> {
-  const record = planned.record as ImportRecord;
+  // No cast: `assertPlanShape` validated this record against `vImportRecord`
+  // before it could be stored, so the discriminated union below is real.
+  const record: ImportRecord = planned.record;
   try {
     switch (record.kind) {
       case "contact": {
@@ -145,7 +165,9 @@ async function executeRecord(
       case "tag": {
         const table = record.kind === "track" ? "tracks" : "tags";
         const library = await listLibrary(ctx, caller.event._id);
-        const existing = (table === "tracks" ? library.tracks : library.tags).find(
+        const existing = (
+          table === "tracks" ? library.tracks : library.tags
+        ).find(
           (t) => t.name.toLowerCase() === record.name.trim().toLowerCase(),
         );
         if (existing !== undefined) {

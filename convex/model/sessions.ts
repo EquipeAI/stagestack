@@ -1306,41 +1306,6 @@ export type RevisionRow = {
   after: SessionContentFields;
 };
 
-export async function listRevisions(
-  ctx: QueryCtx,
-  caller: EventCaller,
-  sessionId: Id<"sessions">,
-): Promise<RevisionRow[]> {
-  requireOrganizer(caller);
-  const session = await ctx.db.get("sessions", sessionId);
-  if (session === null || session.eventId !== caller.event._id) {
-    notFound("session", "No such session on this event.");
-  }
-  // Newest 200 — descending BEFORE the take, or a long history would keep
-  // the oldest rows and drop the recent ones (codex).
-  const rows = await ctx.db
-    .query("sessionRevisions")
-    .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
-    .order("desc")
-    .take(200);
-  const out: RevisionRow[] = [];
-  for (const row of rows) {
-    const editor = await ctx.db.get("users", row.editedBy);
-    out.push({
-      revisionId: row._id,
-      editedAt: row.editedAt,
-      editorName:
-        (await eventUserDisplayName(ctx, caller.event._id, editor)) ??
-        "Event team member",
-      editorEmail: editor?.email ?? null,
-      before: row.before,
-      after: row.after,
-    });
-  }
-  // Newest first — the history panel reads downward into the past.
-  return out.sort((a, b) => b.editedAt - a.editedAt);
-}
-
 // ── Snapshot projection (W3) ─────────────────────────────────────────────
 
 /**

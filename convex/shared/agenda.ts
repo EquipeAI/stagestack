@@ -1,4 +1,4 @@
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 
 // The conflict engine, shared (W13).
 //
@@ -6,8 +6,8 @@ import type { Id } from "../_generated/dataModel";
 // it is pure — no ctx, no db, no wall clock — and the phone board needs to ask
 // "would this placement be legal?" about cells that do not exist yet. Moving it
 // (rather than re-deriving eligibility in TSX) is what makes the board,
-// `autoPlace`/`buildPlan`, the release gate and the readiness dashboard agree
-// by construction instead of by careful maintenance. Same precedent as
+// `buildPlan`/`applySchedule`, the release gate and the readiness dashboard
+// agree by construction instead of by careful maintenance. Same precedent as
 // `formDef`, `scorecard`, `importPlan`, `bulkDecisions` and `jobTypes`.
 //
 // `Id<...>` erases to `string` at runtime, so importing the generated data
@@ -151,14 +151,12 @@ export function candidateConflicts(
  * purpose: `BoardSession` (convex/model/agenda.ts) and the client's
  * `FunctionReturnType` view of it both satisfy this without either side
  * importing the other. */
-/** `sessionParticipants.state` (convex/schema.ts), spelled out so a rename
- * there breaks this filter loudly instead of silently letting a withdrawn
- * speaker start colliding again. */
-export type ParticipantState =
-  | "awaiting"
-  | "confirmed"
-  | "declined"
-  | "withdrawn";
+/** `sessionParticipants.state` (convex/schema.ts), DERIVED from the schema
+ * rather than spelled out: a rename there breaks this filter loudly at compile
+ * time instead of silently letting a withdrawn speaker start colliding again —
+ * the same "rename breaks loudly" guarantee, with one less hand-kept literal
+ * union to drift. */
+export type ParticipantState = Doc<"sessionParticipants">["state"];
 
 export type BoardSessionLike = {
   sessionId: Id<"sessions">;

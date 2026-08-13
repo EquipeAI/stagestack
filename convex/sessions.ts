@@ -121,23 +121,6 @@ const vContentFields = v.object({
   format: v.optional(v.string()),
 });
 
-export const listRevisions = eventQuery({
-  args: { sessionId: v.id("sessions") },
-  returns: v.array(
-    v.object({
-      revisionId: vv.id("sessionRevisions"),
-      editedAt: v.number(),
-      editorName: v.union(v.string(), v.null()),
-      editorEmail: v.union(v.string(), v.null()),
-      before: vContentFields,
-      after: vContentFields,
-    }),
-  ),
-  handler: async (ctx, args) => {
-    return await Sessions.listRevisions(ctx, ctx.caller, args.sessionId);
-  },
-});
-
 /** W3: the restorable states of a session's content — Current first, then one
  * entry per revision, newest first, each labelled in event time by the model. */
 export const listSnapshots = eventQuery({

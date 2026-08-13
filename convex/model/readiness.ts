@@ -5,6 +5,7 @@ import { requireOrganizer } from "../lib/functions";
 import { toScheduledThings } from "./agenda";
 import { conflictsFor, type Conflict } from "../shared/agenda";
 import { stagedDecisions } from "./controlCenter";
+import type { ControlRow } from "./controlCenter";
 import { isPublished, publicationFlags } from "./publish";
 import { isOpen, isOverdue } from "./tasks";
 import { takeAll, takeCapped } from "./validation";
@@ -199,6 +200,12 @@ export type DashboardBlockers = {
   scheduleConflicts: number;
   /** Sessions whose derived readiness is Blocked. */
   blockedSessions: number;
+  /**
+   * The control center's "what is blocked" rows, composed HERE (W4: one
+   * explanation, one producer). The counts above stay for tests and the
+   * badge; the rows are what every surface renders.
+   */
+  rows: ControlRow[];
 };
 
 export type Dashboard = {
@@ -371,15 +378,62 @@ export async function dashboard(
 
   // Same pass, same rows: the blocker counts cannot disagree with the readiness
   // list above them because they are derived from it.
+  const contentDrafts = planned.filter(
+    (s) => s.contentStatus === "draft",
+  ).length;
+  const unscheduled = planned.filter(
+    (s) => s.releasedSlot === undefined,
+  ).length;
+  const scheduleConflicts = planned.filter((s) =>
+    (conflicts.get(s._id) ?? []).some((c) => c.level === "blocker"),
+  ).length;
   const blockers: DashboardBlockers = {
-    contentDrafts: planned.filter((s) => s.contentStatus === "draft").length,
-    unscheduled: planned.filter((s) => s.releasedSlot === undefined).length,
-    scheduleConflicts: planned.filter((s) =>
-      (conflicts.get(s._id) ?? []).some((c) => c.level === "blocker"),
-    ).length,
+    contentDrafts,
+    unscheduled,
+    scheduleConflicts,
     blockedSessions: sessionRows.filter(
       (row) => row.readiness.status === "blocked",
     ).length,
+    // W4: the sentences the control center prints. Composed here so no route
+    // re-words a blocker; `ControlCenter.tsx` renders these verbatim.
+    rows: [
+      {
+        id: "contentDrafts",
+        label: "Content still in Draft",
+        count: contentDrafts,
+        capped: false,
+        sentence:
+          contentDrafts === 0
+            ? "No session is held back by unapproved content."
+            : `${contentDrafts} ${contentDrafts === 1 ? "session is" : "sessions are"} held out of the public program until the content is approved.`,
+        tone: contentDrafts === 0 ? "success" : "blocked",
+        link: { tab: "sessions", search: { content: "draft" } },
+      },
+      {
+        id: "unscheduled",
+        label: "Sessions unscheduled",
+        count: unscheduled,
+        capped: false,
+        sentence:
+          unscheduled === 0
+            ? "Every planned session has a released slot."
+            : `${unscheduled} planned ${unscheduled === 1 ? "session has" : "sessions have"} no released slot, so they cannot appear on the public schedule.`,
+        tone: unscheduled === 0 ? "success" : "attention",
+        link: { tab: "agenda", search: { view: "list" } },
+      },
+      {
+        id: "scheduleConflicts",
+        label: "Schedule conflicts",
+        count: scheduleConflicts,
+        capped: false,
+        sentence:
+          scheduleConflicts === 0
+            ? "No session collides with another."
+            : `${scheduleConflicts} ${scheduleConflicts === 1 ? "session is" : "sessions are"} in an impossible schedule state — a room or a speaker is double-booked.`,
+        tone: scheduleConflicts === 0 ? "success" : "blocked",
+        link: { tab: "agenda", search: { view: "room" } },
+      },
+    ],
   };
 
   return { speakers, sessions: sessionRows, totals, blockers };

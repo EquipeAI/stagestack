@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { decodeTextFile, parseImportFile } from "./import-agent";
+import type { ImportContext } from "../../../convex/shared/importPlan";
+import {
+  HINT_PREVIEW,
+  decodeTextFile,
+  hintLine,
+  parseImportFile,
+  withDuplicateCaveat,
+} from "./import-agent";
 
 const bytes = (s: string) => new TextEncoder().encode(s).buffer as ArrayBuffer;
 
@@ -61,5 +68,81 @@ describe("parseImportFile", () => {
   it("does not let a BOM corrupt the first header", () => {
     const table = parseImportFile(bytes("﻿" + csv), "talks.csv");
     expect(table.headers[0]).toBe("Talk title");
+  });
+});
+
+describe("duplicate-hint truncation", () => {
+  const context = (truncated: {
+    contacts: boolean;
+    proposals: boolean;
+  }): ImportContext => ({
+    event: { name: "DevConf", slug: "devconf", timezone: "UTC" },
+    filename: "talks.csv",
+    description: null,
+    fileUrl: null,
+    tracks: [],
+    tags: [],
+    contacts: [],
+    proposalTitles: [],
+    truncated,
+  });
+
+  it("marks a prompt list the deployment truncated", () => {
+    // The bug this guards: the deployment caps the existing-contacts read and
+    // reports the cap, but the prompt used to present its slice as the whole
+    // directory — so the model reads "not in the list" as "new person".
+    const line = hintLine("Existing contact emails", ["a@x.com"], ", ", true);
+    expect(line).toContain("PARTIAL");
+    expect(line).toContain("NOT evidence a record is new");
+    expect(line).toContain("a@x.com");
+  });
+
+  it("marks a list this file sliced, even when the read was complete", () => {
+    const emails = Array.from(
+      { length: HINT_PREVIEW + 5 },
+      (_, i) => `p${i}@x.com`,
+    );
+    const line = hintLine("Existing contact emails", emails, ", ", false);
+    expect(line).toContain(`${HINT_PREVIEW} of ${HINT_PREVIEW + 5}`);
+    expect(line).not.toContain(`p${HINT_PREVIEW}@x.com`);
+  });
+
+  it("says nothing when the list is whole", () => {
+    const line = hintLine("Existing tags", ["ai", "infra"], ", ", false);
+    expect(line).toBe("Existing tags: ai, infra");
+  });
+
+  it("still reports an empty-but-capped list", () => {
+    expect(hintLine("Existing contact emails", [], ", ", true)).toContain(
+      "the event has more",
+    );
+  });
+
+  it("discloses partial duplicate-checking in the summary the organizer approves", () => {
+    // The summary is the one line the review UI always prints. Past the read
+    // cap `annotateDuplicates` cannot mark a row, so an existing speaker shows
+    // up as a brand-new contact with nothing on the row to say why.
+    const both = withDuplicateCaveat(
+      "Planned 12 records.",
+      context({ contacts: true, proposals: true }),
+    );
+    expect(both).toContain("Planned 12 records.");
+    expect(both).toContain("contacts and proposals");
+    expect(both).toContain("may already exist");
+
+    expect(
+      withDuplicateCaveat(
+        "Planned 12 records.",
+        context({ contacts: true, proposals: false }),
+      ),
+    ).toContain("existing contacts than");
+
+    // Nothing was truncated: no caveat, no noise.
+    expect(
+      withDuplicateCaveat(
+        "Planned 12 records.",
+        context({ contacts: false, proposals: false }),
+      ),
+    ).toBe("Planned 12 records.");
   });
 });

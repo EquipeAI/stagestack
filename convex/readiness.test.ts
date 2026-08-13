@@ -284,8 +284,9 @@ describe("publication — the all-ready case", () => {
     expect(publication.toBeAnnounced).toBe(false);
 
     // Empty reasons must mean the projection really does carry it — asserted
-    // against computeProgram and the served blob, not a re-derivation.
-    const preview = await alice.query(api.publish.preview, { eventSlug });
+    // against computeProgram and the served blob, not a re-derivation. The
+    // projection rides on `publish.state` (F6).
+    const preview = (await alice.query(api.publish.state, { eventSlug })).preview;
     expect(preview.lineup.map((s: { sessionId: string }) => s.sessionId)).toContain(
       sessionId,
     );
@@ -331,7 +332,7 @@ describe("publication — the all-ready case", () => {
       "Public in lineup and agenda. Speakers are shown as to be announced until they confirm.",
     );
     // ...and the projection agrees that it publishes, TBA and all.
-    const preview = await alice.query(api.publish.preview, { eventSlug });
+    const preview = (await alice.query(api.publish.state, { eventSlug })).preview;
     expect(preview.lineup).toHaveLength(1);
     expect(preview.lineup[0].toBeAnnounced).toBe(true);
   });
@@ -391,7 +392,7 @@ describe("publication — agreement with what publish actually does", () => {
     for (const { step, alsoAgenda } of withdraw) {
       await step();
       const publication = await publicationFor(alice, eventSlug, sessionId);
-      const preview = await alice.query(api.publish.preview, { eventSlug });
+      const preview = (await alice.query(api.publish.state, { eventSlug })).preview;
       expect(publication.inLineup).toBe(false);
       expect(publication.reasons.length).toBeGreaterThan(0);
       expect(preview.lineup).toEqual([]);

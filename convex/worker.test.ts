@@ -296,7 +296,11 @@ describe("worker queue", () => {
       }),
     );
     expect(
-      await t.mutation(api.worker.touch, { secret: SECRET, jobId, claimToken: token }),
+      await t.mutation(api.worker.touch, {
+        secret: SECRET,
+        jobId,
+        claimToken: token,
+      }),
     ).toBe(true);
     await t.mutation(internal.worker.sweepExpiredLeases, {});
     let job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
@@ -443,6 +447,74 @@ describe("worker queue", () => {
     expect(ok?.result).toEqual(plan);
   });
 
+  test("a plan whose RECORDS are malformed fails the job", async () => {
+    // The regression this guards: `imports.confirm` used to take
+    // `records: v.array(vPlannedRecord)`, so Convex validated every record on
+    // the way in. Confirm now sends ids and re-derives the records from the
+    // stored plan, which makes THIS the only per-record check on the path to
+    // `executeRecord`. A top-level-only shape check would let a compromised
+    // worker post arbitrary objects and have them executed with the
+    // initiating organizer's authority.
+    const bad = [
+      { summary: "ok", records: [{ id: "r0" }], skippedRows: [] },
+      {
+        summary: "ok",
+        records: [{ id: "r0", record: { kind: "contact", firstName: 7 } }],
+        skippedRows: [],
+      },
+      {
+        summary: "ok",
+        records: [{ id: "r0", record: { kind: "wire-transfer", to: "x" } }],
+        skippedRows: [],
+      },
+      {
+        summary: "ok",
+        records: [
+          {
+            id: "r0",
+            record: { kind: "track", name: "AI" },
+            // Unknown fields are rejected too: `imports.getJob` serves this
+            // blob under `vImportPlan`, which would throw on the way out.
+            escalate: true,
+          },
+        ],
+        skippedRows: [],
+      },
+      {
+        summary: "ok",
+        // Duplicate ids would make one approved row stand for another in
+        // `imports.confirm`, which selects by id.
+        records: [
+          { id: "r0", record: { kind: "tag", name: "a" } },
+          { id: "r0", record: { kind: "tag", name: "b" } },
+        ],
+        skippedRows: [],
+      },
+    ];
+    for (const result of bad) {
+      const t = setupTest();
+      const jobId = await t.run(async (ctx) =>
+        ctx.db.insert("jobs", {
+          type: "import-plan",
+          payload: { filename: "sheet.csv" },
+          status: "queued",
+        }),
+      );
+      const claimToken = await claim(t, jobId);
+      expect(
+        await t.mutation(api.worker.finish, {
+          secret: SECRET,
+          jobId,
+          claimToken,
+          result,
+        }),
+      ).toBe(true);
+      const job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
+      expect(job?.status).toBe("failed");
+      expect(job?.result).toBeUndefined();
+    }
+  });
+
   test("importExecuteBatch executes the approved payload, not caller records", async () => {
     const t = setupTest();
     const { jobId, claimToken } = await executeJob(t, [proposalRecord(0)]);
@@ -503,8 +575,8 @@ describe("worker queue", () => {
     const job = await t.run(async (ctx) => ctx.db.get("jobs", jobId));
     expect(job?.completedBatches).toBeUndefined();
     expect(
-      await t.run(async (ctx) =>
-        (await ctx.db.query("proposals").collect()).length,
+      await t.run(
+        async (ctx) => (await ctx.db.query("proposals").collect()).length,
       ),
     ).toBe(0);
   });
@@ -535,8 +607,8 @@ describe("worker queue", () => {
     });
     expect(second.map((r) => r.id)).toEqual([`r${size}`, `r${size + 1}`]);
     expect(
-      await t.run(async (ctx) =>
-        (await ctx.db.query("proposals").collect()).length,
+      await t.run(
+        async (ctx) => (await ctx.db.query("proposals").collect()).length,
       ),
     ).toBe(size + 2);
 
@@ -578,9 +650,39 @@ describe("worker queue", () => {
     });
     expect(replay).toEqual(first);
     expect(
-      await t.run(async (ctx) =>
-        (await ctx.db.query("proposals").collect()).length,
+      await t.run(
+        async (ctx) => (await ctx.db.query("proposals").collect()).length,
       ),
     ).toBe(2);
+  });
+
+  test("importContext reports truncation instead of a silent cap (F8)", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme");
+    const eventSlug = await createEvent(alice, orgSlug, "DevConf");
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["title,speaker\nTalk A,Ada"])),
+    );
+    const planJobId = await alice.mutation(api.imports.start, {
+      eventSlug,
+      storageId,
+      filename: "talks.csv",
+    });
+    const jobId = await t.run(async (ctx) => {
+      const job = await ctx.db.get("jobs", planJobId);
+      // The planner's done state is what makes importContext serve a context.
+      return job!._id;
+    });
+
+    const context = (await t.query(api.worker.importContext, {
+      secret: SECRET,
+      jobId,
+    })) as { truncated: { contacts: boolean; proposals: boolean } };
+    // Small fixture: nothing is over any cap.
+    expect(context.truncated).toEqual({
+      contacts: false,
+      proposals: false,
+    });
   });
 });

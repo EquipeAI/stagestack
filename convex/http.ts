@@ -283,6 +283,15 @@ function json(body: unknown, status: number, cache?: string): Response {
   return new Response(JSON.stringify(body), { status, headers });
 }
 
+/** Header-safe `Content-Disposition` filename. `embed.name` is bounded and
+ * control-character-free at write time (model/embeds.ts `assertEmbedName`),
+ * but this sink strips quotes/backslashes too so a legacy row can never break
+ * the response header or weaken the quoted-string. */
+function attachmentFilename(name: string): string {
+  const sanitized = name.replace(/["\\\x00-\x1f\x7f]/g, "").trim();
+  return sanitized === "" ? "embed" : sanitized;
+}
+
 http.route({
   pathPrefix: "/api/events/",
   method: "GET",
@@ -337,7 +346,7 @@ http.route({
         status: 200,
         headers: {
           "Content-Type": "text/calendar; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${embed.name}.ics"`,
+          "Content-Disposition": `attachment; filename="${attachmentFilename(embed.name)}.ics"`,
           "Cache-Control": "public, max-age=60",
           ...CORS_HEADERS,
         },

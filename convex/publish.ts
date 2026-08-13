@@ -8,6 +8,77 @@ import * as PublishBulk from "./model/publishBulk";
 // Organizer publication console (M7). Public read path is convex/publicProgram
 // + convex/http.ts. The served projection is privacy-filtered in model/publish.
 
+// ── The public program, as a validator ─────────────────────────────────────
+//
+// ONE shape for every surface that serves the projection: `publish.state`'s
+// live preview, `publish.publicProgram`, and anything else that ever returns a
+// `PublicProgram`. Defining it once means the model can add a field and every
+// consumer's generated types pick it up — and a field the model EMITS but this
+// validator forgets would be silently stripped by Convex, which is exactly the
+// kind of drift this shared definition exists to prevent. Kept in lockstep
+// with `PublicProgram` in model/publish.ts (the field list below IS that type).
+const vPublicSpeaker = v.object({
+  speakerId: v.string(),
+  name: v.string(),
+  tagline: v.optional(v.string()),
+  jobTitle: v.optional(v.string()),
+  company: v.optional(v.string()),
+  bio: v.optional(v.string()),
+  headshotUrl: v.optional(v.string()),
+  links: v.optional(
+    v.object({
+      website: v.optional(v.string()),
+      twitter: v.optional(v.string()),
+      linkedin: v.optional(v.string()),
+      github: v.optional(v.string()),
+    }),
+  ),
+});
+
+const vPublicSession = v.object({
+  sessionId: v.string(),
+  title: v.string(),
+  description: v.optional(v.string()),
+  format: v.optional(v.string()),
+  trackName: v.optional(v.string()),
+  startsAt: v.optional(v.number()),
+  endsAt: v.optional(v.number()),
+  roomName: v.optional(v.string()),
+  speakers: v.array(vPublicSpeaker),
+  toBeAnnounced: v.boolean(),
+});
+
+export const vPublicProgram = v.object({
+  event: v.object({
+    name: v.string(),
+    slug: v.string(),
+    startsAt: v.number(),
+    endsAt: v.number(),
+    timezone: v.string(),
+    location: v.optional(v.string()),
+    description: v.optional(v.string()),
+    website: v.optional(v.string()),
+    logoUrl: v.optional(v.string()),
+  }),
+  lineupPublished: v.boolean(),
+  agendaPublished: v.boolean(),
+  lineup: v.array(vPublicSession),
+  agenda: v.array(
+    v.union(
+      v.object({ kind: v.literal("session"), ...vPublicSession.fields }),
+      v.object({
+        kind: v.literal("item"),
+        itemId: v.string(),
+        title: v.string(),
+        startsAt: v.number(),
+        endsAt: v.number(),
+        roomName: v.optional(v.string()),
+        description: v.optional(v.string()),
+      }),
+    ),
+  ),
+});
+
 export const state = eventQuery({
   args: {},
   returns: v.object({
@@ -16,6 +87,10 @@ export const state = eventQuery({
     // True when the served blob is behind current state — editorial edits
     // awaiting a republish, or a scheduled rebuild that threw instead of landing.
     stale: v.boolean(),
+    // The projection under the CURRENT flags — the console's live preview.
+    // Computed once for both this and `stale` (F6: one projection, not two),
+    // and TYPED so the frontend gets the real shape instead of `any`.
+    preview: vPublicProgram,
     version: v.union(v.number(), v.null()),
     publishedAt: v.union(v.number(), v.null()),
     publishedSessionIds: v.array(v.string()),
@@ -25,16 +100,6 @@ export const state = eventQuery({
   }),
   handler: async (ctx) => {
     return await Publish.publishState(ctx, ctx.caller);
-  },
-});
-
-// Live preview of what WOULD be served given the current flags — lets the
-// organizer see the page before the public does, without persisting.
-export const preview = eventQuery({
-  args: {},
-  returns: v.any(),
-  handler: async (ctx) => {
-    return await Publish.computeProgram(ctx, ctx.caller.event);
   },
 });
 
@@ -216,6 +281,12 @@ export const rebuild = internalMutation({
 // Public, unauthenticated read of the SERVED projection (the last explicitly
 // published version). Powers the public event page SSR; the HTTP API in
 // convex/http.ts reads the same model function.
+//
+// Deliberately NOT typed by `vPublicProgram`: this serves the STORED blob,
+// which may predate fields added to the shape since it was written. The
+// freshly-computed preview above is always current, so it is the one surface
+// that carries the strict validator. A served blob is re-validated the next
+// time a rebuild rewrites it.
 export const publicProgram = publicQuery({
   args: { slug: v.string() },
   returns: v.any(),

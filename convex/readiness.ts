@@ -144,7 +144,10 @@ const vControlLink = v.object({
   search: v.optional(v.record(v.string(), v.string())),
 });
 
-const vControlRow = v.object({
+/** Shared row shape: the attention panel AND the blocked panel (via
+ * `tasks.dashboard`) both return these, so every surface renders the same
+ * sentence vocabulary. */
+export const vControlRow = v.object({
   id: v.string(),
   label: v.string(),
   count: v.number(),

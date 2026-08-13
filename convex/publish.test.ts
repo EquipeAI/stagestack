@@ -202,10 +202,11 @@ describe("publish — content approval", () => {
     });
 
     // Listing intent and editorial approval are independent. The flag is on,
-    // but the draft is absent from both sections of the live preview.
+    // but the draft is absent from both sections of the live preview (which
+    // `state` now carries — F6, one projection instead of two).
     const state = await alice.query(api.publish.state, { eventSlug });
     expect(state.publishedSessionIds).toContain(sessionId);
-    let preview = await alice.query(api.publish.preview, { eventSlug });
+    let preview = state.preview;
     expect(preview.lineup).toEqual([]);
     expect(preview.agenda).toEqual([]);
 
@@ -240,7 +241,7 @@ describe("publish — content approval", () => {
       sessionId: sessionId as Id<"sessions">,
       to: "approved",
     });
-    preview = await alice.query(api.publish.preview, { eventSlug });
+    preview = (await alice.query(api.publish.state, { eventSlug })).preview;
     expect(
       preview.lineup.map((session: { title: string }) => session.title),
     ).toEqual(["Agents in Production"]);

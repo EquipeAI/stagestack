@@ -167,21 +167,19 @@ vi.mock('convex/react', () => ({
         publishedAgendaItemIds: [],
         acceptedSessions: 2,
         releasedSessions: 1,
-      }
-    }
-    if (name === 'publish:preview') {
-      return {
-        event: {
-          name: 'DevConf',
-          slug: 'devconf',
-          startsAt: 1_000,
-          endsAt: 2_000,
-          timezone: 'UTC',
+        preview: {
+          event: {
+            name: 'DevConf',
+            slug: 'devconf',
+            startsAt: 1_000,
+            endsAt: 2_000,
+            timezone: 'UTC',
+          },
+          lineupPublished: state.lineupPublished,
+          agendaPublished: state.agendaPublished,
+          lineup: [],
+          agenda: [],
         },
-        lineupPublished: state.lineupPublished,
-        agendaPublished: state.agendaPublished,
-        lineup: [],
-        agenda: [],
       }
     }
     if (name === 'publish:diff') {

@@ -348,7 +348,9 @@ export async function attentionPanel(
       capped: reviews.capped,
       sentence:
         incompleteReviews === 0
-          ? "Every assigned review has been submitted."
+          ? reviews.capped
+            ? `No outstanding review among the first ${PANEL_REVIEW_SCAN} read — larger events may have more.`
+            : "Every assigned review has been submitted."
           : `${amount(incompleteReviews, reviews.capped)} assigned ${plural(incompleteReviews, "review has", "reviews have")} not been submitted` +
             (overdueReviewers.size === 0
               ? "."
@@ -358,7 +360,9 @@ export async function attentionPanel(
           ? "blocked"
           : incompleteReviews > 0
             ? "attention"
-            : "success",
+            : reviews.capped
+              ? "neutral"
+              : "success",
       link: { tab: "reviews", search: { tab: "progress" } },
     },
     {
@@ -383,9 +387,16 @@ export async function attentionPanel(
       capped: participants.capped,
       sentence:
         awaitingSpeakers === 0
-          ? "Every invited speaker has answered."
+          ? participants.capped
+            ? `Every invited speaker among the first ${PANEL_PARTICIPANT_SCAN} participations read has answered — larger events may have more.`
+            : "Every invited speaker has answered."
           : `${amount(awaitingSpeakers, participants.capped)} ${plural(awaitingSpeakers, "speaker has", "speakers have")} not answered their invitation.`,
-      tone: awaitingSpeakers === 0 ? "success" : "attention",
+      tone:
+        awaitingSpeakers === 0
+          ? participants.capped
+            ? "neutral"
+            : "success"
+          : "attention",
       link: { tab: "speakers", search: { state: "awaiting" } },
     },
     {
@@ -395,7 +406,9 @@ export async function attentionPanel(
       capped: instances.capped,
       sentence:
         openInstances.length === 0
-          ? "No speaker owes you anything right now."
+          ? instances.capped
+            ? `No outstanding task among the first ${PANEL_INSTANCE_SCAN} read — larger events may have more.`
+            : "No speaker owes you anything right now."
           : `${amount(openInstances.length, instances.capped)} ${plural(openInstances.length, "task is", "tasks are")} outstanding` +
             (overdueInstances.length === 0
               ? "."
@@ -405,7 +418,9 @@ export async function attentionPanel(
           ? "blocked"
           : openInstances.length > 0
             ? "attention"
-            : "success",
+            : instances.capped
+              ? "neutral"
+              : "success",
       // `outstanding`, not `pending`: the count is every OPEN task — which
       // includes work sitting in Awaiting Review and Changes Requested — and a
       // link to `pending` would show the organizer a shorter list than the

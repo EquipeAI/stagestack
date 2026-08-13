@@ -1705,12 +1705,6 @@ export type PlacementPlan = {
   fingerprint: string;
 };
 
-/** Legacy one-shot result shape, kept for the existing `autoPlace` action. */
-export type AutoPlaceResult = {
-  placed: Array<{ sessionId: Id<"sessions">; title: string }>;
-  unplaced: Array<{ sessionId: Id<"sessions">; title: string }>;
-};
-
 type PlannerInput = {
   event: Doc<"events">;
   sessions: Array<Doc<"sessions">>;
@@ -2406,36 +2400,5 @@ export async function undoPlacement(
       skipped === 0
         ? `${reverted} ${reverted === 1 ? "session is" : "sessions are"} back where ${reverted === 1 ? "it" : "they"} started.`
         : `${reverted} ${reverted === 1 ? "session" : "sessions"} put back. ${skipped} left alone — ${skipped === 1 ? "it was" : "they were"} moved by hand after the suggestion was applied.`,
-  };
-}
-
-/**
- * The one-shot action the board has always had: plan and apply in one call.
- * Kept as a thin call through the same planner — there is no second placement
- * implementation, only a second entry point for organizers who don't want the
- * preview step.
- */
-export async function autoPlace(
-  ctx: MutationCtx,
-  caller: EventCaller,
-): Promise<AutoPlaceResult> {
-  requireOrganizer(caller);
-  assertEventActive(caller.event);
-  const plan = buildPlan(await plannerInput(ctx, caller.event));
-  const result = await applySchedule(ctx, caller, {
-    fingerprint: plan.fingerprint,
-    placements: plan.placements.map((p) => ({
-      sessionId: p.sessionId,
-      startsAt: p.startsAt,
-      endsAt: p.endsAt,
-      roomId: p.roomId,
-    })),
-  });
-  return {
-    placed: result.placed,
-    unplaced: result.unplaced.map((u) => ({
-      sessionId: u.sessionId,
-      title: u.title,
-    })),
   };
 }

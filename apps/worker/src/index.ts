@@ -12,7 +12,7 @@ import {
   type RecordResult,
 } from "../../../convex/shared/importPlan";
 import { runHelloAgent } from "./hello-agent";
-import { runImportPlan, type ImportContext } from "./import-agent";
+import { runImportPlan } from "./import-agent";
 
 // Lease renewal interval. Must stay well under the deployment's
 // WORKER_LEASE_TTL_MS (10 min, convex/worker.ts) — an import plan is ~10
@@ -49,10 +49,10 @@ const handlers: {
   ping: async (job) => ({ pong: true, at: Date.now(), payload: job.payload }),
   "hello-agent": async (job) => await runHelloAgent(job._id),
   "import-plan": async (job) => {
-    const context = (await client.query(api.worker.importContext, {
+    const context = await client.query(api.worker.importContext, {
       secret,
       jobId: job._id,
-    })) as ImportContext;
+    });
     return await runImportPlan(job._id, context);
   },
   "import-execute": async (job, lease) => {

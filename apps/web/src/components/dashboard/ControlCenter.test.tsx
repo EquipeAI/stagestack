@@ -92,6 +92,36 @@ const DASHBOARD = {
     unscheduled: 0,
     scheduleConflicts: 0,
     blockedSessions: 0,
+    rows: [
+      {
+        id: 'contentDrafts',
+        label: 'Content still in Draft',
+        count: 4,
+        capped: false,
+        sentence:
+          '4 sessions are held out of the public program until the content is approved.',
+        tone: 'blocked',
+        link: { tab: 'sessions', search: { content: 'draft' } },
+      },
+      {
+        id: 'unscheduled',
+        label: 'Sessions unscheduled',
+        count: 0,
+        capped: false,
+        sentence: 'Every planned session has a released slot.',
+        tone: 'success',
+        link: { tab: 'agenda', search: { view: 'list' } },
+      },
+      {
+        id: 'scheduleConflicts',
+        label: 'Schedule conflicts',
+        count: 0,
+        capped: false,
+        sentence: 'No session collides with another.',
+        tone: 'success',
+        link: { tab: 'agenda', search: { view: 'room' } },
+      },
+    ],
   },
 }
 

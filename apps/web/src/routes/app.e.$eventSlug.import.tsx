@@ -6,7 +6,11 @@ import type { Id } from '@convex/_generated/dataModel'
 // The plan's shape is the same contract the executor re-validates against, so
 // the review UI reads it from convex/shared/importPlan.ts instead of restating
 // it — a field added to vImportRecord must not silently become invisible here.
-import type { ImportPlan, PlannedRecord } from '@convex/shared/importPlan'
+import type {
+  ExecutionReport,
+  ImportPlan,
+  PlannedRecord,
+} from '@convex/shared/importPlan'
 import { ActionResult, Badge, Button, Callout, Card, Checkbox, DescriptionList, EmptyState, Tag, Textarea } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
@@ -15,13 +19,6 @@ import { errorMessage } from '~/lib/errors'
 export const Route = createFileRoute('/app/e/$eventSlug/import')({
   component: ImportPage,
 })
-
-type ExecutionReport = {
-  total: number
-  ok: number
-  failed: number
-  results: Array<{ id: string; ok: boolean; detail: string }>
-}
 
 const KIND_LABEL: Record<string, string> = {
   contact: 'Contact',
@@ -381,7 +378,10 @@ function PlanView({
   // toast that took the reason with it when it faded.
   const [startFailure, setStartFailure] = useState<string | null>(null)
 
-  const plan = (job?.status === 'done' ? (job.result as ImportPlan) : null) ?? null
+  const plan: ImportPlan | null =
+    job?.type === 'import-plan' && job.status === 'done'
+      ? job.result ?? null
+      : null
   const included = useMemo(
     () => plan?.records.filter((r) => !excluded.has(r.id)) ?? [],
     [plan, excluded],
@@ -533,9 +533,10 @@ function PlanView({
                     const executeJobId = await confirm({
                       eventSlug,
                       planJobId: jobId,
-                      // Typed by the shared contract; the server still
-                      // re-validates against vPlannedRecord.
-                      records: included,
+                      // Only the ids cross the wire: the server re-derives the
+                      // records from the plan's own result, so what executes is
+                      // exactly what was reviewed here.
+                      recordIds: included.map((r) => r.id),
                     })
                     onConfirmed(executeJobId)
                   } catch (err) {
@@ -569,8 +570,10 @@ function ExecutionView({
   onRestart: () => void
 }) {
   const job = useQuery(api.imports.getJob, { eventSlug, jobId })
-  const report =
-    job?.status === 'done' ? (job.result as ExecutionReport) : null
+  const report: ExecutionReport | null =
+    job?.type === 'import-execute' && job.status === 'done'
+      ? job.result ?? null
+      : null
 
   if (job === undefined) {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>

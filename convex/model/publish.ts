@@ -702,6 +702,12 @@ export type PublishState = {
    * "already correct" and "failed" must never look the same.
    */
   stale: boolean;
+  /**
+   * The projection under the CURRENT flags — the same object the `stale`
+   * comparison above computed. The console renders this as its live preview,
+   * so the page needs one projection for state+stale, not two.
+   */
+  preview: PublicProgram;
 };
 
 /** The organizer's view of what's public and what could be. */
@@ -741,16 +747,16 @@ export async function publishState(
     }
   }
   // Compared against a fresh projection rather than against timestamps: it is
-  // the BYTES the public sees that matter, and this page already recomputes the
-  // projection for its live preview.
+  // the BYTES the public sees that matter. That same projection is what the
+  // console previews, so compute it once and serve it back.
+  const preview = await computeProgram(ctx, caller.event);
   const stale =
-    published !== null &&
-    canonical(published.program) !==
-      canonical(await computeProgram(ctx, caller.event));
+    published !== null && canonical(published.program) !== canonical(preview);
   return {
     lineupPublished: caller.event.publicPageEnabled === true,
     agendaPublished: isPublished(flags, "agenda", "event", false),
     stale,
+    preview,
     version: published?.version ?? null,
     publishedAt: published?.publishedAt ?? null,
     publishedSessionIds,

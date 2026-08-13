@@ -6,7 +6,12 @@ import { isJobType } from "./shared/jobTypes";
 import { enqueueJob } from "./model/jobs";
 import * as Imports from "./model/imports";
 import { listLibrary } from "./model/library";
-import { IMPORT_LIMITS, type PlannedRecord } from "./shared/importPlan";
+import { takeCapped } from "./model/validation";
+import {
+  IMPORT_LIMITS,
+  type PlannedRecord,
+  vImportContext,
+} from "./shared/importPlan";
 
 // Worker-facing functions, guarded by a shared secret (WORKER_SECRET env var on
 // the deployment). V1 judgment call per docs/ARCHITECTURE.md; upgrade path is a
@@ -118,7 +123,11 @@ export const pending = query({
       .query("jobs")
       .withIndex("by_status", (q) => q.eq("status", "queued"))
       .take(10);
-    return queued.map((j) => ({ _id: j._id, type: j.type, payload: j.payload }));
+    return queued.map((j) => ({
+      _id: j._id,
+      type: j.type,
+      payload: j.payload,
+    }));
   },
 });
 
@@ -194,8 +203,11 @@ export const finish = mutation({
     if (job === null || !ownsClaim(job, args.claimToken)) return false;
     if (args.error === undefined && job.type === "import-plan") {
       // Validate the planner's output server-side before any organizer sees
-      // it: the plan comes out of an LLM on the worker VM, and `imports.confirm`
-      // only revalidates the records the organizer selected from it.
+      // it: the plan comes out of an LLM on the worker VM, and `result` below
+      // is `v.any()`. This is the ONLY per-record validation on the path —
+      // `imports.confirm` sends ids and re-derives the records from this
+      // stored plan, so nothing downstream re-checks them. `assertPlanShape`
+      // is therefore deep (every record against `vImportRecord`).
       try {
         Imports.assertPlanShape(args.result);
       } catch (err) {
@@ -271,7 +283,7 @@ export const sweepExpiredLeases = internalMutation({
 
 export const importContext = query({
   args: { secret: v.string(), jobId: v.id("jobs") },
-  returns: v.any(),
+  returns: vImportContext,
   handler: async (ctx, args) => {
     assertWorker(args.secret);
     const job = await ctx.db.get("jobs", args.jobId);
@@ -292,16 +304,26 @@ export const importContext = query({
     const [fileUrl, library, contacts, proposals] = await Promise.all([
       ctx.storage.getUrl(payload.storageId as never),
       listLibrary(ctx, caller.event._id),
-      ctx.db
-        .query("contacts")
-        .withIndex("by_orgId", (q) => q.eq("orgId", caller.org._id))
-        .take(500),
-      ctx.db
-        .query("proposals")
-        .withIndex("by_eventId_and_status", (q) =>
-          q.eq("eventId", caller.event._id),
-        )
-        .take(500),
+      // Duplicate-detection HINTS for the planner, not assertions: a cap here
+      // can only cost a duplicate warning, never a wrong write, so refusing
+      // would be too strict — but a silent cap would let an existing speaker be
+      // presented as new. Hence `truncated` below, which the planner puts in
+      // the plan summary the organizer approves (apps/worker/src/import-agent.ts,
+      // `withDuplicateCaveat`). Read caps are disclosed, never swallowed.
+      takeCapped(
+        ctx.db
+          .query("contacts")
+          .withIndex("by_orgId", (q) => q.eq("orgId", caller.org._id)),
+        500,
+      ),
+      takeCapped(
+        ctx.db
+          .query("proposals")
+          .withIndex("by_eventId_and_status", (q) =>
+            q.eq("eventId", caller.event._id),
+          ),
+        500,
+      ),
     ]);
     return {
       event: {
@@ -314,12 +336,16 @@ export const importContext = query({
       fileUrl,
       tracks: library.tracks.map((t) => t.name),
       tags: library.tags.map((t) => t.name),
-      contacts: contacts.map((c) => ({
+      contacts: contacts.rows.map((c) => ({
         firstName: c.firstName,
         lastName: c.lastName,
         email: c.email ?? null,
       })),
-      proposalTitles: proposals.map((p) => p.title),
+      proposalTitles: proposals.rows.map((p) => p.title),
+      truncated: {
+        contacts: contacts.capped,
+        proposals: proposals.capped,
+      },
     };
   },
 });
