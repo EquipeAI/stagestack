@@ -223,6 +223,43 @@ async function addTask(
   });
 }
 
+/**
+ * Flip a session's publication flag the way the product does: one row per
+ * session, rewritten in place, carrying only its LAST flip — which is the whole
+ * reason a publication can go unrecorded.
+ */
+async function setPublicationFlag(
+  s: Seeded,
+  sessionId: Id<"sessions">,
+  published: boolean,
+): Promise<void> {
+  await s.t.run(async (ctx) => {
+    const flag = await ctx.db
+      .query("publicationFlags")
+      .withIndex("by_eventId_and_target", (q) =>
+        q
+          .eq("eventId", s.eventId)
+          .eq("targetType", "session")
+          .eq("targetId", sessionId),
+      )
+      .unique();
+    if (flag === null) {
+      await ctx.db.insert("publicationFlags", {
+        eventId: s.eventId,
+        targetType: "session",
+        targetId: sessionId,
+        published,
+        updatedAt: Date.now(),
+      });
+      return;
+    }
+    await ctx.db.patch("publicationFlags", flag._id, {
+      published,
+      updatedAt: Date.now(),
+    });
+  });
+}
+
 // ── The intervals ────────────────────────────────────────────────────────
 
 describe("turnaround — each interval, computed from the rows already written", () => {
@@ -856,6 +893,137 @@ describe("turnaround — each interval, computed from the rows already written",
       "This event records at least 1 session with no publication moment this history can time, so there is no median to report.",
     );
     expect(panel.capped).toBe(true);
+  });
+
+  test("a session pulled down after its only publication is still timed by that publication", async () => {
+    // The floor of the counting rule below: one unpublish undoing one publish
+    // the history HAS a moment for. The session is offline now, but the latest
+    // cycle is the one that ended on day 1, and it is a real measurement.
+    const s = await seed();
+    const sessionId = await addSession(s, "Published, then pulled", {
+      contentStatus: "approved",
+    });
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(1);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: true },
+    });
+    await setPublicationFlag(s, sessionId, true);
+    at(2);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: false },
+    });
+    await setPublicationFlag(s, sessionId, false);
+
+    const panel = (await s.alice.query(api.analytics.turnaround, {
+      eventSlug: s.eventSlug,
+    })) as Panel;
+    const stat = statOf(panel, "publish");
+
+    expect(stat.count).toBe(1);
+    expect(stat.untimeableCount).toBe(0);
+    expect(stat.capped).toBe(false);
+    expect(stat.sentence).toBe(
+      "Sessions published in a median of 1 day after their content was approved, across 1 session; the slowest tenth took 1 day; none are approved but not published.",
+    );
+  });
+
+  test("an unpublish with no publication moment to undo is not an open wait, it is untimeable", async () => {
+    // Bulk-published and then pulled: the flag has flipped back to false, so
+    // the ONLY record of the publication is gone. The session is not "approved
+    // and never published" — it went public and came down, and saying it is
+    // still waiting would invent a backlog out of a completed cycle.
+    const s = await seed();
+    const sessionId = await addSession(s, "Bulk published, then pulled", {
+      contentStatus: "approved",
+    });
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(2);
+    await setPublicationFlag(s, sessionId, true);
+    at(3);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: false },
+    });
+    await setPublicationFlag(s, sessionId, false);
+
+    const panel = (await s.alice.query(api.analytics.turnaround, {
+      eventSlug: s.eventSlug,
+    })) as Panel;
+    const stat = statOf(panel, "publish");
+
+    expect(stat.count).toBe(0);
+    expect(stat.openCount).toBe(0);
+    expect(stat.untimeableCount).toBe(1);
+    expect(stat.capped).toBe(true);
+    expect(stat.sentence).toBe(
+      "This event records at least 1 session with no publication moment this history can time, so there is no median to report.",
+    );
+  });
+
+  test("a forgotten bulk cycle is not answered with an older real one", async () => {
+    // REGRESSION (codex, W4): published explicitly, pulled, re-approved, BULK
+    // republished, pulled again. The flag says false, so the bulk publication
+    // has no timestamp anywhere — and `end` quietly fell back to the day-1
+    // row, printing the FIRST cycle's one day as if it were the latest. A
+    // stale-but-real cycle is the one wrong answer a reader cannot spot.
+    const s = await seed();
+    const sessionId = await addSession(s, "Published, pulled, bulk restored", {
+      contentStatus: "approved",
+    });
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(1);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: true },
+    });
+    await setPublicationFlag(s, sessionId, true);
+    at(2);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: false },
+    });
+    await setPublicationFlag(s, sessionId, false);
+    at(3);
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(4);
+    // Cycle two, published in bulk: no per-session row, and the flag below
+    // will overwrite the only trace of it.
+    await setPublicationFlag(s, sessionId, true);
+    at(5);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: false },
+    });
+    await setPublicationFlag(s, sessionId, false);
+
+    const panel = (await s.alice.query(api.analytics.turnaround, {
+      eventSlug: s.eventSlug,
+    })) as Panel;
+    const stat = statOf(panel, "publish");
+
+    // Two unpublishes, one known publication moment: the latest cycle is
+    // missing, so this session is named as unmeasurable and not stood in for.
+    expect(stat.count).toBe(0);
+    expect(stat.openCount).toBe(0);
+    expect(stat.untimeableCount).toBe(1);
+    expect(stat.p50).toBeNull();
+    expect(stat.capped).toBe(true);
+    expect(stat.sentence).toBe(
+      "This event records at least 1 session with no publication moment this history can time, so there is no median to report.",
+    );
   });
 });
 

@@ -49,14 +49,28 @@ import { takeCapped } from "./validation";
 // ` row, and — while the flag still says published — `publicationFlags
 // .updatedAt`, which is the LAST flip and therefore that session's most recent
 // publication moment. The start is the approval GOVERNING that end (the latest
-// at or before it). Then one rule decides whether the pair is a measurement: an
-// unpublish STRICTLY between the two says the approval was already standing
-// while the session was public, so it governed an earlier cycle this history
-// cannot time and the two ends belong to different cycles. Such a session
-// leaves the population, which makes the count a FLOOR (the stat is marked
-// capped, so it says "at least N" — the same admission a truncated read makes).
-// Excluding is the only move that cannot invent a number: no start, no end, no
-// data point.
+// at or before it). Then two rules decide whether the pair is a measurement,
+// and they are the same rule twice — both ask whether these two ends really
+// belong to the SAME, LATEST cycle:
+//   • an unpublish STRICTLY BETWEEN the two says the approval was already
+//     standing while the session was public, so it governed an earlier cycle
+//     this history cannot time and the ends straddle a boundary;
+//   • MORE UNPUBLISHES THAN KNOWN PUBLICATION MOMENTS says the latest cycle
+//     itself is missing. Each `published:false` row undoes one distinct
+//     publication, and the moments this history holds are one per explicit
+//     `published:true` row plus, while the flag still says published, the flag
+//     — counted only when its `updatedAt` is LATER than the newest such row,
+//     because an explicit publish writes the row and the flag in one mutation
+//     and must not be counted twice. When the unpublishes outnumber those
+//     moments, a publication happened that nothing timestamped: a bulk run the
+//     flag has since forgotten, because a flag holds only its last flip. `end`
+//     then falls back to an older row, and the pair would print a REAL but
+//     STALE cycle where the newest one was asked for — the one wrong answer
+//     nobody reading the panel could catch.
+// Either way the session leaves the population, which makes the count a FLOOR
+// (the stat is marked capped, so it says "at least N" — the same admission a
+// truncated read makes). Excluding is the only move that cannot invent a
+// number: no start, no end, no data point.
 //
 // BOUNDARY, checked rather than assumed: nothing but a publication moves a
 // session's flag. `setFlag` (convex/model/publish.ts) is called from exactly two
@@ -201,38 +215,15 @@ function firstByTarget(
 }
 
 /**
- * LATEST timestamp per target id, for the rows an action code marks.
- *
- * The one place where latest is right: a publication is not a correction of an
- * earlier publication, it is a NEW cycle. Timing the earliest one pairs a
- * publish with an approval that may be three cycles older than it, or throws
- * the pair away entirely because an unpublish sits in between — while the
- * newest cycle, the one this history can actually time, goes unread.
- */
-function lastByTarget(
-  rows: Audit[],
-  match: (row: Audit) => boolean,
-  targetOf: (row: Audit) => string | undefined = (row) => row.targetId,
-): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const row of rows) {
-    if (!match(row)) continue;
-    const target = targetOf(row);
-    if (target === undefined) continue;
-    const at = out.get(target);
-    if (at === undefined || row._creationTime > at) {
-      out.set(target, row._creationTime);
-    }
-  }
-  return out;
-}
-
-/**
  * EVERY timestamp per target id, for the rows an action code marks.
  *
- * The one interval that needs more than the earliest occurrence: a publish is
- * governed by the approval that was standing when it happened, and an event
- * that approved, reverted and re-approved has several to choose between.
+ * The one interval that needs more than the earliest occurrence, and it needs
+ * it on both ends: a publish is governed by the approval that was standing when
+ * it happened, and an event that approved, reverted and re-approved has several
+ * to choose between — while a publication is not a correction of an earlier
+ * publication but a NEW cycle, so its own rows are read for their LATEST (the
+ * cycle still standing) and for their COUNT (how many publications this history
+ * can put a moment on at all).
  */
 function allByTarget(
   rows: Audit[],
@@ -617,10 +608,12 @@ export async function turnaround(
     const id = metaField(r, "sessionId");
     return typeof id === "string" ? id : undefined;
   };
-  // LATEST, not earliest (see `lastByTarget`): the anchor is the session's most
-  // recent publication, because that is the cycle whose approval this history
-  // still holds. An earlier cycle is only ever harder to time.
-  const publishedRow = lastByTarget(
+  // EVERY explicit publication, because two different questions are asked of
+  // them: the LATEST is the anchor (that is the cycle whose approval this
+  // history still holds — an earlier cycle is only ever harder to time), and
+  // HOW MANY there are is what says whether a publication happened that left
+  // no timestamp behind at all.
+  const publishedRows = allByTarget(
     rows,
     (r) => r.action === "publish.session" && metaField(r, "published") === true,
     sessionIdMeta,
@@ -657,7 +650,11 @@ export async function turnaround(
     // whichever of the two is later. A session bulk-published and then
     // explicitly republished has both, and only the later one is the cycle
     // whose approval is still standing.
-    const rowEnd = publishedRow.get(session._id);
+    const explicitPublishes = publishedRows.get(session._id) ?? [];
+    const rowEnd =
+      explicitPublishes.length === 0
+        ? undefined
+        : Math.max(...explicitPublishes);
     const flagged = flagPublishedAt.get(session._id);
     const end =
       rowEnd === undefined
@@ -682,12 +679,31 @@ export async function turnaround(
     // history cannot time, and `end` belongs to the cycle after it. Measuring
     // across that boundary would print the first cycle's wait plus however
     // long the session sat withdrawn.
+    const unpublishes = unpublished.get(session._id) ?? [];
     if (
       end !== undefined &&
-      (unpublished.get(session._id) ?? []).some(
-        (at) => at > approvedAt && at < end,
-      )
+      unpublishes.some((at) => at > approvedAt && at < end)
     ) {
+      publishUntimeable += 1;
+      continue;
+    }
+    // COUNTING the unpublishes catches the cycle the flag cannot remember at
+    // all. Every `published:false` row undoes one distinct publication, so the
+    // history knows of as many publications as it has moments for: one per
+    // explicit row, plus the flag while it still says published — and NOT plus
+    // one when that flag is simply the latest explicit publish writing its row
+    // and its flag in the same mutation, which is why the flag only counts when
+    // it is LATER than the newest row. More unpublishes than known moments means
+    // a publication happened that nothing timestamped: a bulk run that the flag
+    // then forgot when the session came down again (a flag holds only its last
+    // flip). `end` in that case is an OLDER row, and pairing it with its
+    // approval would print a real but stale cycle in place of the latest one —
+    // the substitution nobody reading "publish latency" could detect.
+    const flagIsItsOwnMoment =
+      flagged !== undefined && (rowEnd === undefined || flagged > rowEnd);
+    const knownPublishMoments =
+      explicitPublishes.length + (flagIsItsOwnMoment ? 1 : 0);
+    if (unpublishes.length > knownPublishMoments) {
       publishUntimeable += 1;
       continue;
     }
