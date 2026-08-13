@@ -18,16 +18,36 @@ Previous plans: [UX maturity cycle M8–M9](docs/PLAN-2026-08-ux-maturity.md) ·
 [eval fix cycle](docs/PLAN-2026-08-eval-fix.md) ·
 [original build M0–M8](docs/PLAN-2026-08-submission.md)
 
-## Submission logistics
+## Evaluation package
+
+The repo is already public (flipped 2026-08-12). Goal: the AIE team —
+swyx@ai.engineer · sydney@ai.engineer · phlo@ai.engineer ·
+kelsey@ai.engineer — can evaluate StageStack with the least possible
+friction: land signed-in, in a populated event, with a map from the six
+requirements to the exact screens that prove them.
 
 (Form submission — https://forms.gle/RJMXWp2jAD32uHvB9 — is handled directly
 by Alvaro, outside this plan.)
 
-- [ ] **Decide on the optional reviewers** — swyx@ai.engineer ·
-      sydney@ai.engineer · phlo@ai.engineer · kelsey@ai.engineer. Two
-      decisions: repo access (repo goes public at submission, so likely moot)
-      and whether to pre-provision test accounts / an invite path on prod so
-      they land in a populated event rather than an empty one.
+- [ ] **Seeded demo event on prod** with realistic volume: a published CFP,
+      proposals across every status, a launched review round with scores, a
+      part-scheduled agenda with deliberate conflicts to show detection,
+      speakers at every readiness state, task/reminder history, and a
+      published public page + embed + API — so every one of the six
+      requirements is demonstrable without the reviewer doing setup work.
+- [ ] **Zero-friction reviewer access**: organizer invites pre-sent to the
+      four @ai.engineer addresses (our own invite flow is the demo), each
+      deep-linking into the seeded event; verify the Clerk production
+      instance accepts fresh sign-ups cleanly.
+- [ ] **Reviewer guide** — `docs/EVALUATION.md`, linked prominently from the
+      README: the deployed URLs (site, public page, embed, API endpoint), how
+      to get in, and a 10–15 minute walkthrough mapped requirement-by-
+      requirement to the six, with deep links into the seeded event; also
+      point at the trailer video and where the tests/CI live for the
+      code-side story.
+- [ ] **README front door check**: the first screen of the README should
+      serve a judge — product summary, live demo link, evaluation guide link,
+      screenshots current with the post-W13 UI.
 - [ ] **Push `develop`** (currently ahead of origin) so the preview deploy —
       the thing the evals hit — matches local, and merge to `main` before
       Sunday so prod carries everything we want judged.
