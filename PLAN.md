@@ -117,16 +117,32 @@ stated per surface, every `TAB_PATHS` route keeps resolving.
 The M10 headline. One fast affordance that makes the whole product feel
 expert-grade — and makes every reviewer's "where is X?" self-answering.
 
-- [ ] **Backend**: one `search` capability in `convex/model/` scoped to the
+- [x] **Backend**: one `search` capability in `convex/model/` scoped to the
       caller's memberships — events, sessions, speakers/contacts, proposals
       by title/name; per-type caps with a `capped` flag; reviewers only ever
       see their assigned scope (negative authz tests mandatory).
-- [ ] **Command palette** (Cmd/Ctrl-K + a visible topbar search button):
+      (`convex/model/search.ts` + `api.search.everything`. Reviewer path is
+      built ONLY from their own assignment index — no by-id proposal reads,
+      no contact/session reads — so unassigned records are unreachable by
+      construction. Speaker rows carry professional identity only, never
+      email/phone, for organizers too. A capped scan that matched nothing
+      says so instead of "no matches"; membership sweeps report their own
+      overflow. Deferred, deliberately: search-by-email (the row shows no
+      email, so a match would be invisible), per-proposal deep links (the
+      route has no id param — hits land on the pre-filtered table), and
+      cross-event record search (unbounded read).)
+- [x] **Command palette** (Cmd/Ctrl-K + a visible topbar search button):
       results grouped by type, each row deep-linking to the W9 workspace or
       module; recent/frequent destinations when the query is empty;
       navigation-only actions in v1 (no mutations from the palette).
-- [ ] **Fuzzy jump to nav destinations** by current AND old label (the alias
-      list W7 kept) so renamed surfaces stay findable.
+      (`CommandPalette` is a DS primitive composing Dialog; empty query shows
+      the lifecycle-grouped destinations. Below 640px the topbar search
+      collapses to icon-only and the event-switcher title ellipsises inside
+      its own box, so nothing overlaps at 375/320px.)
+- [x] **Fuzzy jump to nav destinations** by current AND old label (the alias
+      list W7 kept) so renamed surfaces stay findable. (`paletteNav.ts` reads
+      the same alias list the rail announces — "Overview, also called
+      Dashboard".)
 - *Mobile*: full-screen sheet from the topbar search button; keyboard
   behaviour degrades to plain list taps.
 
@@ -175,15 +191,27 @@ Finishes what W12 started: table state already lives in typed
 
 M10's composition item, minus the full-WYSIWYG bet the last plan deferred.
 
-- [ ] **Token palette + insert-at-cursor** over the existing template
+- [x] **Token palette + insert-at-cursor** over the existing template
       textarea: clickable `{{speaker.name}}`-style merge tokens, list driven
       by the variables the backend already resolves — one shared definition
       in `convex/shared/` so the palette and the renderer cannot disagree.
-- [ ] **Live personalized preview**: rendered against a real selectable
+      (`convex/shared/templateVars.ts` enumerates per-context availability
+      from every real send site; the palette shows only what THIS template's
+      send passes. The token warning distinguishes a misspelling from a real
+      variable this context never fills — one `varWarning` producer consumed
+      by the editor AND SendPanel, whose hand-rolled client substitution was
+      deleted rather than left as a second source of truth. Found-and-fixed:
+      the old preview substituted speaker vars into templates whose sends
+      pass no speaker — it previewed a lie.)
+- [x] **Live personalized preview**: rendered against a real selectable
       recipient (or an explicit sample person), through the same server-side
       render path the send uses — never a client-side re-implementation.
-- [ ] **Raw HTML stays an explicit advanced mode**; full WYSIWYG remains out
-      (unchanged decision 4 from the archived plan).
+      (`templates.preview` runs the send's own substitute+shell calls; a test
+      asserts preview output is byte-identical to the stored sent message.
+      Sample recipient is explicitly labelled as not a real speaker.)
+- [x] **Raw HTML stays an explicit advanced mode**; full WYSIWYG remains out
+      (unchanged decision 4 from the archived plan). (No toggle was needed:
+      the body field IS the raw-HTML textarea — there is nothing to gate.)
 - *Mobile*: palette as a bottom sheet; preview stacks under the editor.
 
 ## W4 — Turnaround analytics
