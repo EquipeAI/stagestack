@@ -23,6 +23,7 @@ import {
   TEMPLATE_CONTEXT_VARS,
   isKnownVar,
   tokenFor,
+  varWarning,
   variablesIn,
 } from "./shared/templateVars";
 
@@ -361,6 +362,40 @@ describe("token catalog matches the renderer", () => {
         ).toContain(path);
       }
     }
+  });
+
+  test("the warning about a dead token names WHICH kind of dead it is", () => {
+    // REGRESSION (codex, W3): both composers checked the global catalog, so a
+    // real variable the send site does not pass drew no warning at all. One
+    // producer, two distinct reasons, shared by the editor and the one-off
+    // composer.
+    expect(varWarning("decision.accepted", ["{{event.name}}"])).toBeNull();
+
+    const outOfContext = varWarning("decision.accepted", [
+      "{{speaker.firstName}} on {{event.name}}",
+    ]);
+    expect(outOfContext?.outOfContext).toEqual(["speaker.firstName"]);
+    expect(outOfContext?.unknown).toEqual([]);
+    expect(outOfContext?.sentence).toBe(
+      "{{speaker.firstName}} is a real variable, but this template's send passes no value for it. It renders as nothing.",
+    );
+
+    const unknown = varWarning("decision.accepted", ["{{speaker.nickname}}"]);
+    expect(unknown?.unknown).toEqual(["speaker.nickname"]);
+    expect(unknown?.sentence).toBe(
+      "{{speaker.nickname}} is not a StageStack variable — check the spelling. It renders as nothing.",
+    );
+
+    // The one-off composer asks the same question of its own small bag.
+    const oneOff = varWarning(ONE_OFF_CONTEXT_KEY, [
+      "{{proposal.title}}",
+      "{{nope}} {{speaker.fullName}}",
+    ]);
+    expect(oneOff?.outOfContext).toEqual(["proposal.title"]);
+    expect(oneOff?.unknown).toEqual(["nope"]);
+    expect(oneOff?.sentence).toBe(
+      "{{nope}} is not a StageStack variable — check the spelling. {{proposal.title}} is a real variable, but this template's send passes no value for it. They render as nothing.",
+    );
   });
 
   test("the renderer's raw-block set is the catalog's", () => {

@@ -1,11 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
-import {
-  ONE_OFF_CONTEXT_KEY,
-  variablesIn,
-  varsForContext,
-} from '@convex/shared/templateVars'
+import { ONE_OFF_CONTEXT_KEY, varWarning } from '@convex/shared/templateVars'
 import {
   AUDIENCE_META,
   AUDIENCE_ORDER,
@@ -114,14 +110,11 @@ export function SendPanel({ eventSlug }: { eventSlug: string }) {
   )
 
   // A one-off send builds its own tiny variable bag, so anything outside it —
-  // even a name a template would resolve — comes out empty here.
-  const oneOffVars = varsForContext(ONE_OFF_CONTEXT_KEY)
-  const unknown = useMemo(
-    () =>
-      [...variablesIn(subject), ...variablesIn(message)].filter(
-        (path) => !oneOffVars.includes(path),
-      ),
-    [subject, message, oneOffVars],
+  // even a name a template would resolve — comes out empty here. Same producer
+  // as the template editor's warning, so the two cannot word it differently.
+  const warning = useMemo(
+    () => varWarning(ONE_OFF_CONTEXT_KEY, [subject, message]),
+    [subject, message],
   )
 
   // The preview is the server's, never a local re-implementation of the
@@ -536,9 +529,9 @@ export function SendPanel({ eventSlug }: { eventSlug: string }) {
             }}
           />
 
-          {unknown.length === 0 ? null : (
+          {warning === null ? null : (
             <Callout tone="attention" title="These render as empty">
-              {unknown.map((path) => `{{${path}}}`).join(', ')}
+              {warning.sentence}
             </Callout>
           )}
 

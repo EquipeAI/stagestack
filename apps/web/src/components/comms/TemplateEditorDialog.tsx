@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
-import { isKnownVar, variablesIn } from '@convex/shared/templateVars'
+import { varWarning } from '@convex/shared/templateVars'
 import { isCustomKey } from './model'
 import { MonoText } from './primitives'
 import { TokenPalette, fieldById, insertAtCursor } from './TokenPalette'
@@ -93,12 +93,12 @@ export function TemplateEditorDialog({
       : 'skip',
   )
 
-  const unknown = useMemo(
-    () =>
-      [...variablesIn(subject), ...variablesIn(html)].filter(
-        (path) => !isKnownVar(path),
-      ),
-    [subject, html],
+  // Against THIS template's own context, not the global catalog: a real
+  // variable the send site never passes renders as nothing just as surely as a
+  // misspelled one, and the sentence says which of the two it is.
+  const warning = useMemo(
+    () => varWarning(template.key, [subject, html]),
+    [template.key, subject, html],
   )
 
   const insert = (path: string) => {
@@ -247,9 +247,9 @@ export function TemplateEditorDialog({
             onInsert={insert}
           />
 
-          {unknown.length === 0 ? null : (
+          {warning === null ? null : (
             <Callout tone="attention" title="These render as empty">
-              {unknown.map((path) => `{{${path}}}`).join(', ')}
+              {warning.sentence}
             </Callout>
           )}
         </div>

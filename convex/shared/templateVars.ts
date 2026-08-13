@@ -225,6 +225,72 @@ export function variablesIn(text: string): Array<string> {
   return found;
 }
 
+/**
+ * The tokens in a draft that will render as nothing, and the ONE sentence that
+ * says why — composed here so the template editor and the one-off composer
+ * cannot word the same warning two ways.
+ *
+ * The two reasons are not the same problem and must not read as one: a
+ * misspelling is a typo to fix, while `{{speaker.firstName}}` in a decision
+ * email is a real variable that this particular send has no value for (the
+ * decision mails pass no speaker — see TEMPLATE_CONTEXT_VARS). The old check
+ * asked only "is this in the catalog", so the second case passed silently and
+ * the token vanished at send time.
+ */
+export type VarWarning = {
+  /** Not a StageStack variable at all. */
+  unknown: ReadonlyArray<string>;
+  /** Real, but not passed by this context's send site. */
+  outOfContext: ReadonlyArray<string>;
+  /** Composed here. Printed verbatim. */
+  sentence: string;
+};
+
+function tokenList(paths: ReadonlyArray<string>): string {
+  return paths.map(tokenFor).join(", ");
+}
+
+export function varWarning(
+  contextKey: string,
+  texts: ReadonlyArray<string>,
+): VarWarning | null {
+  const available = varsForContext(contextKey);
+  const unknown: Array<string> = [];
+  const outOfContext: Array<string> = [];
+  const seen = new Set<string>();
+  for (const text of texts) {
+    for (const path of variablesIn(text)) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      if (!isKnownVar(path)) unknown.push(path);
+      else if (!available.includes(path)) outOfContext.push(path);
+    }
+  }
+  if (unknown.length === 0 && outOfContext.length === 0) return null;
+
+  const parts: Array<string> = [];
+  if (unknown.length > 0) {
+    const isAre = unknown.length === 1 ? "is not" : "are not";
+    parts.push(
+      `${tokenList(unknown)} ${isAre} a StageStack variable — check the spelling.`,
+    );
+  }
+  if (outOfContext.length > 0) {
+    const isAre = outOfContext.length === 1 ? "is a" : "are";
+    const them = outOfContext.length === 1 ? "it" : "them";
+    parts.push(
+      `${tokenList(outOfContext)} ${isAre} real variable${outOfContext.length === 1 ? "" : "s"}, but this template's send passes no value for ${them}.`,
+    );
+  }
+  const total = unknown.length + outOfContext.length;
+  parts.push(
+    total === 1
+      ? "It renders as nothing."
+      : "They render as nothing.",
+  );
+  return { unknown, outOfContext, sentence: parts.join(" ") };
+}
+
 /** The literal an organizer inserts from the palette. */
 export function tokenFor(path: string): string {
   return `{{${path}}}`;

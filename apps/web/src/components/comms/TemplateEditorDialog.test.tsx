@@ -84,11 +84,11 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
-function renderEditor() {
+function renderEditor(template: Partial<typeof TEMPLATE> = {}) {
   return render(
     <TemplateEditorDialog
       eventSlug="acme-summit"
-      template={TEMPLATE}
+      template={{ ...TEMPLATE, ...template }}
       onRequestReset={() => {}}
       onClose={() => {}}
     />,
@@ -161,6 +161,41 @@ describe('TemplateEditorDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Insert link token' }))
     expect(subject.value).toBe('Your speaker portal for {{event.name}}{{link}}')
+  })
+
+  // REGRESSION (codex, W3): the warning validated against the GLOBAL catalog,
+  // so a real-but-unpassed token — {{speaker.firstName}} in a decision email,
+  // which passes no speaker — drew no warning at all, previewed empty and sent
+  // with the token silently removed.
+  test('warns about a variable this template’s send does not pass, and says that is what it is', () => {
+    renderEditor({
+      key: 'decision.accepted',
+      name: 'Decision — accepted',
+      subject: 'Your talk at {{event.name}}',
+      html: '<p>Hi {{speaker.firstName}},</p>',
+    })
+    expect(
+      screen.getByText(
+        "{{speaker.firstName}} is a real variable, but this template's send passes no value for it. It renders as nothing.",
+      ),
+    ).toBeTruthy()
+  })
+
+  test('a misspelling is a different sentence from an unavailable variable', () => {
+    renderEditor({
+      key: 'decision.accepted',
+      html: '<p>Hi {{speaker.nickname}}, about {{speaker.firstName}}.</p>',
+    })
+    expect(
+      screen.getByText(
+        "{{speaker.nickname}} is not a StageStack variable — check the spelling. {{speaker.firstName}} is a real variable, but this template's send passes no value for it. They render as nothing.",
+      ),
+    ).toBeTruthy()
+  })
+
+  test('a variable the template DOES pass draws no warning', () => {
+    renderEditor()
+    expect(screen.queryByText('These render as empty')).toBeNull()
   })
 
   test('the preview region is labelled', () => {
