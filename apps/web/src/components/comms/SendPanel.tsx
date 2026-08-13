@@ -1,21 +1,22 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
+import {
+  ONE_OFF_CONTEXT_KEY,
+  variablesIn,
+  varsForContext,
+} from '@convex/shared/templateVars'
 import {
   AUDIENCE_META,
   AUDIENCE_ORDER,
   NO_ADDRESS_BLOCKED,
   ONE_OFF_CADENCE_COPY,
-  ONE_OFF_VARS,
   audienceExclusions,
   missingAddressExclusion,
   overCapRefusal,
-  renderDraftSubject,
-  sampleVars,
-  variablesIn,
 } from './model'
 import { ContactSelect, useEventContacts } from './ContactSelect'
-import { VariableChip } from './primitives'
+import { TokenPalette, fieldById, insertAtCursor } from './TokenPalette'
 import type * as React from 'react'
 import type { Id } from '@convex/_generated/dataModel'
 import type { AudienceKind } from './model'
@@ -43,15 +44,15 @@ import { pushToast } from '~/components/toast'
 /** convex/model/audiences.ts — one send never fans out past this. */
 const MAX_AUDIENCE = 200
 
+/** Keystrokes settle before the preview re-queries. */
+const PREVIEW_DEBOUNCE_MS = 300
+
+const SUBJECT_ID = 'send-subject'
+const BODY_ID = 'send-body'
+
 type Mode = 'contact' | 'selection' | 'audience'
 
-export function SendPanel({
-  eventSlug,
-  eventName,
-}: {
-  eventSlug: string
-  eventName: string
-}) {
+export function SendPanel({ eventSlug }: { eventSlug: string }) {
   const now = useNow()
   const send = useMutation(api.comms.sendOneOff)
   const contacts = useEventContacts(eventSlug)
@@ -68,6 +69,7 @@ export function SendPanel({
   const [audience, setAudience] = useState<AudienceKind>('allSpeakers')
   const [subject, setSubject] = useState('')
   const [message, setMessage] = useState('')
+  const [activeField, setActiveField] = useState<'subject' | 'body'>('body')
   const [confirming, setConfirming] = useState(false)
 
   const audienceRow = audiences?.find((row) => row.kind === audience)
@@ -111,16 +113,52 @@ export function SendPanel({
     contact.name.toLowerCase().includes(contactFilter.trim().toLowerCase()),
   )
 
-  const vars = useMemo(() => sampleVars(eventName), [eventName])
   // A one-off send builds its own tiny variable bag, so anything outside it —
   // even a name a template would resolve — comes out empty here.
+  const oneOffVars = varsForContext(ONE_OFF_CONTEXT_KEY)
   const unknown = useMemo(
     () =>
       [...variablesIn(subject), ...variablesIn(message)].filter(
-        (path) => !ONE_OFF_VARS.includes(path),
+        (path) => !oneOffVars.includes(path),
       ),
-    [subject, message],
+    [subject, message, oneOffVars],
   )
+
+  // The preview is the server's, never a local re-implementation of the
+  // substitution: it renders the draft through the same two calls `sendOneOff`
+  // makes. In contact mode it is that speaker's own copy.
+  const [debounced, setDebounced] = useState<{
+    subject: string
+    html: string
+  } | null>(null)
+  useEffect(() => {
+    if (subject.trim() === '' && message.trim() === '') {
+      setDebounced(null)
+      return
+    }
+    const timer = setTimeout(() => {
+      setDebounced({ subject, html: message })
+    }, PREVIEW_DEBOUNCE_MS)
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [subject, message])
+
+  const preview = useQuery(
+    api.templates.preview,
+    debounced === null
+      ? 'skip'
+      : {
+          eventSlug,
+          key: ONE_OFF_CONTEXT_KEY,
+          draft: debounced,
+          ...(mode === 'contact' && contactId !== ''
+            ? { eventContactId: contactId }
+            : {}),
+        },
+  )
+  const previewSubject = preview?.subject ?? ''
+  const previewAs = preview?.recipient.name ?? 'Ada Lovelace'
 
   const overCap =
     mode === 'audience' && audienceRow !== undefined
@@ -444,10 +482,13 @@ export function SendPanel({
             gap: 'var(--space-4)',
           }}
         >
-          <Field label="Subject" htmlFor="send-subject" required>
+          <Field label="Subject" htmlFor={SUBJECT_ID} required>
             <Input
-              id="send-subject"
+              id={SUBJECT_ID}
               value={subject}
+              onFocus={() => {
+                setActiveField('subject')
+              }}
               disabled={pending}
               placeholder="A change to the Thursday schedule"
               onChange={(e) => {
@@ -458,12 +499,12 @@ export function SendPanel({
 
           <Field
             label="Message"
-            htmlFor="send-body"
+            htmlFor={BODY_ID}
             required
             hint="HTML. StageStack wraps it in the branded shell — write paragraphs as <p>…</p>."
           >
             <Textarea
-              id="send-body"
+              id={BODY_ID}
               rows={10}
               value={message}
               disabled={pending}
@@ -472,49 +513,28 @@ export function SendPanel({
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--text-xs)',
               }}
+              onFocus={() => {
+                setActiveField('body')
+              }}
               onChange={(e) => {
                 setMessage(e.target.value)
               }}
             />
           </Field>
 
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 'var(--space-2)',
+          <TokenPalette
+            contextKey={ONE_OFF_CONTEXT_KEY}
+            targetLabel={activeField === 'subject' ? 'subject' : 'message'}
+            disabled={pending}
+            onInsert={(path) => {
+              const token = `{{${path}}}`
+              if (activeField === 'subject') {
+                insertAtCursor(fieldById(SUBJECT_ID), token, setSubject)
+              } else {
+                insertAtCursor(fieldById(BODY_ID), token, setMessage)
+              }
             }}
-          >
-            <span
-              style={{
-                font: 'var(--type-label)',
-                color: 'var(--text-secondary)',
-              }}
-            >
-              Variables
-            </span>
-            <div
-              style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: 'var(--space-2)',
-              }}
-            >
-              {ONE_OFF_VARS.map((path) => (
-                <VariableChip key={path} path={path} />
-              ))}
-            </div>
-            <p
-              style={{
-                font: 'var(--type-caption)',
-                color: 'var(--text-tertiary)',
-              }}
-            >
-              These are resolved per recipient. A one-off send knows nothing
-              about a proposal or a task, so only these names have values here —
-              anything else renders as nothing.
-            </p>
-          </div>
+          />
 
           {unknown.length === 0 ? null : (
             <Callout tone="attention" title="These render as empty">
@@ -523,17 +543,17 @@ export function SendPanel({
           )}
 
           {subject.trim() === '' ? null : (
-            <div style={previewLine}>
+            <div style={previewLine} role="status" aria-live="polite">
               <span
                 style={{
                   font: 'var(--type-caption)',
                   color: 'var(--text-tertiary)',
                 }}
               >
-                Subject, as Ada Lovelace would see it
+                Subject, as {previewAs} would see it
               </span>
               <span style={{ font: 'var(--type-label)' }}>
-                {renderDraftSubject(subject, vars)}
+                {preview === undefined ? 'Rendering…' : previewSubject}
               </span>
             </div>
           )}
@@ -603,7 +623,7 @@ export function SendPanel({
                 Subject
               </span>
               <span style={{ font: 'var(--type-label)' }}>
-                {renderDraftSubject(subject, vars)}
+                {preview === undefined ? 'Rendering…' : previewSubject}
               </span>
             </div>
 

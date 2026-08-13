@@ -50,9 +50,9 @@ function CommsRoute() {
       />
       <QueryBoundary resetKey={tab} title="This could not be loaded">
         {tab === 'templates' ? (
-          <TemplatesPanel eventSlug={eventSlug} eventName={data.event.name} />
+          <TemplatesPanel eventSlug={eventSlug} />
         ) : tab === 'send' ? (
-          <SendPanel eventSlug={eventSlug} eventName={data.event.name} />
+          <SendPanel eventSlug={eventSlug} />
         ) : (
           <LogPanel eventSlug={eventSlug} timezone={data.event.timezone} />
         )}

@@ -24,13 +24,7 @@ import { pushToast } from '~/components/toast'
 // touched it. A row that says nothing about being customized is the built-in
 // default — that is the honest reading, so the badge marks the exception.
 
-export function TemplatesPanel({
-  eventSlug,
-  eventName,
-}: {
-  eventSlug: string
-  eventName: string
-}) {
+export function TemplatesPanel({ eventSlug }: { eventSlug: string }) {
   const templates = useQuery(api.templates.list, { eventSlug })
   const [editorKey, setEditorKey] = useState<string | null>(null)
   const [draft, setDraft] = useState<TemplateRow | null>(null)
@@ -137,7 +131,6 @@ export function TemplatesPanel({
         <TemplateEditorDialog
           key={editing.key}
           eventSlug={eventSlug}
-          eventName={eventName}
           template={editing}
           onRequestReset={setResetting}
           onClose={() => {
