@@ -694,6 +694,29 @@
   color: var(--text-secondary);
 }
 
+/* Turnaround analytics (W4). A stacked list of sentences at EVERY width —
+   there is no wide-screen variant to fall back from, because a chart or a KPI
+   tile grid is exactly what this panel refuses to be. */
+.cc-turnaround {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cc-turnaround__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-half);
+  padding: var(--space-3) 0;
+  border-bottom: var(--space-px) solid var(--border-subtle);
+}
+.cc-turnaround__label {
+  font: var(--type-label);
+  color: var(--text-primary);
+}
+.cc-turnaround__sentence {
+  color: var(--text-secondary);
+}
+
 @media (max-width: 640px) {
   /* The timestamp stops being a column and becomes a caption above the
      sentence — an 11rem gutter costs half the width of a 375px screen. */

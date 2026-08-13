@@ -20,6 +20,7 @@ const { state, navigate } = vi.hoisted(() => ({
     firstEvent: false,
     dashboardThrows: false,
     attentionThrows: false,
+    turnaroundThrows: false,
   },
 }))
 
@@ -181,6 +182,37 @@ const UP_NEXT = {
   version: 3,
 }
 
+// W4 — every figure already composed into a sentence with its population.
+const TURNAROUND = {
+  stats: [
+    {
+      id: 'decision',
+      label: 'Decision turnaround',
+      count: 24,
+      openCount: 5,
+      p50: 3 * 86_400_000,
+      p90: 9 * 86_400_000,
+      capped: false,
+      sentence:
+        'Decisions released in a median of 3 days after the proposal arrived, across 24 proposals; the slowest tenth took 9 days; 5 proposals are still undecided.',
+    },
+    {
+      id: 'confirmation',
+      label: 'Speaker confirmation',
+      count: 0,
+      openCount: 0,
+      p50: null,
+      p90: null,
+      capped: false,
+      sentence:
+        'No decision has reached a speaker yet, so there is no confirmation turnaround to report.',
+    },
+  ],
+  capped: false,
+  summary:
+    "Measured from this event's own history. Only intervals that actually closed are counted; anything still running is named, never averaged in.",
+}
+
 vi.mock('convex/react', () => ({
   useQuery: (ref: Parameters<typeof getFunctionName>[0], args?: unknown) => {
     const name = getFunctionName(ref)
@@ -222,6 +254,15 @@ vi.mock('convex/react', () => ({
     if (name === 'tasks:listInstances') return []
     if (name === 'readiness:recentChanges') return CHANGES
     if (name === 'readiness:upNext') return UP_NEXT
+    if (name === 'analytics:turnaround') {
+      if (state.turnaroundThrows) {
+        throw new ConvexError({
+          code: 'event_too_large',
+          message: 'This event has more than 4000 recorded actions.',
+        })
+      }
+      return TURNAROUND
+    }
     return undefined
   },
   useMutation: () => vi.fn(),
@@ -234,6 +275,7 @@ beforeEach(() => {
   state.firstEvent = false
   state.dashboardThrows = false
   state.attentionThrows = false
+  state.turnaroundThrows = false
   navigate.mockClear()
   // The boundary logs the caught error; the test asserts the rendering.
   vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -285,6 +327,53 @@ describe('the four questions', () => {
     render(<ControlCenter eventSlug="devconf" />)
     expect(screen.getByText('Content still in Draft')).toBeTruthy()
     expect(screen.getByText('Schedule conflicts')).toBeTruthy()
+  })
+})
+
+describe('turnaround analytics (W4)', () => {
+  it('sits below the four answers, collapsed, as a stacked list of sentences', () => {
+    const { container } = render(<ControlCenter eventSlug="devconf" />)
+
+    const sections = [...container.querySelectorAll('details')]
+    const analytics = sections[sections.length - 1]
+    expect(analytics.textContent).toContain('How long things are taking')
+    // Collapsed by default: a retrospective must not dilute the answer above.
+    expect(analytics.open).toBe(false)
+    // A disclosure, from the platform — not a div pretending to be one.
+    expect(analytics.querySelector('summary')).toBeTruthy()
+
+    // Sentences, printed verbatim. No chart, no sparkline, no tile grid.
+    expect(
+      screen.getByText(
+        'Decisions released in a median of 3 days after the proposal arrived, across 24 proposals; the slowest tenth took 9 days; 5 proposals are still undecided.',
+      ),
+    ).toBeTruthy()
+    // The empty population says so instead of printing a zero.
+    expect(
+      screen.getByText(
+        'No decision has reached a speaker yet, so there is no confirmation turnaround to report.',
+      ),
+    ).toBeTruthy()
+    expect(analytics.querySelector('svg.chart, canvas')).toBeNull()
+  })
+
+  it('degrades to nothing when it fails — the four answers are untouched', () => {
+    state.turnaroundThrows = true
+    render(<ControlCenter eventSlug="devconf" />)
+
+    expect(screen.queryByText('How long things are taking')).toBeNull()
+    // No red callout for a nice-to-have: the section simply is not there.
+    expect(screen.queryByText(/too large to answer in one pass/)).toBeNull()
+    expect(screen.getByText('What needs your attention')).toBeTruthy()
+    expect(screen.getByText('What is blocked')).toBeTruthy()
+    expect(screen.getByText('What changed recently')).toBeTruthy()
+    expect(screen.getByText('What happens next')).toBeTruthy()
+  })
+
+  it('a first event is never shown a retrospective', () => {
+    state.firstEvent = true
+    render(<ControlCenter eventSlug="devconf" />)
+    expect(screen.queryByText('How long things are taking')).toBeNull()
   })
 })
 

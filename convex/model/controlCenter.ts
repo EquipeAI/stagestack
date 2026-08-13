@@ -77,12 +77,15 @@ export type ControlRow = {
   link: ControlLink;
 };
 
-function plural(n: number, one: string, many: string): string {
+// Exported so W4's analytics panel speaks the SAME count vocabulary: two
+// producers with two copies of "at least N" is how a floor starts printing as
+// a total on one panel and not the other.
+export function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
 }
 
 /** "3" or "at least 3" — a capped read never prints as an exact total. */
-function amount(n: number, capped: boolean): string {
+export function amount(n: number, capped: boolean): string {
   return capped ? `at least ${n}` : String(n);
 }
 

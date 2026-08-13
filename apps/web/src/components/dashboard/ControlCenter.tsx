@@ -4,6 +4,7 @@ import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import { linkTarget } from './links'
 import { PanelBoundary } from './PanelBoundary'
+import { TurnaroundPanel } from './TurnaroundPanel'
 import type { FunctionReturnType } from 'convex/server'
 import type { Id } from '@convex/_generated/dataModel'
 import type {
@@ -140,6 +141,18 @@ function Screen({
 
           <PanelBoundary key={`next-${eventSlug}`} title="What happens next">
             <NextPanel eventSlug={eventSlug} now={now} timezone={timezone} />
+          </PanelBoundary>
+
+          {/* W4 — the fifth section, below the four answers and collapsed by
+              default. `quiet`: turnaround medians are supplementary, so a
+              failure here removes the section rather than printing a red
+              callout under the four things that DID load. */}
+          <PanelBoundary
+            key={`turnaround-${eventSlug}`}
+            title="How long things are taking"
+            quiet
+          >
+            <TurnaroundPanel eventSlug={eventSlug} />
           </PanelBoundary>
         </>
       )}

@@ -9,6 +9,7 @@
  */
 
 import type * as agenda from "../agenda.js";
+import type * as analytics from "../analytics.js";
 import type * as cfp from "../cfp.js";
 import type * as cfpPublic from "../cfpPublic.js";
 import type * as comms from "../comms.js";
@@ -26,6 +27,7 @@ import type * as lib_urls from "../lib/urls.js";
 import type * as lib_validators from "../lib/validators.js";
 import type * as library from "../library.js";
 import type * as model_agenda from "../model/agenda.js";
+import type * as model_analytics from "../model/analytics.js";
 import type * as model_audiences from "../model/audiences.js";
 import type * as model_audit from "../model/audit.js";
 import type * as model_cfp from "../model/cfp.js";
@@ -92,6 +94,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   agenda: typeof agenda;
+  analytics: typeof analytics;
   cfp: typeof cfp;
   cfpPublic: typeof cfpPublic;
   comms: typeof comms;
@@ -109,6 +112,7 @@ declare const fullApi: ApiFromModules<{
   "lib/validators": typeof lib_validators;
   library: typeof library;
   "model/agenda": typeof model_agenda;
+  "model/analytics": typeof model_analytics;
   "model/audiences": typeof model_audiences;
   "model/audit": typeof model_audit;
   "model/cfp": typeof model_cfp;
