@@ -74,7 +74,20 @@ function DeliveryHealthBanner({
   timezone: string
 }) {
   const health = useQuery(api.comms.deliveryHealth, { eventSlug })
-  if (health === undefined || health.failed === 0) return null
+  if (health === undefined) return null
+  // Test mode is a deployment STATE, not an inference from failed rows — it
+  // fires before the first speaker ever misses an email, and its sentence is
+  // the model's (the same one stored on each refused row).
+  if (health.testModeNotice !== null) {
+    return (
+      <Callout tone="blocked" title="Mail is in test mode on this deployment">
+        {health.testModeNotice}
+        {health.failed > 0 &&
+          ` ${health.failed} of the last ${health.scanned} emails were already refused; each is recorded in the Log tab, and fixing the configuration does not re-send them.`}
+      </Callout>
+    )
+  }
+  if (health.failed === 0) return null
   const scope =
     health.failed === health.scanned
       ? `All ${health.scanned} of this event's most recent emails`
@@ -85,10 +98,10 @@ function DeliveryHealthBanner({
       {health.lastFailedAt === null
         ? '.'
         : ` — most recently ${formatDateTime(health.lastFailedAt, timezone)}.`}{' '}
-      This usually means the deployment's mail settings are wrong: a missing or
-      invalid Resend API key, or test mode refusing real recipients. Each
-      failed message is recorded in the Log tab; fixing the configuration does
-      not re-send them.
+      Test mode is off on this deployment, so this points at the rest of the
+      mail settings: a missing or invalid Resend API key, or an unverified
+      sending domain. Each failed message is recorded in the Log tab with its
+      refusal reason; fixing the configuration does not re-send them.
     </Callout>
   )
 }

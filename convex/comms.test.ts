@@ -3,7 +3,7 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { DEFAULT_TEMPLATES } from "./model/templates";
 import { mailFrom, mailFromAddress, resend, resendTestMode } from "./emails";
-import { isBulkKind } from "./model/comms";
+import { TEST_MODE_REFUSAL, isBulkKind } from "./model/comms";
 import {
   POST_EVENT_GRACE_DAYS,
   SWEEP_CRON,
@@ -2129,16 +2129,16 @@ function headerValue(
 }
 
 /** Run `body` with one env var set (or removed), then put it back. */
-async function withEnv(
+async function withEnv<T>(
   name: string,
   value: string | undefined,
-  body: () => Promise<void>,
-): Promise<void> {
+  body: () => Promise<T>,
+): Promise<T> {
   const previous = process.env[name];
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
   try {
-    await body();
+    return await body();
   } finally {
     if (previous === undefined) delete process.env[name];
     else process.env[name] = previous;
@@ -2597,6 +2597,75 @@ describe("delivery health (CFP-08)", () => {
       mallory.query(api.comms.deliveryHealth, { eventSlug }),
       "forbidden",
     );
+  });
+
+  test("test mode is reported as a state, before any send has failed", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    // No send has happened at all — the state must still be visible.
+    await withEnv("RESEND_TEST_MODE", undefined, async () => {
+      const health = await alice.query(api.comms.deliveryHealth, {
+        eventSlug,
+      });
+      expect(health.failed).toBe(0);
+      expect(health.testMode).toBe(true);
+      expect(health.testModeNotice).toContain("test mode");
+      expect(health.testModeNotice).toContain("RESEND_TEST_MODE=false");
+    });
+  });
+
+  test("live mail carries no test-mode notice", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const health = await alice.query(api.comms.deliveryHealth, { eventSlug });
+    expect(health.testMode).toBe(false);
+    expect(health.testModeNotice).toBeNull();
+  });
+
+  test("a test-mode refusal stores WHY on the failed row, and the log serves it", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { eventContactId } = await withEnv(
+      "RESEND_TEST_MODE",
+      undefined,
+      async () =>
+        await inviteSpeaker(
+          t,
+          alice,
+          eventSlug,
+          { firstName: "Dana", lastName: "Keynote", email: "dana@example.com" },
+          "Opening keynote",
+        ),
+    );
+    const rows = await messageRows(t);
+    const failedRow = rows.find((m) => m.deliveryStatus === "failed");
+    expect(failedRow).toBeDefined();
+    // The stored sentence IS the banner's sentence — one producer, so the log
+    // and the banner can never name two different causes.
+    expect(failedRow?.failureReason).toBe(TEST_MODE_REFUSAL);
+
+    const log = await alice.query(api.comms.contactLog, {
+      eventSlug,
+      eventContactId,
+    });
+    const logged = log.find((m) => m.deliveryStatus === "failed");
+    expect(logged?.failureReason).toBe(TEST_MODE_REFUSAL);
+  });
+
+  test("a delivered send stores no failure reason", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    await inviteSpeaker(
+      t,
+      alice,
+      eventSlug,
+      { firstName: "Erin", lastName: "Ok", email: "erin@example.com" },
+      "All is well",
+    );
+    const rows = await messageRows(t);
+    const sent = rows.find((m) => m.deliveryStatus !== "failed");
+    expect(sent).toBeDefined();
+    expect(sent?.failureReason).toBeUndefined();
   });
 });
 

@@ -99,6 +99,8 @@ export const deliveryHealth = eventQuery({
     scanned: v.number(),
     failed: v.number(),
     lastFailedAt: v.union(v.number(), v.null()),
+    testMode: v.boolean(),
+    testModeNotice: v.union(v.string(), v.null()),
   }),
   handler: async (ctx) => {
     return await Comms.deliveryHealth(ctx, ctx.caller);
@@ -117,6 +119,7 @@ export const contactLog = eventQuery({
       deliveryStatus: vDeliveryStatus,
       sentAt: v.number(),
       deliveryUpdatedAt: v.optional(v.number()),
+      failureReason: v.optional(v.string()),
     }),
   ),
   handler: async (ctx, args) => {

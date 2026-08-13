@@ -39,8 +39,12 @@ Previous plans: [UX maturity cycle M8–M9](docs/PLAN-2026-08-ux-maturity.md) ·
       a real email on each deployment and watch its comms-log row advance past
       "Sent — delivery unconfirmed" to Delivered.
 - [ ] **`RESEND_TEST_MODE=false` confirmed on develop AND prod** — env vars do
-      not mirror between deployments; a missing knob silently turns real mail
-      into `failed` comms-log rows (CLAUDE.md deploy table).
+      not mirror between deployments. NO LONGER SILENT (2026-08-13): the knob
+      stays (safety default for a public, self-hostable repo) but test mode is
+      now a loud product state — a banner on the comms page AND the control
+      center fires proactively from the live env, before any send fails, and
+      every refused row records why (test mode vs key/domain). Confirming a
+      deployment is now "open its control center as an organizer".
 - [ ] **Confirm `internal.library.backfillFormats` ran per event** on dev
       (`scintillating-heron-597`), develop, and prod (idempotent; refuses
       >1000-session events; keeps labels verbatim — the CFP format labels are

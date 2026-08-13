@@ -1007,6 +1007,10 @@ export default defineSchema({
     kind: v.string(),
     subject: v.string(),
     resendEmailId: v.optional(v.string()),
+    // Why a `failed` row failed, composed at the moment of refusal — the only
+    // time the cause (test mode, bad key) is knowable. Absent on rows that
+    // left the building and on failures recorded before this field existed.
+    failureReason: v.optional(v.string()),
     deliveryStatus: v.union(
       v.literal("queued"),
       v.literal("sent"),

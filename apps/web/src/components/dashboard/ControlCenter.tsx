@@ -98,6 +98,19 @@ export function ControlCenter({ eventSlug }: { eventSlug: string }) {
  * Boundaries are keyed by event so a failure never outlives the event that
  * caused it.
  */
+/** The deployment's mail-test-mode notice, rendered verbatim from the model.
+ * Null (nothing at all) when mail is live — this is a fault banner, not a
+ * status line. */
+function MailModeNotice({ eventSlug }: { eventSlug: string }) {
+  const health = useQuery(api.comms.deliveryHealth, { eventSlug })
+  if (health === undefined || health.testModeNotice === null) return null
+  return (
+    <Callout tone="blocked" title="Mail is in test mode on this deployment">
+      {health.testModeNotice}
+    </Callout>
+  )
+}
+
 function Screen({
   eventSlug,
   timezone,
@@ -119,6 +132,15 @@ function Screen({
 
   return (
     <div className="cc">
+      {/* Deployment mail state, ABOVE the four questions: an event whose
+          every email is being refused has nothing more urgent to say. The
+          sentence is the model's (deliveryHealth.testModeNotice) — the same
+          words the comms banner and each refused log row carry. `quiet`
+          boundary: a broken health read must not block the four answers. */}
+      <PanelBoundary key={`mailmode-${eventSlug}`} title="Mail configuration" quiet>
+        <MailModeNotice eventSlug={eventSlug} />
+      </PanelBoundary>
+
       <PanelBoundary key={`attention-${eventSlug}`} title="What needs your attention">
         <AttentionSection
           eventSlug={eventSlug}

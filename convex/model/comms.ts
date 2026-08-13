@@ -3,7 +3,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
-import { mailFromAddress } from "../emails";
+import { mailFromAddress, resendTestMode } from "../emails";
 import { internal } from "../_generated/api";
 import { logAudit } from "./audit";
 import {
@@ -75,6 +75,32 @@ export type LoggedEmail = {
   context?: unknown;
 };
 
+/** The shared core of every test-mode sentence — cause and remedy — so the
+ * log row and the banners can never name two different causes. */
+const TEST_MODE_CLAUSE =
+  "recipients outside Resend's own test addresses are rejected. Set " +
+  "RESEND_TEST_MODE=false on the deployment to send real mail.";
+
+/** Row voice: why THIS send failed. Stored on the refused message. */
+export const TEST_MODE_REFUSAL =
+  `Refused because this deployment is in mail test mode: ${TEST_MODE_CLAUSE}`;
+
+/** State voice: what the deployment is doing right now, shown by the comms
+ * and control-center banners before any send has failed. */
+export const TEST_MODE_NOTICE =
+  "This deployment is in mail test mode, so every send to a real recipient " +
+  `is refused: ${TEST_MODE_CLAUSE}`;
+
+/** A refusal that is NOT test mode: keep the provider/component message —
+ * it names the actual misconfiguration (bad key, unverified domain) — but
+ * bounded, so a pathological error object cannot bloat the log row. */
+function refusalReason(error: unknown): string {
+  const message =
+    error instanceof Error ? error.message.trim() : String(error).trim();
+  if (message.length === 0) return "The mail service refused the send.";
+  return message.length > 300 ? `${message.slice(0, 297)}…` : message;
+}
+
 /**
  * Send through Resend and record the send in the comms log.
  *
@@ -91,6 +117,7 @@ export async function sendLoggedEmail(
 ): Promise<Id<"messages">> {
   const replyTo = args.replyTo?.trim();
   let emailId: string | undefined;
+  let failureReason: string | undefined;
   try {
     emailId = await ctx.runMutation(internal.emails.trySend, {
       // Sent to the address as the caller gave it: only the LOG is normalized.
@@ -100,8 +127,13 @@ export async function sendLoggedEmail(
       html: args.html,
       replyTo,
     });
-  } catch {
+  } catch (error) {
     emailId = undefined;
+    // The cause is only knowable NOW — a later reader of the log cannot ask
+    // the deployment what its env looked like at send time.
+    failureReason = resendTestMode()
+      ? TEST_MODE_REFUSAL
+      : refusalReason(error);
   }
   return await ctx.db.insert("messages", {
     orgId: args.orgId,
@@ -115,6 +147,7 @@ export async function sendLoggedEmail(
     kind: args.kind,
     subject: args.subject,
     resendEmailId: emailId,
+    failureReason,
     deliveryStatus: emailId === undefined ? "failed" : "queued",
     sentByUserId: args.sentByUserId,
     context: args.context,
@@ -478,6 +511,14 @@ export type DeliveryHealth = {
   failed: number;
   /** When the most recent refusal happened; null when none in the window. */
   lastFailedAt: number | null;
+  /** Whether THIS deployment is refusing real recipients right now. Read
+   * live from the env, not inferred from failed rows, so the banner fires
+   * BEFORE the first speaker never gets their email. */
+  testMode: boolean;
+  /** The test-mode sentence (TEST_MODE_NOTICE), or null when mail is live.
+   * Composed here so every surface that mentions the state says the same
+   * words. */
+  testModeNotice: string | null;
 };
 
 /** Recent-send failure summary for the organizer-facing mail-health banner. */
@@ -492,10 +533,13 @@ export async function deliveryHealth(
     .order("desc")
     .take(HEALTH_SCAN);
   const failed = recent.filter((m) => m.deliveryStatus === "failed");
+  const testMode = resendTestMode();
   return {
     scanned: recent.length,
     failed: failed.length,
     lastFailedAt: failed.length === 0 ? null : failed[0]._creationTime,
+    testMode,
+    testModeNotice: testMode ? TEST_MODE_NOTICE : null,
   };
 }
 
@@ -509,6 +553,9 @@ export type ContactMessageRow = {
   /** The provider's own timestamp for the last delivery event, when one has
    * arrived. Absent means no provider event has moved this row. */
   deliveryUpdatedAt?: number;
+  /** Why a `failed` row failed, recorded at refusal time. Absent on rows
+   * that left the building and on failures older than the field. */
+  failureReason?: string;
 };
 
 /**
@@ -599,5 +646,8 @@ export async function contactLog(
       ...(message.deliveryUpdatedAt === undefined
         ? {}
         : { deliveryUpdatedAt: message.deliveryUpdatedAt }),
+      ...(message.failureReason === undefined
+        ? {}
+        : { failureReason: message.failureReason }),
     }));
 }
