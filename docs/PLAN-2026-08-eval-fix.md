@@ -1,8 +1,10 @@
 # PLAN — Eval fix cycle (v2) · ARCHIVED 2026-08-11
 
 **Outcome: the 2026-08-11 re-run scored 100% of applicable requirements.** This
-plan is closed. Current work is [PLAN.md](../PLAN.md) (UX maturity cycle),
-which starts from the UX report written against this run.
+plan is closed. It was followed by the
+[UX maturity cycle](PLAN-2026-08-ux-maturity.md) (also archived), which
+started from the UX report written against this run; current work is
+[PLAN.md](../PLAN.md).
 
 ## STATUS: ALL WORKSTREAMS LANDED — 2026-08-10
 

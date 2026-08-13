@@ -1,4 +1,10 @@
-# StageStack — Comprehensive Code Review
+# StageStack — Comprehensive Code Review (historical record)
+
+Archived 2026-08-13 from the repo root (`REVIEW.md`). Findings were verified
+against commit `a48410e`; the "Remediation status (live)" section below is a
+snapshot from 2026-08-09, not a live tracker — the fix-order items landed in
+the subsequent cycles (see [PLAN-2026-08-eval-fix.md](../PLAN-2026-08-eval-fix.md)
+and [PLAN-2026-08-ux-maturity.md](../PLAN-2026-08-ux-maturity.md)).
 
 **Date:** 2026-08-09 · **Scope:** full repo — `convex/` backend, `apps/web`, `apps/worker`, tests, infra
 **Method:** 5 parallel review agents (backend security/authz, schema/perf, frontend, worker/import-agent, tests/comms/infra) + direct validation runs. Nothing was modified.
