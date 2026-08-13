@@ -29,15 +29,19 @@ Previous plans: [UX maturity cycle M8–M9](docs/PLAN-2026-08-ux-maturity.md) ·
 
 ## A1 — Deployment truth
 
-- [ ] **Resend webhook on `develop` (`marvelous-snail-907`) and prod
-      (`healthy-lynx-620`)** — Alvaro has Resend + email open in the local
-      browser. Per deployment, check both causes from the archived W1 item:
-      `RESEND_WEBHOOK_SECRET` set on the Convex deployment (missing → the
-      endpoint 500s loudly), and a Resend-dashboard webhook endpoint pointing
-      at that deployment's own `.convex.site/resend-webhook` URL (missing →
-      fails silently; Svix secrets are per-endpoint). Fix, then prove it: send
-      a real email on each deployment and watch its comms-log row advance past
-      "Sent — delivery unconfirmed" to Delivered.
+- [x] **Resend webhook on `develop` (`marvelous-snail-907`) and prod
+      (`healthy-lynx-620`)** — FIXED 2026-08-13. Root cause was the silent
+      one: only the dev deployment had a Resend endpoint; develop and prod
+      had none, and both carried dev's (per-endpoint, therefore useless)
+      Svix secret. Created one endpoint per deployment (all events, matching
+      dev), set each endpoint's own signing secret on its deployment
+      (`--deployment-name` / clipboard flow — secrets never printed), and
+      proved transport with a real send: both new endpoints show
+      `email.sent` + `email.delivered` as Success, which requires the
+      signature check to have passed. Remaining tail: the first real send
+      FROM the develop/prod apps (demo seed or eval) will show its comms row
+      advancing to Delivered end-to-end; the shared-account cross-noise
+      ("Email not found … ignoring") stays benign per CLAUDE.md.
 - [ ] **`RESEND_TEST_MODE=false` confirmed on develop AND prod** — env vars do
       not mirror between deployments. NO LONGER SILENT (2026-08-13): the knob
       stays (safety default for a public, self-hostable repo) but test mode is
