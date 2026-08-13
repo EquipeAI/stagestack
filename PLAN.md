@@ -42,17 +42,21 @@ Previous plans: [UX maturity cycle M8–M9](docs/PLAN-2026-08-ux-maturity.md) ·
       FROM the develop/prod apps (demo seed or eval) will show its comms row
       advancing to Delivered end-to-end; the shared-account cross-noise
       ("Email not found … ignoring") stays benign per CLAUDE.md.
-- [ ] **`RESEND_TEST_MODE=false` confirmed on develop AND prod** — env vars do
+- [x] **`RESEND_TEST_MODE=false` confirmed on develop AND prod** — verified
+      2026-08-13 via `npx convex env list` against both deployments: both
+      already carry `false`. Env vars do
       not mirror between deployments. NO LONGER SILENT (2026-08-13): the knob
       stays (safety default for a public, self-hostable repo) but test mode is
       now a loud product state — a banner on the comms page AND the control
       center fires proactively from the live env, before any send fails, and
       every refused row records why (test mode vs key/domain). Confirming a
       deployment is now "open its control center as an organizer".
-- [ ] **Confirm `internal.library.backfillFormats` ran per event** on dev
+- [x] **Confirm `internal.library.backfillFormats` ran per event** on dev
       (`scintillating-heron-597`), develop, and prod (idempotent; refuses
       >1000-session events; keeps labels verbatim — the CFP format labels are
-      asserted verbatim by the eval).
+      asserted verbatim by the eval). RUN 2026-08-13 against every event on
+      develop (8) and prod (14): all zeros except prod's Aug-12 eval event
+      (1 format created, 2 sessions linked), `unmatched: 0` everywhere.
 - [x] **Push `develop`** (ahead of origin) so the preview deploy — what the
       evals hit — matches local; merge to `main` before Sunday so prod
       carries everything we want judged. (Done 2026-08-13: develop pushed and
