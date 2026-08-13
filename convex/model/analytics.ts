@@ -28,7 +28,17 @@ import { takeCapped } from "./validation";
 //     assignment — `_creationTime` is the assignment moment.
 //   • a BULK publish writes one event-wide audit row without session ids
 //     (convex/model/publishBulk.ts), so a session published that way has no
-//     per-session row — its `publicationFlags.updatedAt` is the publish moment.
+//     per-session row — its `publicationFlags.updatedAt` is the publish moment,
+//     but ONLY while nothing can have moved that field since. `updatedAt` is
+//     the LAST flip, not the first: a session that was unpublished and
+//     published again carries the re-publication there, and pairing that with
+//     the approval that governs it can make a nine-day wait read as an hour.
+//     So the flag is trusted only when this event's history records no
+//     unpublish for that session; otherwise the session's publication moment is
+//     unknowable and it leaves the population, which makes the count a FLOOR
+//     (the stat is marked capped, so it says "at least N" — the same admission
+//     a truncated read makes). Excluding is the only move that cannot invent a
+//     number: no start, no end, no data point.
 //
 // HONESTY RULES, which are the point of the panel:
 //   • An interval that never closed is NOT a data point. It is counted in
@@ -38,6 +48,9 @@ import { takeCapped } from "./validation";
 //     median of 0 days across 0 proposals is a lie with a number on it.
 //   • Every sentence states its population size, and a capped read renders as
 //     "at least N" — the same vocabulary the control center already uses.
+//     CAPPED IS PER STATISTIC, not per panel: a session ceiling says nothing
+//     about whether the decision figures are complete, and marking them all
+//     would turn one truncated read into four hedged answers.
 //
 // No `now`. Medians over CLOSED intervals need no clock, and a ticking
 // argument would re-run this panel every minute for an answer that changes
@@ -152,6 +165,49 @@ function firstByTarget(
   return out;
 }
 
+/**
+ * EVERY timestamp per target id, for the rows an action code marks.
+ *
+ * The one interval that needs more than the earliest occurrence: a publish is
+ * governed by the approval that was standing when it happened, and an event
+ * that approved, reverted and re-approved has several to choose between.
+ */
+function allByTarget(
+  rows: Audit[],
+  match: (row: Audit) => boolean,
+  targetOf: (row: Audit) => string | undefined = (row) => row.targetId,
+): Map<string, number[]> {
+  const out = new Map<string, number[]>();
+  for (const row of rows) {
+    if (!match(row)) continue;
+    const target = targetOf(row);
+    if (target === undefined) continue;
+    const at = out.get(target);
+    if (at === undefined) out.set(target, [row._creationTime]);
+    else at.push(row._creationTime);
+  }
+  return out;
+}
+
+/**
+ * The latest of `times` that is at or before `end` — the one that GOVERNED the
+ * thing that happened at `end`.
+ *
+ * With no end there is nothing to govern yet, so the latest one standing is the
+ * one still waiting. With nothing at or before the end, no approval governed
+ * that publish at all: the earliest is returned so `interval` refuses the pair
+ * outright rather than inventing a start after the finish.
+ */
+function governing(
+  times: number[] | undefined,
+  end: number | undefined,
+): number | undefined {
+  if (times === undefined || times.length === 0) return undefined;
+  if (end === undefined) return Math.max(...times);
+  const before = times.filter((at) => at <= end);
+  return before.length === 0 ? Math.min(...times) : Math.max(...before);
+}
+
 /** One closed interval, or nothing. An end before its start is not a
  * measurement — it is a clock or an ordering we do not trust, and a negative
  * duration in a median is worse than a smaller population. */
@@ -247,7 +303,12 @@ export function statSentence(
 
   let sentence: string;
   if (count === 0 && openCount === 0) {
-    sentence = word.nothingStarted;
+    // "Nothing has started" is a claim about the WHOLE history. A stat whose
+    // inputs were truncated, or whose rows could not be timed, has not read the
+    // whole history and must not make it.
+    sentence = capped
+      ? `No ${word.one} here could be timed from the history that could be read.`
+      : word.nothingStarted;
   } else if (count === 0) {
     sentence = `Nothing has completed this step yet, so there is no median to report; ${openClause(word, openCount, capped)}.`;
   } else {
@@ -331,12 +392,13 @@ export async function turnaround(
   ]);
 
   const rows = audit.rows;
-  const capped =
-    audit.capped ||
-    sessions.capped ||
-    participants.capped ||
-    instances.capped ||
-    flags.capped;
+  // Each statistic is a floor only if one of the reads IT is computed from hit
+  // a ceiling. The panel-level flag is for the panel's own sentence, and is
+  // simply "is any figure on it a floor".
+  const decisionCapped = audit.capped;
+  const confirmCapped = audit.capped || sessions.capped || participants.capped;
+  const taskCapped = audit.capped || instances.capped;
+  const publishReadCapped = audit.capped || sessions.capped || flags.capped;
 
   // ── Decision: cfp.submit → decision.release, per proposal ──
   // A withdrawn proposal is neither timed nor chased: nobody owes it a
@@ -408,23 +470,36 @@ export async function turnaround(
   }
 
   // ── Publish: content approved → session published ──
-  const approved = firstByTarget(
+  // ALL approvals, not the first: approve, revert to draft, re-approve, publish
+  // is one day of latency governed by the SECOND approval, and timing it from
+  // the first would report the fortnight the content spent in draft.
+  const approvals = allByTarget(
     rows,
     (r) =>
       r.action === "sessions.setContentStatus" &&
       metaField(r, "to") === "approved",
   );
+  const sessionIdMeta = (r: Audit) => {
+    const id = metaField(r, "sessionId");
+    return typeof id === "string" ? id : undefined;
+  };
   const publishedRow = firstByTarget(
     rows,
     (r) => r.action === "publish.session" && metaField(r, "published") === true,
-    (r) => {
-      const id = metaField(r, "sessionId");
-      return typeof id === "string" ? id : undefined;
-    },
+    sessionIdMeta,
+  );
+  // An explicit unpublish is the one thing that can have moved a flag's
+  // `updatedAt` off the first publication. Bulk publishing only ever sets
+  // flags true (convex/model/publishBulk.ts), so this is the whole list.
+  const unpublished = firstByTarget(
+    rows,
+    (r) => r.action === "publish.session" && metaField(r, "published") === false,
+    sessionIdMeta,
   );
   // FALLBACK (documented at the top): a bulk publish writes ONE event-wide
   // audit row with no session ids, so the flag it flipped is the only record
-  // that this session in particular went public.
+  // that this session in particular went public — and only while no unpublish
+  // can have rewritten `updatedAt` since.
   const flagPublishedAt = new Map<string, number>();
   for (const flag of flags.rows) {
     if (flag.targetType !== "session" || !flag.published) continue;
@@ -433,32 +508,50 @@ export async function turnaround(
 
   const publishDurations: number[] = [];
   let publishOpen = 0;
+  let publishUntimeable = 0;
   for (const session of sessions.rows) {
     if (session.status === "cancelled") continue;
+    let end = publishedRow.get(session._id);
+    if (end === undefined) {
+      const flagged = flagPublishedAt.get(session._id);
+      if (flagged !== undefined && unpublished.has(session._id)) {
+        // Published (the flag says so), re-published after an unpublish, and
+        // no per-session row of the FIRST time. Nothing here can time it.
+        publishUntimeable += 1;
+        continue;
+      }
+      end = flagged;
+    }
     // Legacy rows carry no contentStatus (they were already being served) and
     // therefore no approval moment. No start, no data point, no invented one.
     const approvedAt =
-      approved.get(session._id) ??
+      governing(approvals.get(session._id), end) ??
       (session.contentStatus === "approved"
         ? session.contentStatusSetAt
         : undefined);
     if (approvedAt === undefined) continue;
-    const end = publishedRow.get(session._id) ?? flagPublishedAt.get(session._id);
     const closed = interval(approvedAt, end);
     if (closed === null) publishOpen += 1;
     else publishDurations.push(closed);
   }
+  // A session dropped for want of a publication moment makes the population a
+  // floor, in the same words a truncated read uses.
+  const publishCapped = publishReadCapped || publishUntimeable > 0;
+  const panelCapped =
+    decisionCapped || confirmCapped || taskCapped || publishCapped;
 
   return {
     stats: [
-      statSentence("decision", decisionDurations, decisionOpen, capped),
-      statSentence("confirmation", confirmDurations, confirmOpen, capped),
-      statSentence("task", taskDurations, taskOpen, capped),
-      statSentence("publish", publishDurations, publishOpen, capped),
+      statSentence("decision", decisionDurations, decisionOpen, decisionCapped),
+      statSentence("confirmation", confirmDurations, confirmOpen, confirmCapped),
+      statSentence("task", taskDurations, taskOpen, taskCapped),
+      statSentence("publish", publishDurations, publishOpen, publishCapped),
     ],
-    capped,
-    summary: capped
+    capped: panelCapped,
+    summary: audit.capped
       ? `Read from the most recent ${AUDIT_SCAN} recorded actions on this event, so these are floors from a sample rather than the whole history.`
-      : "Measured from this event's own history. Only intervals that actually closed are counted; anything still running is named, never averaged in.",
+      : panelCapped
+        ? "This event holds more rows than one pass reads, so the figures that say “at least” are floors; the others were computed from everything they need."
+        : "Measured from this event's own history. Only intervals that actually closed are counted; anything still running is named, never averaged in.",
   };
 }

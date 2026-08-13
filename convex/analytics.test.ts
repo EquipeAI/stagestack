@@ -407,6 +407,109 @@ describe("turnaround — each interval, computed from the rows already written",
       "Sessions published in a median of 2 days after their content was approved, across 2 sessions; the slowest tenth took 4 days; 1 session is approved but not published.",
     );
   });
+  test("publish latency is timed from the approval that GOVERNED the publish, not the first one ever", async () => {
+    // REGRESSION (codex, W4): approve, revert to draft, re-approve, publish
+    // used to be timed from the first approval — a one-day publish reported as
+    // the ten days the content spent in draft.
+    const s = await seed();
+    const sessionId = await addSession(s, "Reworked talk", {
+      contentStatus: "approved",
+    });
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(1);
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "draft" },
+    });
+    at(10);
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(11);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: true },
+    });
+
+    const panel = (await s.alice.query(api.analytics.turnaround, {
+      eventSlug: s.eventSlug,
+    })) as Panel;
+    const stat = statOf(panel, "publish");
+
+    expect(stat.count).toBe(1);
+    expect(stat.p50).toBeGreaterThan(0.9 * DAY);
+    expect(stat.p50).toBeLessThan(1.1 * DAY);
+    expect(stat.sentence).toBe(
+      "Sessions published in a median of 1 day after their content was approved, across 1 session; the slowest tenth took 1 day; none are approved but not published.",
+    );
+  });
+
+  test("a publication flag that an unpublish could have rewritten is not a publish time", async () => {
+    // REGRESSION (codex, W4): `publicationFlags.updatedAt` is the LAST flip.
+    // Bulk-published, unpublished, republished later, it carries the
+    // re-publication — pairing it with a re-approval can report an hour for a
+    // wait of days. Unmeasurable is said as a floor, never guessed at.
+    const s = await seed();
+    const clean = await addSession(s, "Bulk published once", {
+      contentStatus: "approved",
+    });
+    const reset = await addSession(s, "Bulk published, pulled, restored", {
+      contentStatus: "approved",
+    });
+    for (const id of [clean, reset]) {
+      await audit(s, "sessions.setContentStatus", {
+        targetType: "session",
+        targetId: id,
+        meta: { to: "approved" },
+      });
+    }
+    at(2);
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("publicationFlags", {
+        eventId: s.eventId,
+        targetType: "session",
+        targetId: clean,
+        published: true,
+        updatedAt: Date.now(),
+      });
+    });
+    at(3);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId: reset, published: false },
+    });
+    at(30);
+    // Republished in bulk: the flag now says day 30 and nothing says day 2.
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("publicationFlags", {
+        eventId: s.eventId,
+        targetType: "session",
+        targetId: reset,
+        published: true,
+        updatedAt: Date.now(),
+      });
+    });
+
+    const panel = (await s.alice.query(api.analytics.turnaround, {
+      eventSlug: s.eventSlug,
+    })) as Panel;
+    const stat = statOf(panel, "publish");
+
+    // Only the untouched flag is a data point; the reset one is neither timed
+    // nor counted as still waiting, and the population says it is a floor.
+    expect(stat.count).toBe(1);
+    expect(stat.openCount).toBe(0);
+    expect(stat.p50).toBeGreaterThan(1.9 * DAY);
+    expect(stat.p50).toBeLessThan(2.1 * DAY);
+    expect(stat.capped).toBe(true);
+    expect(stat.sentence).toContain("across at least 1 session");
+    expect(panel.capped).toBe(true);
+  });
 });
 
 // ── Honest emptiness, and honest floors ──────────────────────────────────
@@ -435,7 +538,10 @@ describe("turnaround — the empty event and the capped read", () => {
     }
   });
 
-  test("a capped read reports floors, and says so", async () => {
+  test("a capped read reports floors, and says so — but only for the statistics that READ the capped rows", async () => {
+    // REGRESSION (codex, W4): one capped input used to mark every statistic
+    // capped, so a session ceiling made the decision figure say "at least 1
+    // proposal" though the proposals were read whole.
     const s = await seed();
     const first = await addProposal(s, "First");
     await audit(s, "cfp.submit", {
@@ -465,11 +571,51 @@ describe("turnaround — the empty event and the capped read", () => {
     })) as Panel;
 
     expect(panel.capped).toBe(true);
+    // Sessions were truncated; the recorded actions were not.
+    expect(panel.summary).not.toContain("floors from a sample");
+    expect(panel.summary).toContain("more rows than one pass reads");
+
+    const decision = statOf(panel, "decision");
+    expect(decision.capped).toBe(false);
+    expect(decision.sentence).toBe(
+      "Decisions released in a median of 3 days after the proposal arrived, across 1 proposal; the slowest tenth took 3 days; none are still undecided.",
+    );
+    // The two that DO read sessions still admit it.
+    expect(statOf(panel, "confirmation").capped).toBe(true);
+    expect(statOf(panel, "publish").capped).toBe(true);
+    expect(statOf(panel, "task").capped).toBe(false);
+  });
+
+  test("a truncated audit read makes every statistic a floor, and says which sample it read", async () => {
+    const s = await seed();
+    const first = await addProposal(s, "First");
+    await audit(s, "cfp.submit", { targetType: "proposal", targetId: first });
+    at(3);
+    await audit(s, "decision.release", {
+      targetType: "proposal",
+      targetId: first,
+    });
+    // 4000 is the audit ceiling; these push the pair out of the window.
+    await s.t.run(async (ctx) => {
+      for (let i = 0; i < 4001; i += 1) {
+        await ctx.db.insert("auditLog", {
+          orgId: s.orgId,
+          eventId: s.eventId,
+          actorUserId: s.actorUserId,
+          action: "event.update",
+        });
+      }
+    });
+
+    const panel = (await s.alice.query(api.analytics.turnaround, {
+      eventSlug: s.eventSlug,
+    })) as Panel;
+
     expect(panel.summary).toContain("floors from a sample");
-    const stat = statOf(panel, "decision");
-    expect(stat.capped).toBe(true);
-    expect(stat.sentence).toBe(
-      "Decisions released in a median of 3 days after the proposal arrived, across at least 1 proposal; the slowest tenth took 3 days; none are still undecided.",
+    for (const stat of panel.stats) expect(stat.capped).toBe(true);
+    // …and an empty capped statistic never claims nothing has started.
+    expect(statOf(panel, "decision").sentence).toBe(
+      "No proposal here could be timed from the history that could be read.",
     );
   });
 });
