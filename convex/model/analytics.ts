@@ -40,17 +40,31 @@ import { takeCapped } from "./validation";
 //     assignment — `_creationTime` is the assignment moment.
 //   • a BULK publish writes one event-wide audit row without session ids
 //     (convex/model/publishBulk.ts), so a session published that way has no
-//     per-session row — its `publicationFlags.updatedAt` is the publish moment,
-//     but ONLY while nothing can have moved that field since. `updatedAt` is
-//     the LAST flip, not the first: a session that was unpublished and
-//     published again carries the re-publication there, and pairing that with
-//     the approval that governs it can make a nine-day wait read as an hour.
-//     So the flag is trusted only when this event's history records no
-//     unpublish for that session; otherwise the session's publication moment is
-//     unknowable and it leaves the population, which makes the count a FLOOR
-//     (the stat is marked capped, so it says "at least N" — the same admission
-//     a truncated read makes). Excluding is the only move that cannot invent a
-//     number: no start, no end, no data point.
+//     per-session row — its `publicationFlags.updatedAt` is the publish moment.
+//
+// THE PUBLISH ANCHOR IS THE LATEST PUBLICATION, NOT THE FIRST. A session can go
+// public, come down and go public again; each cycle is its own wait, and the
+// only one this history is sure to hold both ends of is the newest. So the end
+// of the interval is the latest of: the newest `publish.session{published:true}
+// ` row, and — while the flag still says published — `publicationFlags
+// .updatedAt`, which is the LAST flip and therefore that session's most recent
+// publication moment. The start is the approval GOVERNING that end (the latest
+// at or before it). Then one rule decides whether the pair is a measurement: an
+// unpublish STRICTLY between the two says the approval was already standing
+// while the session was public, so it governed an earlier cycle this history
+// cannot time and the two ends belong to different cycles. Such a session
+// leaves the population, which makes the count a FLOOR (the stat is marked
+// capped, so it says "at least N" — the same admission a truncated read makes).
+// Excluding is the only move that cannot invent a number: no start, no end, no
+// data point.
+//
+// BOUNDARY, checked rather than assumed: nothing but a publication moves a
+// session's flag. `setFlag` (convex/model/publish.ts) is called from exactly two
+// places — the explicit publish console, which writes a `publish.session` row in
+// the same mutation, and the bulk publisher, which only ever sets flags true and
+// SKIPS targets already published, so a bulk run cannot restamp `updatedAt` on a
+// session that was already public. A flag reading published therefore times a
+// real publication, and never a later one than actually happened.
 //
 // HONESTY RULES, which are the point of the panel:
 //   • An interval that never closed is NOT a data point. It is counted in
@@ -180,6 +194,33 @@ function firstByTarget(
     if (target === undefined) continue;
     const at = out.get(target);
     if (at === undefined || row._creationTime < at) {
+      out.set(target, row._creationTime);
+    }
+  }
+  return out;
+}
+
+/**
+ * LATEST timestamp per target id, for the rows an action code marks.
+ *
+ * The one place where latest is right: a publication is not a correction of an
+ * earlier publication, it is a NEW cycle. Timing the earliest one pairs a
+ * publish with an approval that may be three cycles older than it, or throws
+ * the pair away entirely because an unpublish sits in between — while the
+ * newest cycle, the one this history can actually time, goes unread.
+ */
+function lastByTarget(
+  rows: Audit[],
+  match: (row: Audit) => boolean,
+  targetOf: (row: Audit) => string | undefined = (row) => row.targetId,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const row of rows) {
+    if (!match(row)) continue;
+    const target = targetOf(row);
+    if (target === undefined) continue;
+    const at = out.get(target);
+    if (at === undefined || row._creationTime > at) {
       out.set(target, row._creationTime);
     }
   }
@@ -576,18 +617,17 @@ export async function turnaround(
     const id = metaField(r, "sessionId");
     return typeof id === "string" ? id : undefined;
   };
-  const publishedRow = firstByTarget(
+  // LATEST, not earliest (see `lastByTarget`): the anchor is the session's most
+  // recent publication, because that is the cycle whose approval this history
+  // still holds. An earlier cycle is only ever harder to time.
+  const publishedRow = lastByTarget(
     rows,
     (r) => r.action === "publish.session" && metaField(r, "published") === true,
     sessionIdMeta,
   );
-  // An explicit unpublish is the one thing that can have moved a flag's
-  // `updatedAt` off the first publication. Bulk publishing only ever sets
-  // flags true (convex/model/publishBulk.ts), so this is the whole list.
-  //
-  // Every one of them, not the earliest: an unpublish is also the boundary
-  // between publication CYCLES, and the pair below has to be checked against
-  // whichever one falls between its two ends.
+  // Every unpublish, not the earliest: an unpublish is the boundary between
+  // publication CYCLES, and the pair below has to be checked against whichever
+  // one falls between its two ends.
   const unpublished = allByTarget(
     rows,
     (r) => r.action === "publish.session" && metaField(r, "published") === false,
@@ -595,12 +635,16 @@ export async function turnaround(
   );
   // FALLBACK (documented at the top): a bulk publish writes ONE event-wide
   // audit row with no session ids, so the flag it flipped is the only record
-  // that this session in particular went public — and only while no unpublish
-  // can have rewritten `updatedAt` since.
+  // that this session in particular went public. `updatedAt` is the LAST flip,
+  // and `published` is true here — so it IS the latest publication moment,
+  // which is exactly the anchor this stat wants.
   const flagPublishedAt = new Map<string, number>();
   for (const flag of flags.rows) {
     if (flag.targetType !== "session" || !flag.published) continue;
-    flagPublishedAt.set(flag.targetId, flag.updatedAt);
+    const at = flagPublishedAt.get(flag.targetId);
+    if (at === undefined || flag.updatedAt > at) {
+      flagPublishedAt.set(flag.targetId, flag.updatedAt);
+    }
   }
 
   const publishDurations: number[] = [];
@@ -608,17 +652,19 @@ export async function turnaround(
   let publishUntimeable = 0;
   for (const session of sessions.rows) {
     if (session.status === "cancelled") continue;
-    let end = publishedRow.get(session._id);
-    if (end === undefined) {
-      const flagged = flagPublishedAt.get(session._id);
-      if (flagged !== undefined && unpublished.has(session._id)) {
-        // Published (the flag says so), re-published after an unpublish, and
-        // no per-session row of the FIRST time. Nothing here can time it.
-        publishUntimeable += 1;
-        continue;
-      }
-      end = flagged;
-    }
+    // The anchor is the LATEST publication moment this history knows: the
+    // newest per-session row, the flag (while it still says published), or
+    // whichever of the two is later. A session bulk-published and then
+    // explicitly republished has both, and only the later one is the cycle
+    // whose approval is still standing.
+    const rowEnd = publishedRow.get(session._id);
+    const flagged = flagPublishedAt.get(session._id);
+    const end =
+      rowEnd === undefined
+        ? flagged
+        : flagged === undefined
+          ? rowEnd
+          : Math.max(rowEnd, flagged);
     // Legacy rows carry no contentStatus (they were already being served) and
     // therefore no approval moment. No start, no data point, no invented one.
     const approvedAt =
@@ -636,11 +682,10 @@ export async function turnaround(
     // history cannot time, and `end` belongs to the cycle after it. Measuring
     // across that boundary would print the first cycle's wait plus however
     // long the session sat withdrawn.
-    const publishedAt = end;
     if (
-      publishedAt !== undefined &&
+      end !== undefined &&
       (unpublished.get(session._id) ?? []).some(
-        (at) => at > approvedAt && at < publishedAt,
+        (at) => at > approvedAt && at < end,
       )
     ) {
       publishUntimeable += 1;

@@ -677,6 +677,136 @@ describe("turnaround — each interval, computed from the rows already written",
     );
   });
 
+  test("a later republication is the anchor, so an earlier straddling cycle does not hide the timeable one", async () => {
+    // REGRESSION (codex, W4): the end anchor was the EARLIEST per-session
+    // publish row, so this session was timed against its day-5 republication,
+    // rejected for straddling, and the perfectly timeable day-10 → day-11 cycle
+    // underneath was never looked at. The anchor is the LATEST publication.
+    const s = await seed();
+    const sessionId = await addSession(s, "Twice pulled, twice restored", {
+      contentStatus: "approved",
+    });
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(2);
+    // Cycle one: bulk published, so only the flag records it.
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("publicationFlags", {
+        eventId: s.eventId,
+        targetType: "session",
+        targetId: sessionId,
+        published: true,
+        updatedAt: Date.now(),
+      });
+    });
+    at(3);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: false },
+    });
+    at(5);
+    // Cycle two: republished with no re-approval — a straddle, untimeable.
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: true },
+    });
+    at(6);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: false },
+    });
+    at(10);
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(11);
+    // Cycle three: re-approved on day 10, republished on day 11. Both ends of
+    // THIS cycle are here, and nothing lies between them.
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: true },
+    });
+
+    const panel = (await s.alice.query(api.analytics.turnaround, {
+      eventSlug: s.eventSlug,
+    })) as Panel;
+    const stat = statOf(panel, "publish");
+
+    expect(stat.count).toBe(1);
+    expect(stat.untimeableCount).toBe(0);
+    expect(stat.capped).toBe(false);
+    expect(stat.sentence).toBe(
+      "Sessions published in a median of 1 day after their content was approved, across 1 session; the slowest tenth took 1 day; none are approved but not published.",
+    );
+  });
+
+  test("a bulk republication after a re-approval is timed from the flag, which is the latest publication", async () => {
+    // REGRESSION (codex, W4): the flag was thrown away whenever the history
+    // held ANY unpublish for the session, so this shape — bulk published,
+    // pulled, re-approved, bulk republished — was excluded even though the
+    // flag's last flip IS the day-11 republication the day-10 approval governs.
+    const s = await seed();
+    const sessionId = await addSession(s, "Pulled, reworked, bulk restored", {
+      contentStatus: "approved",
+    });
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(2);
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("publicationFlags", {
+        eventId: s.eventId,
+        targetType: "session",
+        targetId: sessionId,
+        published: true,
+        updatedAt: Date.now(),
+      });
+    });
+    at(3);
+    await audit(s, "publish.session", {
+      meta: { kind: "session", sessionId, published: false },
+    });
+    at(10);
+    await audit(s, "sessions.setContentStatus", {
+      targetType: "session",
+      targetId: sessionId,
+      meta: { to: "approved" },
+    });
+    at(11);
+    // Bulk republish: the flag flips back to true and carries day 11.
+    await s.t.run(async (ctx) => {
+      const flag = await ctx.db
+        .query("publicationFlags")
+        .withIndex("by_eventId_and_target", (q) =>
+          q
+            .eq("eventId", s.eventId)
+            .eq("targetType", "session")
+            .eq("targetId", sessionId),
+        )
+        .unique();
+      if (flag === null) throw new Error("no flag");
+      await ctx.db.patch("publicationFlags", flag._id, {
+        published: true,
+        updatedAt: Date.now(),
+      });
+    });
+
+    const panel = (await s.alice.query(api.analytics.turnaround, {
+      eventSlug: s.eventSlug,
+    })) as Panel;
+    const stat = statOf(panel, "publish");
+
+    expect(stat.count).toBe(1);
+    expect(stat.untimeableCount).toBe(0);
+    expect(stat.capped).toBe(false);
+    expect(stat.sentence).toBe(
+      "Sessions published in a median of 1 day after their content was approved, across 1 session; the slowest tenth took 1 day; none are approved but not published.",
+    );
+  });
+
   test("a republication with no re-approval straddles two cycles, and is not a number", async () => {
     // REGRESSION (codex, W4): same shape as above MINUS the re-approval, and
     // it is the one that used to lie. The governing approval is then day 0 —
