@@ -91,6 +91,10 @@
         "message": "<Checkbox> doesn't accept that prop. Declared props: label, description, onChange, disabled, name, checked, defaultChecked, required, id, plus ARIA attributes and role."
       },
       {
+        "selector": "JSXOpeningElement[name.name='CommandPalette'] > JSXAttribute > JSXIdentifier[name!=/^(?:open|id|title|label|value|onValueChange|placeholder|shortcut|groups|status|emptyLabel|onSelect|onClose|footer|key|ref|className|style|children|aria-[a-z]+|role)$/]",
+        "message": "<CommandPalette> doesn't accept that prop. Declared props: open, id, title, label, value, onValueChange, placeholder, shortcut, groups, status, emptyLabel, onSelect, onClose, footer, plus ARIA attributes and role."
+      },
+      {
         "selector": "JSXOpeningElement[name.name='DataTableColumn'] > JSXAttribute > JSXIdentifier[name!=/^(?:key|header|width|align|cell|key|ref|className|style|children|aria-[a-z]+|role)$/]",
         "message": "<DataTableColumn> doesn't accept that prop. Declared props: key, header, width, align, cell, plus ARIA attributes and role."
       },

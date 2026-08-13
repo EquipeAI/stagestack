@@ -3,6 +3,7 @@ import { Show, UserButton } from '@clerk/tanstack-react-start'
 import { Logo } from '~/ds'
 import { AuthGate } from '~/components/AuthGate'
 import { EventSwitcher } from '~/components/EventSwitcher'
+import { GlobalSearch } from '~/components/shell/GlobalSearch'
 import { ToastViewport } from '~/components/toast'
 
 export const Route = createFileRoute('/app')({
@@ -61,6 +62,11 @@ function AppLayout() {
           <EventSwitcher />
         </Show>
         <div style={{ flex: 1 }} />
+        {/* Visible, not only ⌘K: the shortcut is for the people who already
+            know it, and the button is for everyone else. */}
+        <Show when="signed-in">
+          <GlobalSearch />
+        </Show>
         <UserButton />
       </header>
       <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>

@@ -38,6 +38,7 @@ export { Toast } from './components/feedback/Toast.jsx'
 export { Tooltip } from './components/feedback/Tooltip.jsx'
 
 export { Breadcrumb } from './components/navigation/Breadcrumb.jsx'
+export { CommandPalette } from './components/navigation/CommandPalette.jsx'
 export { MenuButton } from './components/navigation/MenuButton.jsx'
 export { NavDrawer } from './components/navigation/NavDrawer.jsx'
 export { SidebarNav } from './components/navigation/SidebarNav.jsx'
@@ -45,5 +46,9 @@ export { Tabs } from './components/navigation/Tabs.jsx'
 
 // Types the surfaces need to declare their own filter/batch state against.
 export type { ActiveFilter } from './components/layout/ActiveFilters.jsx'
+export type {
+  CommandPaletteGroup,
+  CommandPaletteItem,
+} from './components/navigation/CommandPalette.jsx'
 export type { BatchExclusion } from './components/layout/BatchBar.jsx'
 export type { MenuButtonItem } from './components/navigation/MenuButton.jsx'
