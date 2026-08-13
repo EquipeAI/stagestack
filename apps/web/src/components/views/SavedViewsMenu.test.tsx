@@ -187,6 +187,106 @@ describe('SavedViewsMenu', () => {
     })
   })
 
+  it('forgets the picked view once the URL leaves it, filters coming back or not', () => {
+    // REGRESSION (codex, W2 round 3): the pick was only IGNORED while the
+    // params did not match it, never cleared — so navigating away and back to
+    // filters two views share silently re-armed the earlier pick, and
+    // rename/default/delete pointed at Wave 2 though nothing was picked this
+    // visit. A return visit has to land in the ambiguous state.
+    state.list = listResult({
+      views: [
+        {
+          viewId: 'v1',
+          name: 'Wave 1',
+          params: { status: 'pending' },
+          isDefault: false,
+          updatedAt: 1,
+        },
+        {
+          viewId: 'v2',
+          name: 'Wave 2',
+          params: { status: 'pending' },
+          isDefault: false,
+          updatedAt: 2,
+        },
+      ],
+    })
+    const onApply = vi.fn()
+    const view = (params: Record<string, string>) => (
+      <SavedViewsMenu
+        eventSlug="devconf"
+        module="proposals"
+        params={params}
+        onApply={onApply}
+      />
+    )
+    const { rerender } = render(view({ status: 'pending' }))
+
+    fireEvent.click(screen.getByRole('button'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Wave 2/ }))
+    expect(
+      screen.getByRole('button', { name: 'Saved views. Current view: Wave 2.' }),
+    ).toBeTruthy()
+
+    // Somewhere else entirely, then back to exactly those filters.
+    rerender(view({ q: 'ada' }))
+    expect(
+      screen.getByRole('button', { name: 'Saved views. Current view: Custom view.' }),
+    ).toBeTruthy()
+    rerender(view({ status: 'pending' }))
+
+    expect(
+      screen.getByRole('button', {
+        name: 'Saved views. These filters match 2 saved views — pick one from this menu to work on it.',
+      }),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button'))
+    expect(screen.queryByRole('menuitem', { name: /^Delete/ })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Rename…' })).toBeNull()
+  })
+
+  it('keeps the pick while the URL is still carrying that view’s params', () => {
+    // The other half of the same rule: applying a view whose params differ from
+    // what is on screen sets the id one render BEFORE the URL catches up, so a
+    // naive clear would drop the pick it had just made.
+    state.list = listResult({
+      views: [
+        {
+          viewId: 'v1',
+          name: 'Wave 1',
+          params: { status: 'pending' },
+          isDefault: false,
+          updatedAt: 1,
+        },
+        {
+          viewId: 'v2',
+          name: 'Wave 2',
+          params: { status: 'pending' },
+          isDefault: false,
+          updatedAt: 2,
+        },
+      ],
+    })
+    const onApply = vi.fn()
+    const view = (params: Record<string, string>) => (
+      <SavedViewsMenu
+        eventSlug="devconf"
+        module="proposals"
+        params={params}
+        onApply={onApply}
+      />
+    )
+    const { rerender } = render(view({ q: 'ada' }))
+    fireEvent.click(screen.getByRole('button'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Wave 2/ }))
+    expect(onApply).toHaveBeenCalledWith({ status: 'pending' })
+    // The navigation lands: the pick survives it.
+    rerender(view({ status: 'pending' }))
+    expect(
+      screen.getByRole('button', { name: 'Saved views. Current view: Wave 2.' }),
+    ).toBeTruthy()
+  })
+
   it('saves the params on screen under a name, and reports the model’s sentence', async () => {
     state.list = listResult()
     mount({ status: 'withdrawn' })

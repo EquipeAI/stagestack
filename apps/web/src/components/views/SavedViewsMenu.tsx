@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
+import { sameParams } from '@convex/shared/viewParams'
 import { activeView, isUnnarrowed, presetList } from './model'
 import type { Id } from '@convex/_generated/dataModel'
 import type { ViewModule, ViewParams } from '@convex/shared/viewParams'
@@ -65,6 +66,28 @@ export function SavedViewsMenu({
     setSelectedViewId(view.viewId)
     onApply(view.params)
   }
+
+  // `activeView` only IGNORES a pick the params have left behind; the state has
+  // to FORGET it. Leaving it stored re-armed it on the way back: navigate off
+  // filters two views share, come back to them, and Delete pointed at the view
+  // picked on the previous visit — a row nobody chose this time.
+  //
+  // Keyed on the params CHANGING, not on their current value: `applySaved`
+  // stores the id one render before the URL catches up, so comparing against
+  // the params still on screen at that moment would throw away the pick it had
+  // just made.
+  const seenParams = useRef(params)
+  useEffect(() => {
+    if (sameParams(seenParams.current, params)) return
+    seenParams.current = params
+    setSelectedViewId((current) => {
+      if (current === null) return null
+      const picked = saved.find((view) => view.viewId === current)
+      return picked !== undefined && sameParams(picked.params, params)
+        ? current
+        : null
+    })
+  })
 
   // The personal default, applied on a first visit that carries no filters of
   // its own. A link's own params always win — this only ever fires on the bare
