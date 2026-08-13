@@ -45,9 +45,11 @@ Previous plans: [UX maturity cycle M8–M9](docs/PLAN-2026-08-ux-maturity.md) ·
       (`scintillating-heron-597`), develop, and prod (idempotent; refuses
       >1000-session events; keeps labels verbatim — the CFP format labels are
       asserted verbatim by the eval).
-- [ ] **Push `develop`** (ahead of origin) so the preview deploy — what the
+- [x] **Push `develop`** (ahead of origin) so the preview deploy — what the
       evals hit — matches local; merge to `main` before Sunday so prod
-      carries everything we want judged.
+      carries everything we want judged. (Done 2026-08-13: develop pushed and
+      main fast-forwarded to the same commit, `10f449f` — both carry the full
+      M10 slice and the docs reorganisation.)
 
 ## A2 — Evaluation package
 
