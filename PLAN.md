@@ -20,11 +20,9 @@ Previous plans: [UX maturity cycle M8–M9](docs/PLAN-2026-08-ux-maturity.md) ·
 
 ## Submission logistics
 
-- [ ] **Fill and submit the form** — https://forms.gle/RJMXWp2jAD32uHvB9 —
-      repo (github.com/EquipeAI/stagestack), deployed site
-      (https://stagestack.dev), and token-reimbursement details (receipts up
-      to $500). Alvaro confirms and clicks submit; Claude can pre-stage the
-      answers.
+(Form submission — https://forms.gle/RJMXWp2jAD32uHvB9 — is handled directly
+by Alvaro, outside this plan.)
+
 - [ ] **Decide on the optional reviewers** — swyx@ai.engineer ·
       sydney@ai.engineer · phlo@ai.engineer · kelsey@ai.engineer. Two
       decisions: repo access (repo goes public at submission, so likely moot)
