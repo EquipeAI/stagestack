@@ -12,9 +12,19 @@ import {
 } from "./test.helpers";
 import {
   DEFAULT_TEMPLATES,
+  RAW_KEYS,
+  sampleVars,
   substituteHtml,
   substituteSubject,
 } from "./model/templates";
+import {
+  ONE_OFF_CONTEXT_KEY,
+  RAW_VAR_PATHS,
+  TEMPLATE_CONTEXT_VARS,
+  isKnownVar,
+  tokenFor,
+  variablesIn,
+} from "./shared/templateVars";
 
 // Email templates (M5). What must never regress: an organizer override
 // replaces the built-in copy for real sends, reset restores it, and EVERY
@@ -294,7 +304,259 @@ describe("templates.preview", () => {
       key: "decision.accepted",
     });
     expect(preview.subject).toBe("You're in: Analytical engines in production");
-    expect(preview.html).toContain("<p>Ada, see you at Acme Summit.</p>");
+    // `{{speaker.firstName}}` renders as nothing here, and the preview says so
+    // by showing nothing: a decision email's send site (`decisionVars` in
+    // convex/model/sessions.ts) passes no speaker at all. The preview used to
+    // substitute "Ada" and promise a personalisation the real send never made.
+    expect(preview.html).toContain("<p>, see you at Acme Summit.</p>");
+  });
+});
+
+// ── Composer tokens + live preview (W3) ──────────────────────────────────
+//
+// The palette and the renderer read one definition (convex/shared/templateVars
+// .ts). These are the tests that keep it one: a token the palette offers must
+// resolve, a token it does not offer must not, and what the preview shows must
+// be what the send produces — escaping included.
+
+describe("token catalog matches the renderer", () => {
+  test("every token the palette offers resolves in its own context", () => {
+    for (const [key, paths] of Object.entries(TEMPLATE_CONTEXT_VARS)) {
+      const vars = sampleVars(null, key);
+      for (const path of paths) {
+        const rendered = substituteSubject(tokenFor(path), vars);
+        expect(
+          rendered,
+          `${key} / {{${path}}} rendered as nothing`,
+        ).not.toBe("");
+        expect(rendered).not.toContain("{{");
+      }
+    }
+  });
+
+  test("a token the palette withholds renders as nothing", () => {
+    // A decision email has no speaker and a CFP confirmation has no slot: the
+    // palette hides them precisely because the send site passes neither.
+    for (const [key, path] of [
+      ["decision.accepted", "speaker.firstName"],
+      ["cfp.confirmation", "slot.when"],
+      ["team.invite", "event.name"],
+      [ONE_OFF_CONTEXT_KEY, "proposal.title"],
+    ] as const) {
+      expect(TEMPLATE_CONTEXT_VARS[key]).not.toContain(path);
+      expect(substituteSubject(tokenFor(path), sampleVars(null, key))).toBe("");
+    }
+  });
+
+  test("every variable the shipped copy uses is in that template's context", () => {
+    for (const [key, template] of Object.entries(DEFAULT_TEMPLATES)) {
+      const used = [
+        ...variablesIn(template.subject),
+        ...variablesIn(template.html),
+      ];
+      for (const path of used) {
+        expect(
+          TEMPLATE_CONTEXT_VARS[key],
+          `${key} ships {{${path}}} but its send site does not pass it`,
+        ).toContain(path);
+      }
+    }
+  });
+
+  test("the renderer's raw-block set is the catalog's", () => {
+    expect([...RAW_KEYS].sort()).toEqual([...RAW_VAR_PATHS].sort());
+    for (const path of RAW_VAR_PATHS) expect(isKnownVar(path)).toBe(true);
+  });
+});
+
+describe("templates.preview — personalised", () => {
+  test("renders a draft against a real speaker on the event", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { eventContactId } = await alice.mutation(api.sessions.createDirect, {
+      eventSlug,
+      title: "Opening keynote",
+      speaker: {
+        firstName: "Dana",
+        lastName: "Keynote",
+        email: "Dana@Example.com",
+      },
+    });
+
+    const recipients = await alice.query(api.templates.previewRecipients, {
+      eventSlug,
+    });
+    expect(recipients).toContainEqual({
+      eventContactId,
+      name: "Dana Keynote",
+      firstName: "Dana",
+      lastName: "Keynote",
+      email: "dana@example.com",
+      sample: false,
+    });
+
+    const preview = await alice.query(api.templates.preview, {
+      eventSlug,
+      key: "portal.invite",
+      draft: {
+        subject: "Portal for {{speaker.firstName}}",
+        html: "<p>Hi {{speaker.firstName}} {{speaker.lastName}}.</p>",
+      },
+      eventContactId,
+    });
+    expect(preview.subject).toBe("Portal for Dana");
+    expect(preview.html).toContain("<p>Hi Dana Keynote.</p>");
+    expect(preview.recipient.sample).toBe(false);
+    expect(preview.recipient.name).toBe("Dana Keynote");
+  });
+
+  test("with nobody chosen the recipient is flagged as a stand-in", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const preview = await alice.query(api.templates.preview, {
+      eventSlug,
+      key: "portal.invite",
+      draft: { subject: "Hi {{speaker.firstName}}", html: "<p>x</p>" },
+    });
+    expect(preview.subject).toBe("Hi Ada");
+    expect(preview.recipient).toMatchObject({
+      sample: true,
+      name: "Ada Lovelace",
+      eventContactId: null,
+    });
+  });
+
+  test("the preview is what the send produces, byte for byte", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { eventContactId } = await alice.mutation(api.sessions.createDirect, {
+      eventSlug,
+      title: "Opening keynote",
+      speaker: {
+        firstName: "Dana",
+        lastName: "Keynote",
+        email: "dana@example.com",
+      },
+    });
+    const draft = {
+      subject: "{{event.name}} — a word, {{speaker.firstName}}",
+      html: "<p>Hi {{speaker.fullName}} ({{speaker.email}}) — {{link}}</p>",
+    };
+
+    const preview = await alice.query(api.templates.preview, {
+      eventSlug,
+      key: ONE_OFF_CONTEXT_KEY,
+      draft,
+      eventContactId,
+    });
+    await alice.mutation(api.comms.sendOneOff, {
+      eventSlug,
+      to: { kind: "contact", eventContactId },
+      subject: draft.subject,
+      html: draft.html,
+      now: Date.now(),
+    });
+
+    const sent = (await messageRows(t)).find((m) => m.kind === "manual.oneoff");
+    const context = sent?.context as { renderedBody: string };
+    expect(sent?.subject).toBe(preview.subject);
+    expect(context.renderedBody).toBe(preview.html);
+  });
+
+  test("a speaker named <script> is escaped in the preview too", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const { eventContactId } = await alice.mutation(api.sessions.createDirect, {
+      eventSlug,
+      title: "Opening keynote",
+      speaker: {
+        firstName: `<script>alert(1)</script>`,
+        lastName: "Keynote",
+        email: "xss@example.com",
+      },
+    });
+    const preview = await alice.query(api.templates.preview, {
+      eventSlug,
+      key: ONE_OFF_CONTEXT_KEY,
+      draft: { subject: "hi", html: "<p>Hi {{speaker.firstName}},</p>" },
+      eventContactId,
+    });
+    expect(preview.html).not.toContain("<script>");
+    expect(preview.html).toContain("&lt;script&gt;");
+  });
+
+  test("raw blocks stay raw, everything else stays escaped", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await organizerEvent(t);
+    const preview = await alice.query(api.templates.preview, {
+      eventSlug,
+      key: "reminder.tasks",
+      draft: { subject: "s", html: "<div>{{tasks}}{{speaker.firstName}}</div>" },
+    });
+    expect(preview.html).toContain("<li><strong>Speaker headshot</strong>");
+    expect(preview.html).toContain("Ada");
+  });
+});
+
+describe("preview authorization", () => {
+  test("a reviewer cannot preview or list preview recipients", async () => {
+    const t = setupTest();
+    const { eventSlug } = await organizerEvent(t);
+    const rita = await signIn(t, "rita");
+    await grantEventRole(t, eventSlug, "rita", "reviewer");
+
+    await expectRejectedWith(
+      rita.query(api.templates.preview, {
+        eventSlug,
+        key: "portal.invite",
+        draft: { subject: "s", html: "<p>{{speaker.firstName}}</p>" },
+      }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      rita.query(api.templates.previewRecipients, { eventSlug }),
+      "forbidden",
+    );
+  });
+
+  test("an organizer of another org cannot preview this event", async () => {
+    const t = setupTest();
+    const { eventSlug } = await organizerEvent(t);
+    const mallory = await signIn(t, "mallory");
+    await createOrg(mallory, "Rival Events");
+
+    await expectRejectedWith(
+      mallory.query(api.templates.preview, { eventSlug, key: "portal.invite" }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      mallory.query(api.templates.previewRecipients, { eventSlug }),
+      "forbidden",
+    );
+  });
+
+  test("a contact from another event cannot be used as the recipient", async () => {
+    const t = setupTest();
+    const { alice, orgSlug, eventSlug } = await organizerEvent(t);
+    const otherSlug = await createEvent(alice, orgSlug, "Other Summit");
+    const { eventContactId } = await alice.mutation(api.sessions.createDirect, {
+      eventSlug: otherSlug,
+      title: "Elsewhere",
+      speaker: {
+        firstName: "Elsewhere",
+        lastName: "Speaker",
+        email: "elsewhere@example.com",
+      },
+    });
+
+    await expectRejectedWith(
+      alice.query(api.templates.preview, {
+        eventSlug,
+        key: "portal.invite",
+        eventContactId,
+      }),
+      "not_found",
+    );
   });
 });
 

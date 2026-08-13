@@ -4,8 +4,13 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
-import { emailShell, escapeHtml } from "./comms";
+import { emailShell, escapeHtml, siteUrl } from "./comms";
 import { assertEventActive } from "./validation";
+import {
+  RAW_VAR_PATHS,
+  sampleVarBag,
+  varRegExp,
+} from "../shared/templateVars";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Email templates (M5). Every lifecycle email StageStack sends renders through
@@ -31,8 +36,10 @@ export type TemplateBody = { name: string; subject: string; html: string };
 /** Nested-but-shallow bag: `{{speaker.firstName}}` walks it by dotted path. */
 export type TemplateVars = Record<string, unknown>;
 
-/** Paths whose values are server-built HTML and must NOT be escaped. */
-export const RAW_KEYS: ReadonlySet<string> = new Set(["tasks", "body"]);
+/** Paths whose values are server-built HTML and must NOT be escaped. Defined
+ * once in convex/shared/templateVars.ts, where the editor's palette reads it
+ * too — the escaping rule and the list an organizer is shown cannot drift. */
+export const RAW_KEYS: ReadonlySet<string> = RAW_VAR_PATHS;
 
 export const MAX_SUBJECT = 300;
 export const MAX_HTML = 50_000;
@@ -238,7 +245,7 @@ export function assertTemplateKey(key: string): string {
 
 // ── Substitution ─────────────────────────────────────────────────────────
 
-const VAR_RE = /\{\{\s*([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)\s*\}\}/g;
+const VAR_RE = varRegExp();
 
 function lookup(vars: TemplateVars, path: string): unknown {
   let current: unknown = vars;
@@ -318,53 +325,35 @@ export async function renderTemplate(
 
 // ── Sample data for the live preview ─────────────────────────────────────
 
-/** Every variable any built-in template can reference, with believable values
- * so the organizer's preview looks like a real message. */
-export function sampleVars(event: Doc<"events"> | null): TemplateVars {
+/**
+ * A believable variable bag for `key`, shaped exactly like the send site's:
+ * only the variables that context resolves are in it, so the preview shows an
+ * out-of-context token as the nothing a real send would render. Anything
+ * StageStack actually knows — the event, this deployment's links, the chosen
+ * recipient — replaces the stand-in.
+ */
+export function sampleVars(
+  event: Doc<"events"> | null,
+  key: string,
+  recipient?: PreviewRecipient,
+): TemplateVars {
   const eventName = event?.name ?? "Acme Summit";
-  return {
-    event: {
-      name: eventName,
-      when: "2026-09-01 – 2026-09-03 (America/Los_Angeles)",
-      location: "Moscone West",
-      whenWhere: "2026-09-01 – 2026-09-03 (America/Los_Angeles) — Moscone West",
-    },
-    speaker: {
-      firstName: "Ada",
-      lastName: "Lovelace",
-      fullName: "Ada Lovelace",
-      email: "ada@example.com",
-    },
-    session: { title: "Analytical engines in production" },
-    slot: {
-      when: "Tue, Sep 1, 2:00 PM – Tue, Sep 1, 2:45 PM (America/Los_Angeles)",
-      room: "Main Stage",
-    },
-    proposal: {
-      title: "Analytical engines in production",
-      speakers: "Ada Lovelace",
-    },
-    task: { title: "Speaker headshot" },
-    inviter: { name: "Grace Hopper" },
-    scope: { label: eventName },
-    role: { label: "organizer" },
-    decision: "accepted",
-    note: "Sample note from the organizer.",
-    intro: "Thanks for submitting to",
-    subjectLead: "We received your proposal",
-    link: "https://stagestack.dev/portal/sample-event",
-    tasks: [
-      `<ul>`,
-      `<li><strong>Speaker headshot</strong> — Analytical engines in production (due 2026-08-20)</li>`,
-      `<li><strong>Final slides</strong> — Analytical engines in production (due 2026-08-25)</li>`,
-      `</ul>`,
-    ].join("\n"),
-    body: [
-      `<ul>`,
-      `<li><strong>Analytical engines in production</strong></li>`,
-      `</ul>`,
-    ].join("\n"),
+  const overrides: Record<string, string> = {
+    "event.name": eventName,
+    "scope.label": eventName,
+    link: `${siteUrl()}/portal/${event?.slug ?? "sample-event"}`,
+    ...(event?.timezone === undefined ? {} : { "event.timezone": event.timezone }),
   };
+  if (recipient !== undefined && !recipient.sample) {
+    overrides["speaker.firstName"] = recipient.firstName;
+    overrides["speaker.lastName"] = recipient.lastName;
+    // Composed the way `sendOneOff` composes it, not from the display name —
+    // the display name carries an "Unnamed speaker" fallback a send never adds.
+    overrides["speaker.fullName"] =
+      `${recipient.firstName} ${recipient.lastName}`.trim();
+    if (recipient.email !== null) overrides["speaker.email"] = recipient.email;
+  }
+  return sampleVarBag(key, overrides);
 }
 
 // ── Organizer capabilities ───────────────────────────────────────────────
@@ -509,18 +498,117 @@ export async function resetTemplate(
   return true;
 }
 
-/** What the organizer's editor shows: the current template rendered against
- * sample data, through the same substitution the real send uses. */
+// ── Live preview (W3) ────────────────────────────────────────────────────
+//
+// The composer never substitutes anything itself. It sends the draft here and
+// renders what comes back, so what an organizer sees IS what the send path
+// produces — same substitution, same escaping, same branded shell.
+
+export type PreviewRecipient = {
+  eventContactId: Id<"eventContacts"> | null;
+  name: string;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  /** True when nobody real was chosen and this is a stand-in. Said out loud in
+   * the UI: a preview against an invented person must never read as a real one. */
+  sample: boolean;
+};
+
+const SAMPLE_RECIPIENT: PreviewRecipient = {
+  eventContactId: null,
+  name: "Ada Lovelace",
+  firstName: "Ada",
+  lastName: "Lovelace",
+  email: "ada@example.com",
+  sample: true,
+};
+
+/** How many speakers the recipient picker offers. A display bound: the picker
+ * is for spot-checking one person's copy, not for browsing the roster. */
+const PREVIEW_RECIPIENT_LIMIT = 100;
+
+/** Real people on this event a preview can be rendered against. */
+export async function previewRecipients(
+  ctx: QueryCtx,
+  caller: EventCaller,
+): Promise<PreviewRecipient[]> {
+  requireOrganizer(caller);
+  const contacts = await ctx.db
+    .query("eventContacts")
+    .withIndex("by_eventId", (q) => q.eq("eventId", caller.event._id))
+    .take(PREVIEW_RECIPIENT_LIMIT);
+  return contacts
+    .map((contact) => {
+      // Lowercased exactly as `sendOneOff` normalizes it, so a preview against
+      // this speaker substitutes the same address the send would.
+      const email = contact.email?.trim().toLowerCase();
+      return {
+        eventContactId: contact._id,
+        name:
+          `${contact.firstName} ${contact.lastName}`.trim() ||
+          "Unnamed speaker",
+        firstName: contact.firstName,
+        lastName: contact.lastName,
+        email: email === undefined || email.length === 0 ? null : email,
+        sample: false,
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function resolveRecipient(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  eventContactId: Id<"eventContacts"> | undefined,
+): Promise<PreviewRecipient> {
+  if (eventContactId === undefined) return SAMPLE_RECIPIENT;
+  const contact = await ctx.db.get("eventContacts", eventContactId);
+  if (contact === null || contact.eventId !== caller.event._id) {
+    notFound("contact", "No such contact on this event.");
+  }
+  const email = contact.email?.trim().toLowerCase();
+  return {
+    eventContactId: contact._id,
+    name: `${contact.firstName} ${contact.lastName}`.trim() || "Unnamed speaker",
+    firstName: contact.firstName,
+    lastName: contact.lastName,
+    email: email === undefined || email.length === 0 ? null : email,
+    sample: false,
+  };
+}
+
+/**
+ * What the organizer's editor shows: the template — saved, or the draft they
+ * are still typing — rendered against a real recipient of this event through
+ * the same substitution the real send uses.
+ *
+ * A draft is rendered directly rather than through `renderTemplate` because
+ * there is nothing stored to look up yet; the substitution and the shell are
+ * the same two calls `sendOneOff` makes, so the output is byte-identical to
+ * what sending that draft would produce.
+ */
 export async function previewTemplate(
   ctx: QueryCtx,
   caller: EventCaller,
-  key: string,
-): Promise<{ subject: string; html: string }> {
+  args: {
+    key: string;
+    draft?: { subject: string; html: string };
+    eventContactId?: Id<"eventContacts">;
+  },
+): Promise<{ subject: string; html: string; recipient: PreviewRecipient }> {
   requireOrganizer(caller);
-  return await renderTemplate(
-    ctx,
-    caller.event,
-    key,
-    sampleVars(caller.event),
-  );
+  const recipient = await resolveRecipient(ctx, caller, args.eventContactId);
+  const vars = sampleVars(caller.event, args.key, recipient);
+  if (args.draft !== undefined) {
+    return {
+      subject: substituteSubject(args.draft.subject, vars),
+      html: emailShell(substituteHtml(args.draft.html, vars)),
+      recipient,
+    };
+  }
+  return {
+    ...(await renderTemplate(ctx, caller.event, args.key, vars)),
+    recipient,
+  };
 }

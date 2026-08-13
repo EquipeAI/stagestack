@@ -1,40 +1,42 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
-import {
-  TEMPLATE_VARS,
-  UNIVERSAL_VARS,
-  isCustomKey,
-  isKnownVar,
-  renderDraftHtml,
-  renderDraftSubject,
-  sampleVars,
-  variablesIn,
-} from './model'
-import { MonoText, VariableChip } from './primitives'
+import { isKnownVar, variablesIn } from '@convex/shared/templateVars'
+import { isCustomKey } from './model'
+import { MonoText } from './primitives'
+import { TokenPalette, fieldById, insertAtCursor } from './TokenPalette'
 import type * as React from 'react'
+import type { Id } from '@convex/_generated/dataModel'
 import type { TemplateRow } from './model'
-import { Button, Callout, Dialog, Field, Input, Textarea } from '~/ds'
+import { Button, Callout, Dialog, Field, Input, Select, Textarea } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
 
 // The editor for one email template. Two things the organizer has to be able
 // to see at once: the source they are editing, and what it turns into.
 //
-// `templates.preview` takes only a key — it renders what is SAVED. So the
-// preview pane has two modes, and says which one it is showing: the server's
-// authoritative rendering (branded shell included) while the draft is clean,
-// and a local rendering of the body while it is not.
+// The preview is rendered by the SERVER, draft and all (W3). The editor used
+// to mirror the substitution locally so it could show an unsaved draft, and
+// the mirror drifted — it substituted a speaker name into decision emails,
+// which pass no speaker. Now the draft goes to `templates.preview` and comes
+// back rendered by the code the send itself calls: same substitution, same
+// escaping, same branded shell, personalised against a real speaker.
+
+/** Keystrokes settle before the preview re-queries. */
+const PREVIEW_DEBOUNCE_MS = 300
+
+const SUBJECT_ID = 'tpl-subject'
+const BODY_ID = 'tpl-html'
+
+type FieldName = 'subject' | 'body'
 
 export function TemplateEditorDialog({
   eventSlug,
-  eventName,
   template,
   onRequestReset,
   onClose,
 }: {
   eventSlug: string
-  eventName: string
   template: TemplateRow
   onRequestReset: (template: TemplateRow) => void
   onClose: () => void
@@ -46,32 +48,76 @@ export function TemplateEditorDialog({
   const [name, setName] = useState(template.name)
   const [subject, setSubject] = useState(template.subject)
   const [html, setHtml] = useState(template.html)
+  const [recipientId, setRecipientId] = useState<Id<'eventContacts'> | ''>('')
+  const [activeField, setActiveField] = useState<FieldName>('body')
+
+  const previewLabelId = useId()
 
   const dirty =
     subject !== template.subject ||
     html !== template.html ||
     (custom && name !== template.name)
 
-  // A custom key with no override yet has nothing on the server to render.
-  const previewable = !custom || template.customized
-  const saved = useQuery(
+  const recipients = useQuery(api.templates.previewRecipients, { eventSlug })
+
+  // The draft is debounced so a preview is one query per pause, not one per
+  // keystroke; `undefined` means "preview what is stored".
+  const [debounced, setDebounced] = useState<{
+    subject: string
+    html: string
+  } | null>(null)
+  useEffect(() => {
+    if (!dirty) {
+      setDebounced(null)
+      return
+    }
+    const timer = setTimeout(() => {
+      setDebounced({ subject, html })
+    }, PREVIEW_DEBOUNCE_MS)
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [dirty, subject, html])
+
+  // A custom key with nothing saved and no draft yet has nothing to render.
+  const previewable = debounced !== null || !custom || template.customized
+  const preview = useQuery(
     api.templates.preview,
-    previewable ? { eventSlug, key: template.key } : 'skip',
+    previewable
+      ? {
+          eventSlug,
+          key: template.key,
+          ...(debounced === null ? {} : { draft: debounced }),
+          ...(recipientId === '' ? {} : { eventContactId: recipientId }),
+        }
+      : 'skip',
   )
-
-  const vars = useMemo(() => sampleVars(eventName), [eventName])
-  const draftSubject = renderDraftSubject(subject, vars)
-  const draftHtml = renderDraftHtml(html, vars)
-
-  const available = useMemo(() => {
-    const own = TEMPLATE_VARS[template.key] ?? []
-    return [...own, ...UNIVERSAL_VARS.filter((v) => !own.includes(v))]
-  }, [template.key])
 
   const unknown = useMemo(
-    () => [...variablesIn(subject), ...variablesIn(html)].filter((v) => !isKnownVar(v)),
+    () =>
+      [...variablesIn(subject), ...variablesIn(html)].filter(
+        (path) => !isKnownVar(path),
+      ),
     [subject, html],
   )
+
+  const insert = (path: string) => {
+    const token = `{{${path}}}`
+    if (activeField === 'subject') {
+      insertAtCursor(fieldById(SUBJECT_ID), token, setSubject)
+    } else {
+      insertAtCursor(fieldById(BODY_ID), token, setHtml)
+    }
+  }
+
+  const previewStatus =
+    preview === undefined
+      ? previewable
+        ? 'Rendering the preview…'
+        : 'Save the template to see it as StageStack sends it.'
+      : preview.recipient.sample
+        ? `Sample recipient — ${preview.recipient.name} is not a real speaker on this event.`
+        : `As ${preview.recipient.name} would receive it.`
 
   const save = () => {
     if (subject.trim() === '') return setError('The subject cannot be empty.')
@@ -123,11 +169,7 @@ export function TemplateEditorDialog({
           <Button disabled={pending} onClick={onClose}>
             Close
           </Button>
-          <Button
-            variant="primary"
-            disabled={pending || !dirty}
-            onClick={save}
-          >
+          <Button variant="primary" disabled={pending || !dirty} onClick={save}>
             {pending ? 'Saving…' : 'Save template'}
           </Button>
         </>
@@ -160,11 +202,14 @@ export function TemplateEditorDialog({
             </Field>
           ) : null}
 
-          <Field label="Subject" htmlFor="tpl-subject" required>
+          <Field label="Subject" htmlFor={SUBJECT_ID} required>
             <Input
-              id="tpl-subject"
+              id={SUBJECT_ID}
               value={subject}
               disabled={pending}
+              onFocus={() => {
+                setActiveField('subject')
+              }}
               onChange={(e) => {
                 setSubject(e.target.value)
               }}
@@ -173,12 +218,12 @@ export function TemplateEditorDialog({
 
           <Field
             label="Body"
-            htmlFor="tpl-html"
+            htmlFor={BODY_ID}
             required
             hint="HTML. StageStack wraps it in the branded shell — write the message, not the page."
           >
             <Textarea
-              id="tpl-html"
+              id={BODY_ID}
               rows={16}
               value={html}
               disabled={pending}
@@ -186,40 +231,21 @@ export function TemplateEditorDialog({
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--text-xs)',
               }}
+              onFocus={() => {
+                setActiveField('body')
+              }}
               onChange={(e) => {
                 setHtml(e.target.value)
               }}
             />
           </Field>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-            <span
-              style={{ font: 'var(--type-label)', color: 'var(--text-secondary)' }}
-            >
-              Variables
-            </span>
-            <div
-              style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: 'var(--space-2)',
-              }}
-            >
-              {available.map((path) => (
-                <VariableChip key={path} path={path} />
-              ))}
-            </div>
-            <p
-              style={{
-                font: 'var(--type-caption)',
-                color: 'var(--text-tertiary)',
-              }}
-            >
-              Values are escaped before they are substituted, so a speaker
-              called <MonoText>&lt;script&gt;</MonoText> is text, never markup.
-              A name StageStack does not recognise renders as nothing.
-            </p>
-          </div>
+          <TokenPalette
+            contextKey={template.key}
+            targetLabel={activeField === 'subject' ? 'subject' : 'body'}
+            disabled={pending}
+            onInsert={insert}
+          />
 
           {unknown.length === 0 ? null : (
             <Callout tone="attention" title="These render as empty">
@@ -228,34 +254,54 @@ export function TemplateEditorDialog({
           )}
         </div>
 
-        <div style={column}>
-          <div
+        <section style={column} aria-labelledby={previewLabelId}>
+          <span
+            id={previewLabelId}
+            style={{ font: 'var(--type-label)', color: 'var(--text-secondary)' }}
+          >
+            Preview
+          </span>
+
+          <Field
+            label="Preview as"
+            htmlFor="tpl-preview-recipient"
+            hint="Rendered against this speaker's own details, by the same code the send runs."
+          >
+            <Select
+              id="tpl-preview-recipient"
+              value={recipientId}
+              disabled={pending || recipients === undefined}
+              options={[
+                {
+                  value: '',
+                  label:
+                    recipients !== undefined && recipients.length === 0
+                      ? 'Sample speaker (no speakers on this event yet)'
+                      : 'Sample speaker',
+                },
+                ...(recipients ?? []).map((recipient) => ({
+                  value: recipient.eventContactId ?? '',
+                  label: recipient.name,
+                })),
+              ]}
+              onChange={(e) => {
+                setRecipientId(e.target.value as Id<'eventContacts'>)
+              }}
+            />
+          </Field>
+
+          {/* Async: the preview arrives after the query settles, so the
+              sentence that says whose copy this is has to be spoken. */}
+          <p
+            role="status"
+            aria-live="polite"
             style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              justifyContent: 'space-between',
-              gap: 'var(--space-3)',
+              font: 'var(--type-caption)',
+              color: 'var(--text-tertiary)',
             }}
           >
-            <span
-              style={{ font: 'var(--type-label)', color: 'var(--text-secondary)' }}
-            >
-              Preview
-            </span>
-            <span
-              style={{
-                font: 'var(--type-caption)',
-                color: 'var(--text-tertiary)',
-                textAlign: 'right',
-              }}
-            >
-              {dirty
-                ? 'Unsaved draft — body only'
-                : previewable
-                  ? 'Saved template, rendered by StageStack'
-                  : 'Nothing saved yet'}
-            </span>
-          </div>
+            {previewStatus}
+          </p>
 
           <div style={previewSubject}>
             <span
@@ -267,29 +313,19 @@ export function TemplateEditorDialog({
               Subject
             </span>
             <span style={{ font: 'var(--type-label)' }}>
-              {dirty ? draftSubject : (saved?.subject ?? '—')}
+              {preview?.subject ?? '—'}
             </span>
           </div>
 
           <PreviewFrame
-            html={dirty ? draftHtml : (saved?.html ?? '')}
+            html={preview?.html ?? ''}
             empty={
-              dirty
-                ? 'Nothing to preview yet.'
-                : previewable
-                  ? 'Rendering…'
-                  : 'Save the template to see it as StageStack sends it.'
+              previewable
+                ? 'Rendering…'
+                : 'Save the template to see it as StageStack sends it.'
             }
           />
-
-          <p
-            style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)' }}
-          >
-            Rendered against sample data through the same substitution a real
-            send uses. Saving refreshes this with StageStack&rsquo;s own
-            rendering, branded shell included.
-          </p>
-        </div>
+        </section>
       </div>
     </Dialog>
   )
@@ -330,6 +366,7 @@ function PreviewFrame({ html, empty }: { html: string; empty: string }) {
   )
 }
 
+// Editor above, preview below on a phone; side by side once there is room.
 const editorGrid: React.CSSProperties = {
   display: 'grid',
   gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 22rem), 1fr))',
