@@ -1,24 +1,20 @@
 // The session roster's URL vocabulary (W8).
 //
-// Content approval is the one session-level gate that holds publication back
-// without anyone being told, so "4 sessions have Draft content" needs to land
-// on those four rather than on the whole roster.
+// The parser itself moved to `convex/shared/viewParams.ts` in W2, so a saved
+// view's stored params are validated by the SAME function the route validates
+// with. This module is the route's door to it, plus the one predicate that
+// only the client needs.
 
-export const CONTENT_FILTERS = ['draft', 'approved'] as const
-export type ContentFilter = (typeof CONTENT_FILTERS)[number]
+import type { ContentFilter } from '@convex/shared/viewParams'
 
-export type SessionsSearch = { content?: ContentFilter }
-
-/** Route-level validateSearch: unknown params are dropped, never trusted. */
-export function parseSessionsSearch(
-  input: Record<string, unknown>,
-): SessionsSearch {
-  const content = input.content
-  return typeof content === 'string' &&
-    (CONTENT_FILTERS as ReadonlyArray<string>).includes(content)
-    ? { content: content as ContentFilter }
-    : {}
-}
+export {
+  CONTENT_FILTERS,
+  parseSessionsSearch,
+} from '@convex/shared/viewParams'
+export type {
+  ContentFilter,
+  SessionsSearch,
+} from '@convex/shared/viewParams'
 
 /** Legacy rows carry no contentStatus; they were always served, so absence
  * reads as approved — the same fallback the backend uses. */

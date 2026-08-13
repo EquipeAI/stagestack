@@ -26,6 +26,8 @@ import {
   matchesState,
   parseSpeakersSearch,
 } from '~/components/speakers/search'
+import { SavedViewsMenu } from '~/components/views/SavedViewsMenu'
+import { paramsFromSearch } from '~/components/views/model'
 import { visibleFilters } from '~/lib/filters'
 
 // The speaker roster (SPK-01): every publishable snapshot on the event, with
@@ -185,8 +187,8 @@ function Speakers() {
       }}
     >
       <Toolbar
-        // Slot order (W12): search · filters. There is no saved view, column
-        // picker or export on the roster, and none is invented here.
+        // Slot order (W12): search · filters · saved view (W2). There is no
+        // column picker or export on the roster, and none is invented here.
         left={
           <span
             style={{
@@ -221,6 +223,17 @@ function Speakers() {
                     ? undefined
                     : (e.target.value as ParticipantState),
                 )
+              }}
+            />
+            <SavedViewsMenu
+              eventSlug={eventSlug}
+              module="speakers"
+              params={paramsFromSearch(params)}
+              onApply={(next) => {
+                void navigate({
+                  search: () => parseSpeakersSearch(next),
+                  replace: true,
+                })
               }}
             />
             <span

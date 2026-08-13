@@ -33,6 +33,8 @@ import {
   matchesContent,
   parseSessionsSearch,
 } from '~/components/sessions/search'
+import { SavedViewsMenu } from '~/components/views/SavedViewsMenu'
+import { paramsFromSearch } from '~/components/views/model'
 import { visibleFilters } from '~/lib/filters'
 
 // The event's sessions (M2). A session is what a proposal becomes once it is
@@ -72,7 +74,8 @@ function Sessions() {
     api.readiness.publication,
     isOrganizer ? { eventSlug } : 'skip',
   )
-  const { content } = Route.useSearch()
+  const search = Route.useSearch()
+  const { content } = search
   const navigate = Route.useNavigate()
   // Filter changes REPLACE: narrowing the roster is a view of this page, not a
   // journey to another one, so back still returns to wherever the organizer
@@ -160,8 +163,9 @@ function Sessions() {
       }}
     >
       <Toolbar
-        // Slot order (W12): filters first — the roster has no free-text
-        // search, no saved views and no export, and none is invented here.
+        // Slot order (W12): filters, then the saved-view picker (W2). The
+        // roster still has no free-text search and no export, and none is
+        // invented here.
         left={
           <span
             style={{
@@ -171,6 +175,14 @@ function Sessions() {
               gap: 'var(--space-3)',
             }}
           >
+            <SavedViewsMenu
+              eventSlug={eventSlug}
+              module="sessions"
+              params={paramsFromSearch(search)}
+              onApply={(next) => {
+                void navigate({ search: () => parseSessionsSearch(next), replace: true })
+              }}
+            />
             <Select
               size="sm"
               aria-label="Filter by content approval"

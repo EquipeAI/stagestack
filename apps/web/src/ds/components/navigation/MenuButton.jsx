@@ -23,6 +23,11 @@ export function MenuButton({
   disabled = false,
   items = [],
   className = "",
+  // The trigger's own accessible name (W2). A menu whose label is a value —
+  // "Inbox", a view name, a selected filter — reads as that word and nothing
+  // else, so the caller can say what the word IS. Taken off `rest` on purpose:
+  // it belongs to the button, not to the wrapper.
+  "aria-label": ariaLabel,
   ...rest
 }) {
   const [open, setOpen] = React.useState(false);
@@ -138,7 +143,9 @@ export function MenuButton({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        aria-label={typeof label === "string" ? undefined : "More actions"}
+        aria-label={
+          ariaLabel ?? (typeof label === "string" ? undefined : "More actions")
+        }
         onClick={() => setOpen((v) => !v)}
         onKeyDown={(e) => {
           if (open || e.key !== "ArrowDown") return;

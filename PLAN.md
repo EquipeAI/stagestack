@@ -135,19 +135,36 @@ expert-grade — and makes every reviewer's "where is X?" self-answering.
 Finishes what W12 started: table state already lives in typed
 `validateSearch` URLs; make that state nameable, savable, and shareable.
 
-- [ ] **Persistence**: `savedViews` table (event-scoped, per-user, named,
+- [x] **Persistence**: `savedViews` table (event-scoped, per-user, named,
       module + serialized search params) with capability wrappers; validate
       params through the destination route's real `validateSearch` on save
       (the `links.test.ts` pattern) so a stored view can never point at a
-      dropped param.
-- [ ] **UI**: the existing `Toolbar` saved-view slot becomes real — save
+      dropped param. (Done by MOVING each route's parser into
+      `convex/shared/viewParams.ts` — the routes re-export it — so the
+      route's `validateSearch` and the stored-params check are one function
+      rather than two that agree by maintenance. Params are re-parsed on the
+      way out too: a row can outlive the vocabulary it was written against in
+      a way a URL cannot. Role gates the module on READ and WRITE, from the
+      same map the rail's `requires: 'organizer'` uses.)
+- [x] **UI**: the existing `Toolbar` saved-view slot becomes real — save
       current view, rename, delete, set as my default for this table; a
       shared view is just its URL (copy button), since the state is already
-      in the address bar.
-- [ ] **Decisions entry stays a saved view** (W7 decision 6) — migrate it to
-      this mechanism rather than keeping a bespoke filter link.
-- *Mobile*: view picker in the toolbar overflow; card-list rendering (W12)
-  honors the same params.
+      in the address bar. (One `components/views/SavedViewsMenu` over the DS
+      `MenuButton`, on the four module tables that have a Toolbar: proposals,
+      sessions, speakers, tasks. Reviews and Agenda have no toolbar to put it
+      in — the backend supports both modules, the picker is not drawn there.
+      Also added: "update this view to what is on screen", separate from
+      rename so neither silently does the other's job.)
+- [x] **Decisions entry stays a saved view** (W7 decision 6) — migrate it to
+      this mechanism rather than keeping a bespoke filter link. (It is now a
+      code-level PRESET in `convex/shared/viewParams.ts`; `DECISIONS_SEARCH`
+      in the nav and the "Decisions" row in the proposals picker read that one
+      definition. The old `BUILT_IN_VIEWS` list is derived from the presets,
+      and its "Queues" entry is that preset renamed to Decisions.)
+- *Mobile*: the picker is one compact menu button; the `Toolbar` has no
+  overflow container — it WRAPS below 640px (`layout.css:37`) — so the picker
+  takes its own line rather than being hidden behind a second menu. Card-list
+  rendering (W12) honors the same params, unchanged.
 
 ## W3 — Message composer: tokens + live preview
 

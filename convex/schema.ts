@@ -971,6 +971,30 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_eventId_and_target", ["eventId", "targetType", "targetId"]),
 
+  // ── Saved views (W2) ─────────────────────────────────────────────────
+  // A named set of URL search params for one module table, owned by one user
+  // on one event. Private by construction: there is no share model and no
+  // permission field, because a shared view is just its URL — which carries
+  // the params and never this row's id.
+  //
+  // `params` is validated against the destination module's own parser
+  // (convex/shared/viewParams.ts) on every write AND re-validated on read, so
+  // a row cannot outlive the vocabulary it was written against.
+  savedViews: defineTable({
+    eventId: v.id("events"),
+    userId: v.id("users"),
+    // A ViewModule (convex/shared/viewParams.ts). Stored as a string so an
+    // unknown value is a refused read rather than a schema error on a table
+    // full of preferences.
+    module: v.string(),
+    name: v.string(),
+    params: v.record(v.string(), v.string()),
+    // Absent means "not my default". At most one per (event, user, module).
+    isDefault: v.optional(v.boolean()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_eventId_and_userId_and_module", ["eventId", "userId", "module"]),
+
   // ── Comms log (starts M1; grows in M5) ───────────────────────────────
   // Every email StageStack sends is recorded here; the Resend webhook
   // updates deliveryStatus by resendEmailId.

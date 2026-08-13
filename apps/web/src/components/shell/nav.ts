@@ -1,3 +1,5 @@
+import { DECISIONS_PRESET } from '@convex/shared/viewParams'
+
 // The event shell's navigation vocabulary (W7).
 //
 // Everything about "where can I go inside an event" lives here as data and
@@ -61,15 +63,18 @@ export const LEGACY_TAB_PATHS = {
 } as const
 
 /**
- * The Select group's Decisions entry is a saved view of Proposals, not a
- * fifteenth module (decision 6): the staged queues are exactly the two
- * reversible states, and the proposals route's own `validateSearch` already
- * speaks them (`BUILT_IN_VIEWS`' "Queues"). No search vocabulary was added.
+ * The Select group's Decisions entry is a view of Proposals, not a fifteenth
+ * module (decision 6). W2 finished the job: it is now a PRESET of the saved-view
+ * mechanism (`convex/shared/viewParams.ts`), rendered by the same picker as
+ * every view an organizer names for themselves — non-deletable, not stored per
+ * user, and defined exactly once. This entry and that picker read the same row,
+ * so the rail and the table can no longer disagree about what Decisions means.
  */
-export const DECISIONS_STATUSES = ['acceptQueue', 'declineQueue'] as const
-export const DECISIONS_SEARCH = {
-  status: DECISIONS_STATUSES.join(','),
-} as const
+export const DECISIONS_SEARCH: { status: string } = {
+  status: DECISIONS_PRESET.params.status,
+}
+
+const DECISIONS_STATUSES = DECISIONS_SEARCH.status.split(',')
 
 /** True when a proposals URL is showing exactly the staged-decision queues. */
 export function isDecisionsView(search: { status?: string } | undefined) {

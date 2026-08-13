@@ -1,4 +1,5 @@
 import { allFields } from '@convex/shared/formDef'
+import { parseProposalsSearch, presetsFor } from '@convex/shared/viewParams'
 import type { AnswerValue, FormDef, SystemKey } from '@convex/shared/formDef'
 import type { Doc, Id } from '@convex/_generated/dataModel'
 
@@ -104,7 +105,13 @@ export type TableState = {
   cols: Array<ColumnId>
 }
 
-/** The URL shape. Every key is optional so a default view has a clean URL. */
+/**
+ * The URL shape. Every key is optional so a default view has a clean URL.
+ *
+ * Spelled with the table's own key types (a `SortKey`, not any string) while
+ * the PARSER is the shared one — the values are identical, and this way the
+ * route keeps the narrow types it sorts with.
+ */
 export type AbstractsSearch = {
   q?: string
   status?: string
@@ -116,35 +123,15 @@ export type AbstractsSearch = {
 export const DEFAULT_SORT: SortKey = 'submittedAt'
 export const DEFAULT_DIR: SortDir = 'desc'
 
-function str(value: unknown): string | undefined {
-  return typeof value === 'string' && value !== '' ? value : undefined
-}
-
 /** Route-level validateSearch: unknown params are dropped, never trusted. */
-export function parseSearch(input: Record<string, unknown>): AbstractsSearch {
-  const out: AbstractsSearch = {}
-  const q = str(input.q)
-  if (q !== undefined) out.q = q.slice(0, 200)
-  const status = str(input.status)
-  if (status !== undefined) {
-    const list = status.split(',').filter(isProposalStatus)
-    if (list.length > 0) out.status = list.join(',')
-  }
-  const sort = str(input.sort)
-  if (sort !== undefined && ALL_COLUMN_IDS.includes(sort as ColumnId)) {
-    out.sort = sort as SortKey
-  }
-  const dir = str(input.dir)
-  if (dir === 'asc' || dir === 'desc') out.dir = dir
-  const cols = str(input.cols)
-  if (cols !== undefined) {
-    const list = cols
-      .split(',')
-      .filter((c): c is ColumnId => ALL_COLUMN_IDS.includes(c as ColumnId))
-    if (list.length > 0) out.cols = list.join(',')
-  }
-  return out
-}
+export const parseSearch = parseProposalsSearch as (
+  input: Record<string, unknown>,
+) => AbstractsSearch
+
+// The table's vocabulary (COLUMNS, STATUS_ORDER) and the shared parser's must
+// stay ONE vocabulary — a column added here and not there would make a saved
+// view silently drop a sort the organizer can still perform. Asserted in
+// `components/views/savedViews.test.ts`.
 
 /** URL params + the organizer's stored column preference → the live state. */
 export function stateFromSearch(
@@ -183,24 +170,19 @@ export function searchFromState(state: TableState): AbstractsSearch {
 
 export type ViewDef = { name: string; search: AbstractsSearch }
 
-export const BUILT_IN_VIEWS: Array<ViewDef> = [
-  { name: 'All', search: {} },
-  { name: 'Inbox', search: { status: 'pending' } },
-  { name: 'Queues', search: { status: 'acceptQueue,declineQueue' } },
-  { name: 'Released', search: { status: 'accepted,declined' } },
-  { name: 'Withdrawn', search: { status: 'withdrawn' } },
-]
+/**
+ * The presets, read from the one definition every module shares (W2).
+ *
+ * They used to be a list in this file; the Decisions nav entry used to be a
+ * separate hard-coded deep link. Both are now the same `presetsFor('proposals')`
+ * row, so the entry in the rail and the entry in the view picker cannot drift.
+ */
+export const BUILT_IN_VIEWS: Array<ViewDef> = presetsFor('proposals').map(
+  (preset) => ({ name: preset.name, search: parseSearch(preset.params) }),
+)
 
-/** Two views are the same view when they filter and sort the same way. */
-export function sameView(a: AbstractsSearch, b: AbstractsSearch) {
-  return (
-    (a.q ?? '') === (b.q ?? '') &&
-    (a.status ?? '') === (b.status ?? '') &&
-    (a.sort ?? DEFAULT_SORT) === (b.sort ?? DEFAULT_SORT) &&
-    (a.dir ?? DEFAULT_DIR) === (b.dir ?? DEFAULT_DIR) &&
-    (a.cols ?? '') === (b.cols ?? '')
-  )
-}
+// "Is this view that view?" moved to `convex/shared/viewParams.ts` (W2's
+// `sameParams`), where the picker, the presets and the backend all read it.
 
 // ── Answers ──────────────────────────────────────────────────────────────
 
@@ -383,7 +365,9 @@ export function bulkErrorMessage(code: string | undefined) {
 
 // ── Stored preferences ───────────────────────────────────────────────────
 
-const VIEWS_KEY = 'stagestack.abstracts.views'
+// Columns are a rendering preference of this browser. Saved VIEWS used to live
+// here too; W2 moved them to the `savedViews` table, where they follow the
+// person to their other machine and can carry a default.
 const COLUMNS_KEY = 'stagestack.abstracts.columns'
 
 function read<T>(key: string): T | null {
@@ -403,25 +387,6 @@ function write(key: string, value: unknown) {
   } catch {
     // A full or blocked storage costs the organizer a preference, not a table.
   }
-}
-
-export function loadSavedViews(eventSlug: string): Array<ViewDef> {
-  const stored = read<unknown>(`${VIEWS_KEY}.${eventSlug}`)
-  if (!Array.isArray(stored)) return []
-  const out: Array<ViewDef> = []
-  for (const entry of stored as Array<Record<string, unknown>>) {
-    const name = entry.name
-    const search = entry.search
-    if (typeof name !== 'string' || name === '') continue
-    if (typeof search !== 'object' || search === null) continue
-    // Re-validated on read: stored JSON is as untrusted as a URL.
-    out.push({ name, search: parseSearch(search as Record<string, unknown>) })
-  }
-  return out
-}
-
-export function storeSavedViews(eventSlug: string, views: Array<ViewDef>) {
-  write(`${VIEWS_KEY}.${eventSlug}`, views)
 }
 
 export function loadStoredColumns(eventSlug: string): Array<ColumnId> | null {
