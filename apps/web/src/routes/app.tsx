@@ -49,8 +49,17 @@ function AppLayout() {
           borderBottom: 'var(--space-px) solid var(--border-default)',
         }}
       >
-        <Link to="/app" style={{ display: 'flex', alignItems: 'center' }}>
-          <Logo size={18} />
+        {/* The wordmark costs 104px of a 375px bar [measured], which is most of
+            what the event title needs. Below 640px the mark alone stands in for
+            it — the same collapsed-sidebar affordance the DS already ships —
+            and one of the two is always hidden, so the link keeps one name. */}
+        <Link to="/app" className="topbar__home">
+          <span className="topbar__logo topbar__logo--full">
+            <Logo size={18} />
+          </span>
+          <span className="topbar__logo topbar__logo--mark" aria-hidden="true">
+            <Logo size={18} wordmark={false} />
+          </span>
         </Link>
         <Show when="signed-in">
           <span

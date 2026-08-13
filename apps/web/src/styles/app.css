@@ -383,7 +383,12 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  max-width: 18rem;
+  /* `100%` is the half that matters: a <button> sizes to fit its CONTENT when
+     width is auto, so the trigger kept its full 160px inside a .switcher the
+     topbar had already shrunk to 39px [measured at 375px] and printed the
+     title straight across the search button. The cap is what makes
+     .switcher__label's ellipsis reachable at all. */
+  max-width: min(18rem, 100%);
   min-width: 0;
   height: var(--row-height-sm);
   padding: 0 var(--space-2);
@@ -468,6 +473,53 @@
   padding: var(--space-2);
   font: var(--type-caption);
   color: var(--text-tertiary);
+}
+
+/* ── Topbar, on a phone ───────────────────────────────────────────────────
+   The bar is one row at every width: logo, event switcher, search, account.
+   At 375px those wanted 104 + 7 + 160 + 86 + 28 px plus five gaps against 343
+   of usable width, and the overflow landed the search button on top of the
+   event title [measured].
+
+   Two things give the title its room back below 640px — the same breakpoint
+   the page gutters and card layouts already turn on — and neither of them
+   removes anything you could act on:
+     · the wordmark becomes the mark alone (a DS affordance, `wordmark={false}`);
+     · the search button drops its word and keeps its icon. `aria-label`
+       ("Search StageStack") was always its accessible name, so nothing about
+       it changes for a screen reader, and ⌘K is unaffected.
+   Between them the switcher goes from 39px to about 180px, which fits the
+   whole of a title like "DevFlow Conf 2027" — and if a longer one does not,
+   `.switcher__label` ellipsises inside its own box instead of over a
+   neighbour. */
+.topbar__home {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+.topbar__logo {
+  display: flex;
+  align-items: center;
+}
+.topbar__logo--mark {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .topbar__logo--full {
+    display: none;
+  }
+  .topbar__logo--mark {
+    display: flex;
+  }
+  /* Icon-only: the DS's own square padding for a --sm control, not a width,
+     so the button stays exactly as tall and as tappable as it was. */
+  .topbar__search {
+    padding-inline: var(--space-2);
+  }
+  .topbar__search-label {
+    display: none;
+  }
 }
 
 /* ── File chooser ─────────────────────────────────────────────────────────

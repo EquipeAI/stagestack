@@ -63,6 +63,7 @@ export function GlobalSearch() {
   return (
     <>
       <Button
+        className="topbar__search"
         size="sm"
         variant="secondary"
         iconLeft="search"
@@ -73,7 +74,11 @@ export function GlobalSearch() {
           setOpen(true)
         }}
       >
-        Search
+        {/* The word goes below 640px, the button does not: 86px of a 375px bar
+            was landing on top of the event title [measured]. The icon carries
+            it there, and `aria-label` — which was always the accessible name,
+            never this text — is what a screen reader reads at every width. */}
+        <span className="topbar__search-label">Search</span>
       </Button>
       {open ? (
         <Palette

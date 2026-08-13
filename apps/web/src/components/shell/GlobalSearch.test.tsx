@@ -175,6 +175,22 @@ describe('opening it', () => {
     expect(screen.getByRole('dialog')).toBeTruthy()
   })
 
+  it('keeps its name when the word collapses on a phone', () => {
+    // REGRESSION (browser walk, W1): the 86px button landed on top of the
+    // event title at 375px [measured]. Below 640px `.topbar__search-label` is
+    // display:none, so the word has to be a separate element — and the
+    // accessible name has to come from `aria-label`, never from that word, or
+    // the collapse would take the name with it.
+    render(<GlobalSearch />)
+    const button = screen.getByRole('button', { name: 'Search StageStack' })
+    expect(button.getAttribute('aria-label')).toBe('Search StageStack')
+    expect(button.className).toContain('topbar__search')
+    const word = button.querySelector('.topbar__search-label')
+    expect(word?.textContent).toBe('Search')
+    // The icon is what remains once the word is hidden: it is not the label.
+    expect(button.querySelector('svg')).toBeTruthy()
+  })
+
   it('opens on Cmd-K and on Ctrl-K', () => {
     render(<GlobalSearch />)
     fireEvent.keyDown(document, { key: 'k', metaKey: true })
