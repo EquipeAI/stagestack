@@ -16,6 +16,12 @@ Previous plans: [UX maturity cycle M8–M9](docs/PLAN-2026-08-ux-maturity.md) ·
 [eval fix cycle](docs/PLAN-2026-08-eval-fix.md) ·
 [original build M0–M8](docs/PLAN-2026-08-submission.md)
 
+**Challenge deadline update (Aug 13):** the organizers opened an optional
+working window until **Sunday, Aug 16, 2026**, and posted the submission form
+— see [docs/CHALLENGE.md](docs/CHALLENGE.md) "Post-deadline update". That
+makes the loose ends below time-boxed: anything we want judged must be live
+by then, and the form itself still needs submitting (Alvaro).
+
 ## Loose ends carried from the last cycle
 
 Open items from the archived plan that are not part of any new milestone —
