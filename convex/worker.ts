@@ -281,11 +281,23 @@ export const sweepExpiredLeases = internalMutation({
 // ── Import agent endpoints (secret-guarded; authority resolved from the
 // job's initiating user server-side — the worker never names a user) ──────
 
-export const importContext = query({
+// Deliberately a MUTATION despite reading nothing but state: it is the widest
+// read on the worker surface (a signed file URL + the library + up to 500
+// contacts + 500 proposals per call), so it has to CONSUME the shared budget,
+// not merely observe it. A query can only `check` (no writes), which would
+// leave the amplification path effectively uncapped until unrelated worker
+// mutations happened to burn the bucket — that is exactly the F3 finding.
+// Nothing subscribes to it: the worker calls it once per import-plan job
+// (apps/worker/src/index.ts), so reactivity is worth nothing here.
+export const importContext = mutation({
   args: { secret: v.string(), jobId: v.id("jobs") },
   returns: vImportContext,
   handler: async (ctx, args) => {
     assertWorker(args.secret);
+    // Same shared bucket as every other worker endpoint (see `workerLimiter`).
+    if (!(await workerLimiter.limit(ctx, "workerCalls")).ok) {
+      throw rateLimited();
+    }
     const job = await ctx.db.get("jobs", args.jobId);
     if (job === null || job.type !== "import-plan") {
       throw new ConvexError({ code: "not_found", message: "No such job." });

@@ -1,4 +1,6 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import { HOUR, RateLimiter } from "@convex-dev/rate-limiter";
+import { components } from "./_generated/api";
 import { eventMutation, eventQuery } from "./lib/functions";
 import { vv } from "./lib/validators";
 import * as Tasks from "./model/tasks";
@@ -214,10 +216,30 @@ export const setInstanceDue = eventMutation({
 
 // ── File evidence ────────────────────────────────────────────────────────
 
+// Minting an upload URL is a free write into storage the moment the holder
+// uses it, so an uncapped mint is a storage hole rather than mere load. Same
+// shape and reasoning as `imports.ts`'s `importUploadPerUser` (and the CFP /
+// portal mint caps): per-user rather than per-event, so one account can't fan
+// the same spend out across every event it belongs to. 20/hour matches the
+// import cap — far above an organizer attaching evidence by hand, including
+// retries.
+const uploadLimiter = new RateLimiter(components.rateLimiter, {
+  taskUploadPerUser: { kind: "token bucket", rate: 20, period: HOUR },
+});
+
 export const generateUploadUrl = eventMutation({
   args: {},
   returns: v.string(),
   handler: async (ctx) => {
+    const limit = await uploadLimiter.limit(ctx, "taskUploadPerUser", {
+      key: ctx.caller.user._id,
+    });
+    if (!limit.ok) {
+      throw new ConvexError({
+        code: "rate_limited",
+        message: "Too many uploads — try again in a little while.",
+      });
+    }
     return await ctx.storage.generateUploadUrl();
   },
 });

@@ -49,7 +49,9 @@ const handlers: {
   ping: async (job) => ({ pong: true, at: Date.now(), payload: job.payload }),
   "hello-agent": async (job) => await runHelloAgent(job._id),
   "import-plan": async (job) => {
-    const context = await client.query(api.worker.importContext, {
+    // A mutation, not a query: the deployment consumes worker rate-limit
+    // budget for this call (convex/worker.ts `importContext`).
+    const context = await client.mutation(api.worker.importContext, {
       secret,
       jobId: job._id,
     });

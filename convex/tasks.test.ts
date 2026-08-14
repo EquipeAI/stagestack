@@ -2116,6 +2116,31 @@ describe("file evidence", () => {
       organizerView.map((comment) => comment.createdAt),
     );
   });
+
+  test("generateUploadUrl is rate limited per user (F4)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+
+    // 20/hour, same bucket size as imports.generateUploadUrl. The 21st mint in
+    // the same hour is refused (no fake clock needed — the period never
+    // elapses mid-test).
+    for (let i = 0; i < 20; i++) {
+      expect(
+        await alice.mutation(api.tasks.generateUploadUrl, { eventSlug }),
+      ).toBeTypeOf("string");
+    }
+    await expectRejectedWith(
+      alice.mutation(api.tasks.generateUploadUrl, { eventSlug }),
+      "rate_limited",
+    );
+
+    // Per-user, so a second organizer of the same event has their own bucket.
+    const dave = await signIn(t, "dave");
+    await grantEventRole(t, eventSlug, "dave", "organizer");
+    expect(
+      await dave.mutation(api.tasks.generateUploadUrl, { eventSlug }),
+    ).toBeTypeOf("string");
+  });
 });
 
 // ── Portal task list ─────────────────────────────────────────────────────
