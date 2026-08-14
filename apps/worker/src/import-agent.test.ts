@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { ImportContext } from "../../../convex/shared/importPlan";
+import {
+  IMPORT_LIMITS,
+  type ImportContext,
+} from "../../../convex/shared/importPlan";
 import {
   HINT_PREVIEW,
   decodeTextFile,
+  downloadCapped,
   hintLine,
   parseImportFile,
   withDuplicateCaveat,
@@ -144,5 +148,68 @@ describe("duplicate-hint truncation", () => {
         context({ contacts: false, proposals: false }),
       ),
     ).toBe("Planned 12 records.");
+  });
+});
+
+describe("downloadCapped", () => {
+  const CAP = 1024;
+
+  /** A Response whose body streams `chunks` and declares `contentLength`. */
+  const streamed = (
+    chunks: Array<Uint8Array>,
+    contentLength?: number,
+  ): Response => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const headers = new Headers();
+    if (contentLength !== undefined) {
+      headers.set("content-length", String(contentLength));
+    }
+    return new Response(body, { headers });
+  };
+
+  it("reads a file under the cap unchanged", async () => {
+    const payload = new TextEncoder().encode("Talk title,Speaker\nA,B\n");
+    const out = await downloadCapped(
+      streamed([payload], payload.byteLength),
+      CAP,
+    );
+    expect(new TextDecoder().decode(out)).toBe("Talk title,Speaker\nA,B\n");
+  });
+
+  it("refuses on Content-Length, naming the declared size", async () => {
+    // A body of 8 bytes but a header claiming 4 MB: only the header check can
+    // produce this message, so asserting it proves we refused before reading.
+    const res = streamed([new Uint8Array(8)], 4 * 1024 * 1024);
+    await expect(downloadCapped(res, CAP)).rejects.toThrow(/this one is 4\.0 MB/);
+  });
+
+  it("refuses mid-stream when the header lies", async () => {
+    // The whole point of the second check: a small (or absent) Content-Length
+    // must not buy an unbounded body a free ride into the worker's heap.
+    const chunks = Array.from({ length: 4 }, () => new Uint8Array(400));
+    await expect(downloadCapped(streamed(chunks, 10), CAP)).rejects.toThrow(
+      /too large/i,
+    );
+  });
+
+  it("refuses an oversized body with no Content-Length at all", async () => {
+    const chunks = Array.from({ length: 4 }, () => new Uint8Array(400));
+    await expect(downloadCapped(streamed(chunks), CAP)).rejects.toThrow(
+      /too large/i,
+    );
+  });
+
+  it("names the real limit in the message", async () => {
+    await expect(
+      downloadCapped(
+        streamed([new Uint8Array(0)], IMPORT_LIMITS.maxFileBytes + 1),
+        IMPORT_LIMITS.maxFileBytes,
+      ),
+    ).rejects.toThrow(/10 MB/);
   });
 });

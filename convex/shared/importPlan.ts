@@ -126,4 +126,21 @@ export const IMPORT_LIMITS = {
   maxRecords: 500,
   maxRows: 300,
   executeBatch: 25,
+  // The byte ceiling for an uploaded import file (S5). ONE constant, because
+  // the two ends of this path have to agree: the browser refuses the file
+  // before it is ever stored, and the worker refuses the download before it
+  // buffers it. A 300-row sheet is kilobytes; 10 MB is far above any honest
+  // import and far below what would hurt the worker VM if someone points a
+  // storage URL at something enormous.
+  maxFileBytes: 10 * 1024 * 1024,
 };
+
+/** The one sentence both ends use when a file is over `maxFileBytes`. */
+export function importFileTooLargeMessage(bytes: number | null): string {
+  const cap = Math.round(IMPORT_LIMITS.maxFileBytes / (1024 * 1024));
+  const seen =
+    bytes === null
+      ? ""
+      : ` (this one is ${(bytes / (1024 * 1024)).toFixed(1)} MB)`;
+  return `Import file is too large${seen} — the limit is ${cap} MB.`;
+}

@@ -14,6 +14,7 @@ import { ensureFlue } from "./flue";
 import type { Id } from "../../../convex/_generated/dataModel";
 import {
   IMPORT_LIMITS,
+  importFileTooLargeMessage,
   type ImportContext,
   type ImportPlan,
   type ImportRecord,
@@ -393,6 +394,56 @@ export function withDuplicateCaveat(
   return `${summary} Note: this event has more existing ${partial.join(" and ")} than duplicate-checking reads in one pass, so some rows marked new may already exist — check before approving.`;
 }
 
+/**
+ * Read a response body into memory, refusing anything over `cap` (S5).
+ *
+ * Two checks, not one, because they fail differently:
+ *   · `Content-Length`, when present, refuses the file BEFORE a byte is read —
+ *     the cheap case, and the only one that saves the transfer;
+ *   · the streaming tally refuses it DURING the read, because the header is
+ *     supplied by whoever serves the URL and can be absent, chunked, or a lie.
+ *     Without it a 10 GB body with no `Content-Length` still lands in the
+ *     worker's heap and takes the VM down for every other job.
+ *
+ * The reader is cancelled on refusal so the socket isn't left draining.
+ */
+export async function downloadCapped(
+  res: Response,
+  cap: number,
+): Promise<ArrayBuffer> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > cap) {
+    throw new Error(importFileTooLargeMessage(declared));
+  }
+  const body = res.body;
+  if (body === null) return new ArrayBuffer(0);
+  const reader = body.getReader();
+  const chunks: Array<Uint8Array> = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > cap) {
+        // `total` is only the bytes read so far, so report the cap rather than
+        // a number that understates the file.
+        throw new Error(importFileTooLargeMessage(null));
+      }
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return out.buffer;
+}
+
 export async function runImportPlan(
   jobId: Id<"jobs">,
   context: ImportContext,
@@ -402,7 +453,10 @@ export async function runImportPlan(
   }
   const res = await fetch(context.fileUrl);
   if (!res.ok) throw new Error(`File download failed: ${res.status}`);
-  const table = parseImportFile(await res.arrayBuffer(), context.filename);
+  const table = parseImportFile(
+    await downloadCapped(res, IMPORT_LIMITS.maxFileBytes),
+    context.filename,
+  );
   if (table.rows.length === 0) {
     return {
       summary: "The file contained no data rows.",

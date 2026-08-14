@@ -6,10 +6,12 @@ import type { Id } from '@convex/_generated/dataModel'
 // The plan's shape is the same contract the executor re-validates against, so
 // the review UI reads it from convex/shared/importPlan.ts instead of restating
 // it — a field added to vImportRecord must not silently become invisible here.
-import type {
-  ExecutionReport,
-  ImportPlan,
-  PlannedRecord,
+import {
+  IMPORT_LIMITS,
+  importFileTooLargeMessage,
+  type ExecutionReport,
+  type ImportPlan,
+  type PlannedRecord,
 } from '@convex/shared/importPlan'
 import { ActionResult, Badge, Button, Callout, Card, Checkbox, DescriptionList, EmptyState, Tag, Textarea } from '~/ds'
 import { usePending } from '~/lib/usePending'
@@ -239,6 +241,10 @@ function UploadView({
 
   const submit = () => {
     if (file === null) return setError('Choose a CSV or spreadsheet first.')
+    // Same constant the worker enforces on download (S5): refusing here means
+    // the file is never stored at all, not rejected minutes later at plan time.
+    if (file.size > IMPORT_LIMITS.maxFileBytes)
+      return setError(importFileTooLargeMessage(file.size))
     void run(async () => {
       const url = await generateUploadUrl({ eventSlug })
       const res = await fetch(url, {

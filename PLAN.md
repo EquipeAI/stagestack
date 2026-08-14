@@ -326,7 +326,15 @@ so the next cycle starts from a plan, not a memory.
 
 ## C1 — Close the exploit path (before Sunday)
 
-- [ ] **F1: bind invitation acceptance to the invited email.**
+- [x] **F1: bind invitation acceptance to the invited email.**
+      (DONE 2026-08-13. Binds to the LIVE `ctx.auth` identity with
+      `emailVerified === true` required — not the stored `users.email`, which
+      users.ts itself marks "NEVER an authorization key" (codex caught this;
+      the fix follows `portal.enterPortal` exactly). Unverified gets its own
+      `email_unverified` code, checked BEFORE the address comparison so the
+      two codes are not an address oracle. Mismatch leaves the invite pending,
+      writes nothing. Four negatives in team.test.ts incl. unverified-match
+      and stale-stored-email.)
       `convex/model/team.ts` `acceptInvitation` (216–293) must compare the
       redeeming user's verified email against `invite.email`
       (case-insensitive) and refuse with a clear ConvexError naming the
@@ -338,13 +346,19 @@ so the next cycle starts from a plan, not a memory.
       the diff, not silently: whether a mismatch marks the invite spent or
       leaves it pending (leaning pending — a wrong account trying must not
       burn the right account's invite).
-- [ ] **S2: stop serializing the Clerk JWT into the SSR payload.**
+- [x] **S2: stop serializing the Clerk JWT into the SSR payload.**
+      (DONE 2026-08-13. Exactly the predicted one-line return change;
+      `setAuth` untouched; comment states the serialization constraint.)
       `apps/web/src/routes/__root.tsx:189-196` — drop `token` from the
       `beforeLoad` return (`setAuth(token)` already ran above it). Verified:
       nothing outside `__root.tsx` consumes route-context `token`, so this is
       one line plus the `ClerkAuth` type. Check the app still hydrates
       signed-in (the Convex client re-auths via `useAuth`, not this field).
-- [ ] **S3 rider: `https` floor for non-loopback hosts.**
+- [x] **S3 rider: `https` floor for non-loopback hosts.**
+      (DONE 2026-08-13. The proto header may only select http for loopback;
+      the old test asserting the downgrade was rewritten into floor cases.
+      Ruled with codex: an `http:` SITE_URL stays accepted — operator config
+      is not attacker input; judgment recorded on `configuredOrigin`.)
       `apps/web/src/lib/origin.ts:71-78` currently honors a client-supplied
       `x-forwarded-proto: http`; behind Vercel the edge overwrites it, but
       the code shouldn't depend on that. Only `LOOPBACK_HOSTS` may resolve to
@@ -355,18 +369,40 @@ so the next cycle starts from a plan, not a memory.
 
 Both fixes copy patterns already in the tree — no design work, just parity.
 
-- [ ] **F3: `worker.importContext` joins the limiter.** `convex/worker.ts`
+- [x] **F3: `worker.importContext` joins the limiter.**
+      (DONE 2026-08-13. Two rounds: `check()` parity first, then codex
+      observed a query only OBSERVES the bucket — so importContext became a
+      mutation that `.limit()`s like its siblings (sole call site is one-shot
+      in apps/worker/index.ts, no subscription semantics to lose). The test
+      proves consumption: refusal is reachable with no other worker call
+      spending.) `convex/worker.ts`
       284–351 is the only worker endpoint without a `workerLimiter` check
       (the sibling endpoints throw `rateLimited()` — see worker.ts:120/143/
       171/194/376). Same key shape as its siblings.
-- [ ] **F4: cap `tasks.generateUploadUrl`.** `convex/tasks.ts:217-223` mints
+- [x] **F4: cap `tasks.generateUploadUrl`.**
+      (DONE 2026-08-13. 20/HOUR token bucket keyed on the user, matching
+      `importUploadPerUser`; same `rate_limited` error shape as CFP/portal.
+      Test: 20 mint, 21st refused, a second user unaffected.) `convex/tasks.ts:217-223` mints
       storage upload URLs with no ceiling; `imports.ts:28` (`importLimiter`,
       per-user per-hour) is the pattern for exactly this shape. Key on the
       calling user.
 
 ## C3 — Web/worker hardening (next cycle; docs-first)
 
-- [ ] **S1: security headers.** CSP (report-only first), HSTS,
+- [x] **S1: security headers.** (DONE 2026-08-13, pulled forward — docs-first
+      research landed `apps/web/vercel.json` over nitro routeRules (nitro's
+      generated header routes lack `continue: true` and would shadow its own
+      asset routes) and over Start middleware (CDN-served assets never invoke
+      the function). CSP is REPORT-ONLY; HSTS without `preload` (one-way
+      door); XFO DENY everywhere except `/embed/*`, which external sites
+      iframe by design. Clerk's six required directives verified per-directive
+      against their current CSP doc; their `script-src https: http:`
+      recommendation and dev-only `'unsafe-eval'` deliberately NOT copied,
+      pinned by negative tests. KNOWN enforce-blocker, documented in
+      vite.config.ts: ClerkProvider mounts on `/embed/*`, so the strict embed
+      policy is a measurement tool until a root-layout split. STILL TO VERIFY
+      on a preview deploy: `curl -sI` a document route AND a hashed asset —
+      local green cannot prove Vercel merged the file.) CSP (report-only first), HSTS,
       `X-Content-Type-Options`, `X-Frame-Options`/`frame-ancestors`,
       `Referrer-Policy` on the Vercel-served app. FRESH-DOCS-FIRST applies
       hard here: the right mechanism (nitro route rules vs `vercel.json`
@@ -374,13 +410,24 @@ Both fixes copy patterns already in the tree — no design work, just parity.
       Start/nitro docs, not memory — and the public program page + embed
       (`/api/events/*`, CORS-open by design) must keep working, so
       `frame-ancestors` needs the embed story decided, not defaulted.
-- [ ] **S5: byte-cap the worker's file download.**
+- [x] **S5: byte-cap the worker's file download.** (DONE 2026-08-13, pulled
+      forward. Finding en route: the upload path never had a byte limit
+      either, so there was no constant to share — created
+      `IMPORT_LIMITS.maxFileBytes` (10 MB) in convex/shared/importPlan.ts and
+      wired BOTH ends: the browser refuses before storing, the worker's
+      `downloadCapped` refuses on Content-Length when present AND on a
+      streaming tally because the header can lie; reader cancelled on
+      refusal. 5 worker tests incl. the lying-header case.)
       `apps/worker/src/import-agent.ts:403-404` buffers the whole body;
       check `Content-Length` when present AND enforce a streaming cap while
       reading (the header can lie). Cap should match whatever
       `imports.upload` already enforces at upload time — one shared constant,
       not two that agree by luck.
-- [ ] **S4: type the `location.search` read.**
+- [x] **S4: type the `location.search` read.** (DONE 2026-08-13, pulled
+      forward. `useSearch({ strict: false })` types `status` from the
+      proposals route's registered `parseProposalsSearch` — the W2 shared
+      parser — so dropping the param stops compilation instead of silently
+      reading undefined.)
       `apps/web/src/routes/app.e.$eventSlug.tsx:60` — replace the
       `as { status?: string }` cast with the route's real `validateSearch`
       types (the `convex/shared/viewParams.ts` parsers from W2 are the
