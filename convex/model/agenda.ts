@@ -562,6 +562,46 @@ export async function scheduleSession(
   });
 }
 
+/**
+ * A room, addressed the way anything outside StageStack has to address one:
+ * BY NAME. Room ids are meaningless to an agent, and `boardData` only ever
+ * emits names, so this is the inverse of the projection the board already
+ * publishes.
+ *
+ * Reads with `takeAll` at the same `LIBRARY_SCAN` the board uses, and for the
+ * same reason: name resolution is a read the ANSWER DEPENDS ON. A `.take()`
+ * here would turn "your room is past the ceiling" into "no such room", and —
+ * worse — would turn a duplicate name past the ceiling into a confident single
+ * match, silently placing a session in the wrong room. Refusing is the only
+ * honest failure. Matching folds case and surrounding space, because a name
+ * copied out of a board projection is user-typed text either way.
+ */
+export async function resolveRoomByName(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+  name: string,
+): Promise<Id<"rooms">> {
+  const rooms = await takeAll(
+    ctx.db.query("rooms").withIndex("by_eventId", (q) => q.eq("eventId", event._id)),
+    LIBRARY_SCAN,
+    "rooms",
+  );
+  const wanted = name.trim().toLowerCase();
+  const matches = rooms.filter(
+    (room) => room.name.trim().toLowerCase() === wanted,
+  );
+  if (matches.length === 0) {
+    notFound("room", "No such room on this event.");
+  }
+  if (matches.length > 1) {
+    throw new ConvexError({
+      code: "ambiguous_room",
+      message: `More than one room on this event is called "${matches[0].name}". Rename one, or place this session from the agenda board.`,
+    });
+  }
+  return matches[0]._id;
+}
+
 export type AgendaItemInput = {
   title: string;
   startsAt: number;

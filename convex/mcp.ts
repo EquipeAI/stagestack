@@ -2,17 +2,22 @@ import { ConvexError, v } from "convex/values";
 import { MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
 import { components } from "./_generated/api";
 import { internalMutation, internalQuery } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   type ApiKeyIdentity,
+  type EventCaller,
   apiKeyEventCaller,
   apiKeyOrgCaller,
   apiKeyScopedEvent,
   notFound,
   resolveCallerFromApiKey,
 } from "./lib/functions";
-import { vProposalStatus, vParticipantState } from "./lib/validators";
+import {
+  vProposalStatus,
+  vParticipantState,
+  vTaskStatus,
+} from "./lib/validators";
 import { vControlRow } from "./readiness";
 import { vAnswerValue } from "./shared/formDef";
 import * as ApiKeys from "./model/apiKeys";
@@ -24,6 +29,7 @@ import * as Readiness from "./model/readiness";
 import * as Reviews from "./model/reviews";
 import * as Search from "./model/search";
 import * as Sessions from "./model/sessions";
+import * as Tasks from "./model/tasks";
 
 // ─────────────────────────────────────────────────────────────────────────
 // The internal surface behind the hosted MCP endpoint (D2).
@@ -858,6 +864,355 @@ export const publishState = internalQuery({
         lineup: channel(diff.lineup),
         agenda: channel(diff.agenda),
       },
+    };
+  },
+});
+
+/**
+ * The review queue: speaker work that is sitting in front of an organizer.
+ *
+ * This exists because D3's two review tools need an id, and no other read tool
+ * emits one — `task_dashboard` counts obligations, it does not name them. A
+ * write tool an agent cannot address is not a thinner surface, it is a broken
+ * one, so the discovery half ships with the acting half.
+ *
+ * TRUNCATES rather than refuses: an event's whole task table can be thousands
+ * of rows, and a review queue is a worklist, not a fact about the event. The
+ * cap is named in the payload, as everywhere else here.
+ */
+export const TASK_REVIEW_CAP = 200;
+
+export const listTaskReviews = internalQuery({
+  args: { ...eventArgs, status: v.optional(vTaskStatus) },
+  returns: v.object({
+    eventSlug: v.string(),
+    status: vTaskStatus,
+    capped: v.boolean(),
+    note: v.optional(v.string()),
+    tasks: v.array(
+      v.object({
+        taskId: v.string(),
+        requirementTitle: v.string(),
+        sessionTitle: v.string(),
+        speakerName: v.optional(v.string()),
+        status: vTaskStatus,
+        evidence: v.union(
+          v.literal("file"),
+          v.literal("profileField"),
+          v.literal("manual"),
+        ),
+        reviewRequired: v.boolean(),
+        dueAt: v.number(),
+        uploadCount: v.number(),
+        reviewNote: v.optional(v.string()),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    const identity = await identify(ctx, args.presentedKey, args.now);
+    const caller = await apiKeyEventCaller(
+      ctx,
+      identity,
+      args.eventSlug,
+      "read",
+    );
+    // Default to the queue the tool exists for: work submitted and awaiting a
+    // decision. Any other status is asked for explicitly.
+    const status = args.status ?? "provided";
+    const { rows, capped } = await Tasks.reviewQueue(
+      ctx,
+      caller,
+      status,
+      TASK_REVIEW_CAP,
+    );
+    return {
+      eventSlug: caller.event.slug,
+      status,
+      capped,
+      note: capped
+        ? `More than ${TASK_REVIEW_CAP} tasks are in this state; this is the first ${TASK_REVIEW_CAP}, not the whole queue.`
+        : undefined,
+      tasks: rows.map((row) => ({
+        taskId: row.instanceId as string,
+        requirementTitle: row.requirementTitle,
+        sessionTitle: row.sessionTitle,
+        speakerName: row.speakerName,
+        status: row.status,
+        evidence: row.evidence,
+        reviewRequired: row.reviewRequired,
+        dueAt: row.dueAt,
+        uploadCount: row.uploadCount,
+        reviewNote: row.reviewNote,
+      })),
+    };
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Write tools (D3). Reversible, non-outbound-by-design writes only. What is
+// deliberately NOT here — outbound campaigns (`comms.sendBulkOutreach` /
+// `sendOneOff`), publishing (`publish.bulkPublish` / `setLineup`), contact
+// `merge`, and anything minting invitations or touching membership — is listed
+// in PLAN.md D3 so that nobody adds it by reflex. There is no toggle: the
+// absence of a tool is the mechanism.
+//
+// Four properties every one of these has, and none may quietly lose:
+//
+//  1. `intent: "write"`, so `assertCeilingAllows` refuses a read-ceiling key
+//     BEFORE a record is read. The ceiling is the whole point of the key.
+//  2. The capability in `convex/model/*` is called unchanged, so it re-checks
+//     `requireOrganizer` and `assertEventActive` against the minter's LIVE
+//     role. An organizer-ceiling key minted by someone since demoted to
+//     reviewer is refused by the model layer, not by anything here.
+//  3. The capability call is wrapped in `withAgentAudit`, which marks the
+//     audit rows the capability ACTUALLY WROTE with `viaAgent: true` and the
+//     key's prefix, in the same transaction. No tool writes an audit row of
+//     its own: one act stays one row, a call that changed nothing records
+//     nothing, and the flagged row carries the capability's normalized values
+//     rather than the tool's copy of its arguments. (See model/apiKeys.ts for
+//     the design and the first, wrong version of it.)
+//  4. `Date.now()` is read HERE, server-side. The read tools are told `now` by
+//     the action because a query must not read the clock; a mutation may, and
+//     a WRITE must never let the caller choose the instant its credential's
+//     expiry is measured against.
+//
+// Rate limiting needs nothing new and deliberately gets nothing new: the
+// per-key bucket is spent by `authenticate` in `convex/http.ts`, once per HTTP
+// REQUEST, before the SDK is handed the body — so a `tools/call` naming a write
+// tool has already paid exactly as a read would. Spending again in here would
+// charge one agent action twice and make the published "300 calls a minute"
+// mean two different things depending on which tool you picked.
+// ─────────────────────────────────────────────────────────────────────────
+
+const writeArgs = { presentedKey: v.string(), eventSlug: v.string() };
+
+/** Resolve the key for a write on one event. Refuses a read-ceiling key, a key
+ * scoped to another event, and a key whose minter's membership is gone. */
+async function writeCaller(
+  ctx: MutationCtx,
+  args: { presentedKey: string; eventSlug: string },
+): Promise<{ identity: ApiKeyIdentity; caller: EventCaller }> {
+  const identity = await resolveCallerFromApiKey(
+    ctx,
+    args.presentedKey,
+    Date.now(),
+  );
+  const caller = await apiKeyEventCaller(
+    ctx,
+    identity,
+    args.eventSlug,
+    "write",
+  );
+  return { identity, caller };
+}
+
+/** Agent-authored ids are text. Normalize rather than cast, so a malformed one
+ * is a registered refusal instead of a runtime surprise. */
+function requireId<T extends "sessions" | "taskInstances">(
+  ctx: MutationCtx,
+  table: T,
+  raw: string,
+  what: string,
+): Id<T> {
+  const id = ctx.db.normalizeId(table, raw);
+  if (id === null) notFound(what, `No such ${what} on this event.`);
+  return id;
+}
+
+/**
+ * Edit a session's content — the same capability the organizer's session
+ * editor calls, including its revision history, so an agent's edit is
+ * inspectable and restorable exactly like a human one.
+ */
+export const updateSessionContent = internalMutation({
+  args: {
+    ...writeArgs,
+    sessionId: v.string(),
+    title: v.optional(v.string()),
+    description: v.optional(v.string()),
+    format: v.optional(v.string()),
+    durationMinutes: v.optional(v.union(v.number(), v.null())),
+  },
+  returns: v.object({
+    eventSlug: v.string(),
+    sessionId: v.string(),
+    revisionRecorded: v.boolean(),
+    title: v.string(),
+    description: v.optional(v.string()),
+    format: v.optional(v.string()),
+    durationMinutes: v.optional(v.number()),
+    contentStatus: v.union(v.literal("draft"), v.literal("approved")),
+  }),
+  handler: async (ctx, args) => {
+    const { identity, caller } = await writeCaller(ctx, args);
+    const sessionId = requireId(ctx, "sessions", args.sessionId, "session");
+    const { result } = await ApiKeys.withAgentAudit(
+      ctx,
+      identity,
+      caller.event._id,
+      () =>
+        Sessions.updateContent(ctx, caller, sessionId, {
+          title: args.title,
+          description: args.description,
+          format: args.format,
+          durationMinutes: args.durationMinutes,
+        }),
+    );
+    const revisionId = result.revisionId;
+    // Read back rather than echo the request: what the agent is told is what
+    // the capability actually stored, after its own trimming and clamping.
+    const session = await ctx.db.get("sessions", sessionId);
+    if (session === null) notFound("session", "No such session on this event.");
+    return {
+      eventSlug: caller.event.slug,
+      sessionId: sessionId as string,
+      revisionRecorded: revisionId !== null,
+      title: session.title,
+      description: session.description,
+      format: session.format,
+      durationMinutes: session.durationMinutes,
+      contentStatus: session.contentStatus ?? ("approved" as const),
+    };
+  },
+});
+
+/** Shared projection for both review decisions: the task as it now stands. */
+const vTaskOutcome = v.object({
+  eventSlug: v.string(),
+  taskId: v.string(),
+  requirementTitle: v.string(),
+  sessionTitle: v.string(),
+  status: vTaskStatus,
+  reviewNote: v.optional(v.string()),
+});
+
+async function projectTask(
+  ctx: MutationCtx,
+  caller: EventCaller,
+  instanceId: Id<"taskInstances">,
+): Promise<{
+  eventSlug: string;
+  taskId: string;
+  requirementTitle: string;
+  sessionTitle: string;
+  status: Doc<"taskInstances">["status"];
+  reviewNote: string | undefined;
+}> {
+  const instance = await ctx.db.get("taskInstances", instanceId);
+  if (instance === null) notFound("task", "No such task on this event.");
+  const requirement = await ctx.db.get("requirements", instance.requirementId);
+  const session = await ctx.db.get("sessions", instance.sessionId);
+  return {
+    eventSlug: caller.event.slug,
+    taskId: instanceId as string,
+    requirementTitle: requirement?.title ?? "",
+    sessionTitle: session?.title ?? "",
+    status: instance.status,
+    reviewNote: instance.reviewNote,
+  };
+}
+
+/** Accept submitted speaker work. Sends nothing. */
+export const approveTask = internalMutation({
+  args: { ...writeArgs, taskId: v.string() },
+  returns: vTaskOutcome,
+  handler: async (ctx, args) => {
+    const { identity, caller } = await writeCaller(ctx, args);
+    const instanceId = requireId(ctx, "taskInstances", args.taskId, "task");
+    await ApiKeys.withAgentAudit(ctx, identity, caller.event._id, () =>
+      Tasks.approveInstance(ctx, caller, instanceId),
+    );
+    return await projectTask(ctx, caller, instanceId);
+  },
+});
+
+/**
+ * Send submitted speaker work back with a note.
+ *
+ * This one DOES notify: `Tasks.requestChanges` mails whoever owes the work
+ * (falling back to the session's manager, then the organizers), because a
+ * change request nobody is told about is not a change request. That is the
+ * capability's own rule, not something added for agents — and it is why the
+ * tool description says so in the first sentence rather than in a footnote.
+ */
+export const requestTaskChanges = internalMutation({
+  args: { ...writeArgs, taskId: v.string(), note: v.string() },
+  returns: vTaskOutcome,
+  handler: async (ctx, args) => {
+    const { identity, caller } = await writeCaller(ctx, args);
+    const instanceId = requireId(ctx, "taskInstances", args.taskId, "task");
+    // The note travels no further than the capability: it is what trims it,
+    // caps it, stores it and mails it, and its own audit row is what records
+    // the value it actually used.
+    await ApiKeys.withAgentAudit(ctx, identity, caller.event._id, () =>
+      Tasks.requestChanges(ctx, caller, instanceId, args.note),
+    );
+    return await projectTask(ctx, caller, instanceId);
+  },
+});
+
+/**
+ * Place a session on the board, or send it back to the unscheduled tray.
+ *
+ * Rooms are addressed BY NAME: a room id means nothing outside StageStack, and
+ * `agenda_board` — the read an agent uses to plan a move — only ever emits
+ * names. An unknown or ambiguous name is a refusal, never a silent placement
+ * in no room at all.
+ */
+export const scheduleSession = internalMutation({
+  args: {
+    ...writeArgs,
+    sessionId: v.string(),
+    slot: v.union(
+      v.object({
+        startsAt: v.number(),
+        endsAt: v.number(),
+        room: v.optional(v.string()),
+      }),
+      v.null(),
+    ),
+  },
+  returns: v.object({
+    eventSlug: v.string(),
+    sessionId: v.string(),
+    title: v.string(),
+    scheduled: v.boolean(),
+    startsAt: v.union(v.number(), v.null()),
+    endsAt: v.union(v.number(), v.null()),
+    room: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const { identity, caller } = await writeCaller(ctx, args);
+    const sessionId = requireId(ctx, "sessions", args.sessionId, "session");
+    const slot = args.slot;
+    const roomId =
+      slot === null || slot.room === undefined
+        ? undefined
+        : await Agenda.resolveRoomByName(ctx, caller.event, slot.room);
+    await ApiKeys.withAgentAudit(ctx, identity, caller.event._id, () =>
+      Agenda.scheduleSession(
+        ctx,
+        caller,
+        sessionId,
+        slot === null
+          ? null
+          : { startsAt: slot.startsAt, endsAt: slot.endsAt, roomId },
+      ),
+    );
+    const session = await ctx.db.get("sessions", sessionId);
+    if (session === null) notFound("session", "No such session on this event.");
+    const room =
+      session.roomId === undefined
+        ? null
+        : ((await ctx.db.get("rooms", session.roomId))?.name ?? null);
+    return {
+      eventSlug: caller.event.slug,
+      sessionId: sessionId as string,
+      title: session.title,
+      scheduled: session.startsAt !== undefined,
+      startsAt: session.startsAt ?? null,
+      endsAt: session.endsAt ?? null,
+      room,
     };
   },
 });

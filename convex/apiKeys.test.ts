@@ -10,12 +10,14 @@ import {
 } from "./lib/functions";
 import { sanitizeToolError } from "./lib/mcpServer";
 import { CONTACT_SCAN, PARTICIPANT_SCAN, SESSION_SCAN } from "./lib/readCaps";
+import { LIBRARY_SCAN } from "./model/agenda";
+import { TASK_REVIEW_CAP } from "./mcp";
 import { ORG_EVENT_SCAN } from "./model/events";
 import {
   LAST_USED_THROTTLE_MS,
   MAX_ACTIVE_KEYS_PER_ORG,
   MCP_GENERIC_REFUSAL,
-  agentAudit,
+  withAgentAudit,
 } from "./model/apiKeys";
 import {
   createEvent,
@@ -426,26 +428,75 @@ describe("resolveCallerFromApiKey", () => {
     );
   });
 
-  test("writes through the key path audit with viaAgent", async () => {
-    const { alice, orgSlug, t } = await fixture();
+  test("withAgentAudit marks what the capability wrote, and only that", async () => {
+    const { alice, orgSlug, eventSlug, t } = await fixture();
     const { plaintext } = await mint(alice, orgSlug);
-
-    await t.run(async (ctx) => {
-      const identity = await resolveCallerFromApiKey(ctx, plaintext, Date.now());
-      await agentAudit(ctx, identity, {
-        action: "session.updateContent",
-        targetType: "session",
-        targetId: "s1",
-      });
+    const eventId = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      return event!._id;
     });
 
-    const row = await t.run(async (ctx) =>
-      (await ctx.db.query("auditLog").collect()).find(
-        (r) => r.action === "session.updateContent",
-      ),
+    // A row that already exists is HISTORY: it must come back untouched, or
+    // the flag would retroactively blame an agent for a person's action.
+    const historic = await t.run(async (ctx) =>
+      ctx.db.insert("auditLog", {
+        orgId: (await ctx.db.get("events", eventId))!.orgId,
+        eventId,
+        actorUserId: (await ctx.db.query("users").first())!._id,
+        action: "event.updateSettings",
+      }),
     );
-    expect(row?.viaAgent).toBe(true);
-    expect(row?.actorUserId).toBeDefined();
+
+    const marked = await t.run(async (ctx) => {
+      const identity = await resolveCallerFromApiKey(ctx, plaintext, Date.now());
+      return await withAgentAudit(ctx, identity, eventId, async () => {
+        await ctx.db.insert("auditLog", {
+          orgId: identity.key.orgId,
+          eventId,
+          actorUserId: identity.user._id,
+          action: "sessions.updateContent",
+          meta: { fields: ["title"] },
+        });
+        return "done";
+      });
+    });
+    expect(marked).toMatchObject({ result: "done", marked: 1 });
+
+    const rows = await t.run(async (ctx) => ctx.db.query("auditLog").collect());
+    const written = rows.find((r) => r.action === "sessions.updateContent");
+    expect(written?.viaAgent).toBe(true);
+    // The capability's own meta survives; the key's prefix is added to it.
+    expect(written?.meta).toMatchObject({ fields: ["title"] });
+    expect((written?.meta as { apiKeyPrefix?: string }).apiKeyPrefix).toMatch(
+      /^ssk_…/,
+    );
+    expect(rows.find((r) => r._id === historic)?.viaAgent).toBeUndefined();
+  });
+
+  test("withAgentAudit flags nothing when the capability wrote nothing", async () => {
+    const { alice, orgSlug, eventSlug, t } = await fixture();
+    const { plaintext } = await mint(alice, orgSlug);
+    const eventId = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      return event!._id;
+    });
+
+    const outcome = await t.run(async (ctx) => {
+      const identity = await resolveCallerFromApiKey(ctx, plaintext, Date.now());
+      return await withAgentAudit(ctx, identity, eventId, async () => null);
+    });
+    expect(outcome.marked).toBe(0);
+    expect(
+      (await t.run(async (ctx) => ctx.db.query("auditLog").collect())).some(
+        (r) => r.viaAgent === true,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -892,6 +943,11 @@ describe("mcp http boundary", () => {
       "task_dashboard",
       "agenda_board",
       "publish_state",
+      "list_task_reviews",
+      "update_session_content",
+      "schedule_session",
+      "approve_task",
+      "request_task_changes",
     ]);
 
     const called = await mcpPost(
@@ -1475,5 +1531,896 @@ describe("host validation fails closed", () => {
 
     // Restored: the normal host works again, so the swap left nothing behind.
     expect((await mcpPost(t, list, bearer(plaintext))).status).toBe(200);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Write tools (D3). The write half of the agent surface, and the half where
+// a mistake is not recoverable by reloading the page. Each tool gets: the
+// happy path through an organizer-ceiling key, the read-ceiling refusal the
+// plan mandates, the event-scope refusal, and the audit row that says an
+// agent did it. Plus the one that matters most — an organizer-CEILING key
+// whose minter is only a reviewer now is still refused by the model layer.
+// ─────────────────────────────────────────────────────────────────────────
+
+type WriteFixture = Fixture & {
+  sessionId: Id<"sessions">;
+  taskId: Id<"taskInstances">;
+  eventContactId: Id<"eventContacts">;
+};
+
+const FAR_FUTURE = Date.parse("2030-01-01T00:00:00Z");
+const SLOT_START = Date.parse("2026-09-01T10:00:00Z");
+const SLOT_END = Date.parse("2026-09-01T11:00:00Z");
+
+/** The fixture's event, plus one session with a speaker, one submitted task
+ * awaiting review, and one room — the three things D3's tools act on. */
+async function writeFixture(): Promise<WriteFixture> {
+  const base = await fixture();
+  const { alice, eventSlug } = base;
+  const { sessionId, eventContactId } = await alice.mutation(
+    api.sessions.createDirect,
+    {
+      eventSlug,
+      title: "Opening keynote",
+      description: "The first draft of the abstract.",
+      speaker: {
+        firstName: "Dana",
+        lastName: "Keynote",
+        email: "dana@example.com",
+      },
+    },
+  );
+  await alice.mutation(api.tasks.createRequirement, {
+    eventSlug,
+    title: "Sign the speaker release",
+    scope: "participant",
+    evidence: "manual",
+    reviewRequired: true,
+    dueAt: Date.parse("2026-08-20T00:00:00Z"),
+  });
+  const taskId = await base.t.run(async (ctx) => {
+    const instance = await ctx.db.query("taskInstances").first();
+    if (instance === null) throw new Error("no task instance");
+    return instance._id;
+  });
+  await alice.mutation(api.tasks.markProvided, { eventSlug, instanceId: taskId });
+  await alice.mutation(api.library.add, {
+    eventSlug,
+    table: "rooms",
+    item: { name: "Main Hall", capacity: 300 },
+  });
+  return { ...base, sessionId, taskId, eventContactId };
+}
+
+async function auditRows(t: TestT) {
+  return await t.run(async (ctx) => ctx.db.query("auditLog").collect());
+}
+
+/** Demote the key's minter to a reviewer seat on the event: the ceiling still
+ * permits writes, the LIVE role no longer does. */
+async function demoteToReviewer(t: TestT, eventSlug: string): Promise<void> {
+  await t.run(async (ctx) => {
+    const membership = await ctx.db.query("members").first();
+    const event = await ctx.db
+      .query("events")
+      .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+      .unique();
+    await ctx.db.insert("eventMembers", {
+      eventId: event!._id,
+      orgId: membership!.orgId,
+      userId: membership!.userId,
+      role: "reviewer",
+    });
+    await ctx.db.delete("members", membership!._id);
+  });
+}
+
+describe("mcp write tools", () => {
+  test("update_session_content edits through the capability, with history", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug, { ceiling: "organizer" });
+
+    const result = await t.mutation(internal.mcp.updateSessionContent, {
+      presentedKey: plaintext,
+      eventSlug,
+      sessionId,
+      title: "Opening keynote: what we learned",
+      description: "A rewritten abstract.",
+    });
+    expect(result).toMatchObject({
+      eventSlug,
+      title: "Opening keynote: what we learned",
+      description: "A rewritten abstract.",
+      revisionRecorded: true,
+      contentStatus: "draft",
+    });
+
+    // The row really moved, and the SAME revision history the web editor
+    // writes is what makes this reversible.
+    const session = await t.run(async (ctx) => ctx.db.get("sessions", sessionId));
+    expect(session?.title).toBe("Opening keynote: what we learned");
+    const revisions = await t.run(async (ctx) =>
+      ctx.db.query("sessionRevisions").collect(),
+    );
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0].before.title).toBe("Opening keynote");
+
+    // ONE row, one act: the capability's own, marked. No `agent.*` twin, so
+    // the control center cannot render one edit as two sentences.
+    const rows = await auditRows(t);
+    const written = rows.filter((r) => r.action === "sessions.updateContent");
+    expect(written).toHaveLength(1);
+    expect(written[0].viaAgent).toBe(true);
+    expect(written[0].targetId).toBe(sessionId);
+    expect(rows.some((r) => r.action.startsWith("agent."))).toBe(false);
+
+    // A projection, never a document.
+    expect(JSON.stringify(result)).not.toContain("_creationTime");
+  });
+
+  test("approve_task and request_task_changes move the review gate", async () => {
+    const { alice, orgSlug, eventSlug, taskId, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug);
+
+    // Discovery first: the id the write tools need comes from the queue read.
+    const queue = await t.query(internal.mcp.listTaskReviews, {
+      presentedKey: plaintext,
+      now: Date.now(),
+      eventSlug,
+    });
+    expect(queue.status).toBe("provided");
+    expect(queue.capped).toBe(false);
+    expect(queue.tasks).toHaveLength(1);
+    expect(queue.tasks[0]).toMatchObject({
+      taskId,
+      requirementTitle: "Sign the speaker release",
+      sessionTitle: "Opening keynote",
+      speakerName: "Dana Keynote",
+      status: "provided",
+    });
+
+    const approved = await t.mutation(internal.mcp.approveTask, {
+      presentedKey: plaintext,
+      eventSlug,
+      taskId,
+    });
+    expect(approved).toMatchObject({
+      eventSlug,
+      taskId,
+      status: "approved",
+      requirementTitle: "Sign the speaker release",
+    });
+
+    const sentBack = await t.mutation(internal.mcp.requestTaskChanges, {
+      presentedKey: plaintext,
+      eventSlug,
+      taskId,
+      note: "Please use the countersigned copy.",
+    });
+    expect(sentBack).toMatchObject({
+      status: "changesRequested",
+      reviewNote: "Please use the countersigned copy.",
+    });
+
+    const actions = (await auditRows(t)).filter((r) => r.viaAgent === true);
+    expect(actions.map((r) => r.action)).toEqual([
+      "task.approve",
+      "task.requestChanges",
+    ]);
+
+    // The state machine is the capability's, not the tool's: approving work
+    // that is no longer awaiting review is refused.
+    await expectRejectedWith(
+      t.mutation(internal.mcp.approveTask, {
+        presentedKey: plaintext,
+        eventSlug,
+        taskId,
+      }),
+      "invalid_status",
+    );
+  });
+
+  test("schedule_session places by room NAME, and clears with a null slot", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug);
+
+    const placed = await t.mutation(internal.mcp.scheduleSession, {
+      presentedKey: plaintext,
+      eventSlug,
+      sessionId,
+      slot: { startsAt: SLOT_START, endsAt: SLOT_END, room: "main hall" },
+    });
+    expect(placed).toMatchObject({
+      scheduled: true,
+      startsAt: SLOT_START,
+      endsAt: SLOT_END,
+      room: "Main Hall",
+      title: "Opening keynote",
+    });
+
+    // A name nobody has is a refusal, never a placement in no room at all.
+    await expectRejectedWith(
+      t.mutation(internal.mcp.scheduleSession, {
+        presentedKey: plaintext,
+        eventSlug,
+        sessionId,
+        slot: { startsAt: SLOT_START, endsAt: SLOT_END, room: "Ballroom C" },
+      }),
+      "not_found",
+    );
+
+    const cleared = await t.mutation(internal.mcp.scheduleSession, {
+      presentedKey: plaintext,
+      eventSlug,
+      sessionId,
+      slot: null,
+    });
+    expect(cleared).toMatchObject({
+      scheduled: false,
+      startsAt: null,
+      endsAt: null,
+      room: null,
+    });
+
+    const viaAgent = (await auditRows(t))
+      .filter((r) => r.viaAgent === true)
+      .map((r) => r.action);
+    expect(viaAgent).toEqual(["agenda.place", "agenda.unschedule"]);
+
+    // Placement is a draft: the board moved and NOBODY was told about a slot.
+    // (The fixture's direct speaker invitation is the only mail in the log —
+    // asserting on kinds rather than a count keeps this test about what
+    // scheduling does, not about what setting the fixture up does.)
+    const kinds = await t.run(async (ctx) =>
+      (await ctx.db.query("messages").collect()).map((m) => m.kind),
+    );
+    expect(kinds.some((kind) => kind.startsWith("agenda"))).toBe(false);
+    expect(kinds.some((kind) => kind.includes("slot"))).toBe(false);
+  });
+
+  test("a read-ceiling key is refused by EVERY write tool", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, taskId, t } =
+      await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug, { ceiling: "read" });
+
+    // The same key reads the same event perfectly well…
+    expect(
+      (
+        await t.query(internal.mcp.listTaskReviews, {
+          presentedKey: plaintext,
+          now: Date.now(),
+          eventSlug,
+        })
+      ).tasks,
+    ).toHaveLength(1);
+
+    // …and cannot change one byte of it.
+    await expectRejectedWith(
+      t.mutation(internal.mcp.updateSessionContent, {
+        presentedKey: plaintext,
+        eventSlug,
+        sessionId,
+        title: "Nope",
+      }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      t.mutation(internal.mcp.scheduleSession, {
+        presentedKey: plaintext,
+        eventSlug,
+        sessionId,
+        slot: { startsAt: SLOT_START, endsAt: SLOT_END },
+      }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      t.mutation(internal.mcp.approveTask, {
+        presentedKey: plaintext,
+        eventSlug,
+        taskId,
+      }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      t.mutation(internal.mcp.requestTaskChanges, {
+        presentedKey: plaintext,
+        eventSlug,
+        taskId,
+        note: "Nope",
+      }),
+      "forbidden",
+    );
+
+    // Nothing moved, and no audit row claims otherwise.
+    const session = await t.run(async (ctx) => ctx.db.get("sessions", sessionId));
+    expect(session?.title).toBe("Opening keynote");
+    expect((await auditRows(t)).some((r) => r.viaAgent === true)).toBe(false);
+  });
+
+  test("an event-scoped key cannot write outside its event", async () => {
+    const { alice, orgSlug, eventSlug, otherEventSlug, sessionId, t } =
+      await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug, {
+      eventSlug: otherEventSlug,
+      ceiling: "organizer",
+    });
+
+    await expectRejectedWith(
+      t.mutation(internal.mcp.updateSessionContent, {
+        presentedKey: plaintext,
+        eventSlug,
+        sessionId,
+        title: "Reaching across",
+      }),
+      "forbidden",
+    );
+    // And naming its OWN event does not smuggle in another event's session:
+    // the capability scopes the session to the caller's event.
+    await expectRejectedWith(
+      t.mutation(internal.mcp.updateSessionContent, {
+        presentedKey: plaintext,
+        eventSlug: otherEventSlug,
+        sessionId,
+        title: "Reaching across",
+      }),
+      "not_found",
+    );
+  });
+
+  test("an organizer-ceiling key still cannot exceed the minter's live role", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, taskId, t } =
+      await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug, { ceiling: "organizer" });
+    await demoteToReviewer(t, eventSlug);
+
+    // The ceiling says "writes allowed"; `requireOrganizer` in convex/model/*
+    // says no. The model layer is what refuses, exactly as it would for a
+    // signed-in reviewer clicking the same button.
+    await expectRejectedWith(
+      t.mutation(internal.mcp.updateSessionContent, {
+        presentedKey: plaintext,
+        eventSlug,
+        sessionId,
+        title: "Reviewer reach",
+      }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      t.mutation(internal.mcp.approveTask, {
+        presentedKey: plaintext,
+        eventSlug,
+        taskId,
+      }),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      t.mutation(internal.mcp.scheduleSession, {
+        presentedKey: plaintext,
+        eventSlug,
+        sessionId,
+        slot: null,
+      }),
+      "forbidden",
+    );
+  });
+
+  test("a malformed or foreign id is a refusal, not a crash", async () => {
+    const { alice, orgSlug, eventSlug, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug);
+
+    await expectRejectedWith(
+      t.mutation(internal.mcp.updateSessionContent, {
+        presentedKey: plaintext,
+        eventSlug,
+        sessionId: "not-an-id",
+        title: "x",
+      }),
+      "not_found",
+    );
+    await expectRejectedWith(
+      t.mutation(internal.mcp.approveTask, {
+        presentedKey: plaintext,
+        eventSlug,
+        taskId: "not-an-id",
+      }),
+      "not_found",
+    );
+  });
+
+  test("a write that changes nothing records nothing", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug);
+
+    // Same title it already has, and a session already off the board: both
+    // capabilities return early without writing. An agent that asks twice must
+    // not manufacture a history of changes that never happened.
+    await t.mutation(internal.mcp.updateSessionContent, {
+      presentedKey: plaintext,
+      eventSlug,
+      sessionId,
+      title: "Opening keynote",
+    });
+    await t.mutation(internal.mcp.scheduleSession, {
+      presentedKey: plaintext,
+      eventSlug,
+      sessionId,
+      slot: null,
+    });
+
+    expect((await auditRows(t)).some((r) => r.viaAgent === true)).toBe(false);
+  });
+
+  test("the audited note is the one the capability stored, not the one asked for", async () => {
+    const { alice, orgSlug, eventSlug, taskId, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug);
+
+    // Whitespace-heavy and one character under the capability's 2000-char
+    // limit — so it is accepted, and normalization is exactly the trim. What
+    // is stored, mailed and audited must be one value, byte for byte.
+    const asked = `  \n ${"x".repeat(1999)} \t  `;
+    await t.mutation(internal.mcp.requestTaskChanges, {
+      presentedKey: plaintext,
+      eventSlug,
+      taskId,
+      note: asked,
+    });
+
+    const instance = await t.run(async (ctx) =>
+      ctx.db.get("taskInstances", taskId),
+    );
+    const row = (await auditRows(t)).find(
+      (r) => r.action === "task.requestChanges",
+    );
+    const audited = (row?.meta as { note?: string }).note;
+    expect(row?.viaAgent).toBe(true);
+    expect(audited).toBe(instance?.reviewNote);
+    expect(audited).not.toBe(asked);
+    // And nothing anywhere is holding the raw argument.
+    expect(JSON.stringify(row?.meta)).not.toContain(asked);
+
+    // Past the limit the capability REFUSES rather than truncating, so there
+    // is never a stored note the speaker was not actually sent.
+    await expectRejectedWith(
+      t.mutation(internal.mcp.requestTaskChanges, {
+        presentedKey: plaintext,
+        eventSlug,
+        taskId,
+        note: "x".repeat(2001),
+      }),
+      "invalid_note",
+    );
+  });
+
+  test("schedule_session refuses an ambiguous or foreign room name", async () => {
+    const { alice, orgSlug, eventSlug, otherEventSlug, sessionId, t } =
+      await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug);
+    const place = (room: string) =>
+      t.mutation(internal.mcp.scheduleSession, {
+        presentedKey: plaintext,
+        eventSlug,
+        sessionId,
+        slot: { startsAt: SLOT_START, endsAt: SLOT_END, room },
+      });
+
+    // A room on ANOTHER event of the same org is not this event's room.
+    await alice.mutation(api.library.add, {
+      eventSlug: otherEventSlug,
+      table: "rooms",
+      item: { name: "Annexe" },
+    });
+    await expectRejectedWith(place("Annexe"), "not_found");
+
+    // Two rooms whose names differ only by case and padding fold to the same
+    // reference: refuse rather than pick one and place the session wrongly.
+    await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "rooms",
+      item: { name: "  main hall " },
+    });
+    await expectRejectedWith(place("Main Hall"), "ambiguous_room");
+
+
+    // Nothing was placed by either attempt.
+    const session = await t.run(async (ctx) => ctx.db.get("sessions", sessionId));
+    expect(session?.startsAt).toBeUndefined();
+  });
+
+  test("room resolution refuses past its ceiling instead of guessing", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug);
+    const eventId = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      return event!._id;
+    });
+
+    // The fixture made one; fill to exactly the ceiling and the read is still
+    // complete, so a real room still resolves.
+    await t.run(async (ctx) => {
+      for (let i = 1; i < LIBRARY_SCAN; i += 1) {
+        await ctx.db.insert("rooms", {
+          eventId,
+          name: `Room ${i}`,
+          order: i,
+        });
+      }
+    });
+    expect(
+      (
+        await t.mutation(internal.mcp.scheduleSession, {
+          presentedKey: plaintext,
+          eventSlug,
+          sessionId,
+          slot: { startsAt: SLOT_START, endsAt: SLOT_END, room: "Main Hall" },
+        })
+      ).room,
+    ).toBe("Main Hall");
+
+    // One past it and the answer is refused, NOT "no such room" — a partial
+    // read cannot tell a missing room from an unread one, nor a unique name
+    // from a duplicated one.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("rooms", {
+        eventId,
+        name: `Room ${LIBRARY_SCAN}`,
+        order: LIBRARY_SCAN,
+      });
+    });
+    await expectRejectedWith(
+      t.mutation(internal.mcp.scheduleSession, {
+        presentedKey: plaintext,
+        eventSlug,
+        sessionId,
+        slot: { startsAt: SLOT_START, endsAt: SLOT_END, room: "Main Hall" },
+      }),
+      "event_too_large",
+    );
+  });
+
+  test("list_task_reviews is honest at its own ceiling", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug);
+    const now = Date.now();
+    const read = () =>
+      t.query(internal.mcp.listTaskReviews, {
+        presentedKey: plaintext,
+        now,
+        eventSlug,
+      });
+
+    const seed = (count: number, status: "provided" | "pending") =>
+      t.run(async (ctx) => {
+        const instance = (await ctx.db.query("taskInstances").first())!;
+        for (let i = 0; i < count; i += 1) {
+          await ctx.db.insert("taskInstances", {
+            requirementId: instance.requirementId,
+            eventId: instance.eventId,
+            sessionId,
+            status,
+            dueAt: instance.dueAt,
+            updatedAt: instance.updatedAt,
+          });
+        }
+      });
+
+    // Tasks in OTHER states must not crowd the queue out of its own page:
+    // this is the bug a filter-after-read has, and the index range does not.
+    await seed(TASK_REVIEW_CAP * 2, "pending");
+    const withNoise = await read();
+    expect(withNoise.capped).toBe(false);
+    expect(withNoise.tasks).toHaveLength(1);
+
+    // Exactly at the cap is complete; one past it says so.
+    await seed(TASK_REVIEW_CAP - 1, "provided");
+    const atCap = await read();
+    expect(atCap.tasks).toHaveLength(TASK_REVIEW_CAP);
+    expect(atCap.capped).toBe(false);
+
+    await seed(1, "provided");
+    const over = await read();
+    expect(over.tasks).toHaveLength(TASK_REVIEW_CAP);
+    expect(over.capped).toBe(true);
+    expect(over.note).toContain(String(TASK_REVIEW_CAP));
+  });
+
+  test("the queue's page is the most URGENT tasks, not the oldest rows", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug);
+    const now = Date.now();
+
+    // A full page of tasks due in the distant future, created first…
+    const template = await t.run(async (ctx) => {
+      const instance = (await ctx.db.query("taskInstances").first())!;
+      for (let i = 0; i < TASK_REVIEW_CAP; i += 1) {
+        await ctx.db.insert("taskInstances", {
+          requirementId: instance.requirementId,
+          eventId: instance.eventId,
+          sessionId,
+          status: "provided",
+          dueAt: FAR_FUTURE + i,
+          updatedAt: instance.updatedAt,
+        });
+      }
+      return instance;
+    });
+
+    // …and ONE task created last that is due first. Ordered by creation it is
+    // the 202nd row and would fall off the page; ordered by due date it is the
+    // single most urgent thing the organizer has.
+    const urgent = await t.run(async (ctx) =>
+      ctx.db.insert("taskInstances", {
+        requirementId: template.requirementId,
+        eventId: template.eventId,
+        sessionId,
+        status: "provided",
+        dueAt: 1,
+        updatedAt: template.updatedAt,
+      }),
+    );
+
+    const queue = await t.query(internal.mcp.listTaskReviews, {
+      presentedKey: plaintext,
+      now,
+      eventSlug,
+    });
+    expect(queue.capped).toBe(true);
+    expect(queue.tasks).toHaveLength(TASK_REVIEW_CAP);
+    expect(queue.tasks[0].taskId).toBe(urgent);
+    expect(queue.tasks[0].dueAt).toBe(1);
+    // And the page really is the front of the due-date order: the last row in
+    // it is due before anything left behind.
+    const lastInPage = queue.tasks[queue.tasks.length - 1].dueAt;
+    expect(lastInPage).toBeLessThan(FAR_FUTURE + TASK_REVIEW_CAP - 1);
+  });
+
+  test("upload counts are exact, and cost one row per task", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug);
+    const now = Date.now();
+
+    // A file task with a real version history, built through the capability
+    // that owns the numbering — so the count is checked against the invariant
+    // `reviewQueue` relies on, not against the test's own arithmetic.
+    await alice.mutation(api.tasks.createRequirement, {
+      eventSlug,
+      title: "Slides",
+      scope: "participant",
+      evidence: "file",
+      reviewRequired: true,
+      dueAt: Date.parse("2026-08-18T00:00:00Z"),
+    });
+    const fileTask = await t.run(async (ctx) => {
+      const requirement = await ctx.db
+        .query("requirements")
+        .filter((q) => q.eq(q.field("title"), "Slides"))
+        .first();
+      const instance = await ctx.db
+        .query("taskInstances")
+        .withIndex("by_requirementId", (q) =>
+          q.eq("requirementId", requirement!._id),
+        )
+        .first();
+      return { requirementId: requirement!._id, instanceId: instance!._id };
+    });
+    for (let version = 1; version <= 5; version += 1) {
+      const storageId = await t.run(async (ctx) =>
+        ctx.storage.store(new Blob([`deck v${version}`])),
+      );
+      await alice.mutation(api.tasks.attachUpload, {
+        eventSlug,
+        instanceId: fileTask.instanceId,
+        storageId,
+        filename: `deck-v${version}.pdf`,
+      });
+    }
+
+    // Fill the page with file tasks that each carry a version history. Under a
+    // read-every-version count this page is uploads × tasks documents — the
+    // arithmetic that puts a full page past Convex's scanned-document ceiling
+    // (see model/tasks.ts). Counting from the newest row makes it one per task.
+    await t.run(async (ctx) => {
+      const seed = (await ctx.db.query("taskInstances").first())!;
+      for (let i = 0; i < TASK_REVIEW_CAP; i += 1) {
+        const instanceId = await ctx.db.insert("taskInstances", {
+          requirementId: fileTask.requirementId,
+          eventId: seed.eventId,
+          sessionId,
+          status: "provided",
+          dueAt: FAR_FUTURE + i,
+          updatedAt: seed.updatedAt,
+        });
+        // Sequential and append-only, exactly as `attachUpload` writes them.
+        for (let version = 1; version <= 3; version += 1) {
+          await ctx.db.insert("uploads", {
+            eventId: seed.eventId,
+            taskInstanceId: instanceId,
+            storageId: await ctx.storage.store(new Blob(["x"])),
+            filename: `f${version}.pdf`,
+            version,
+            uploadedBy: seed.completedBy ?? (await ctx.db.query("users").first())!._id,
+          });
+        }
+      }
+    });
+
+    const queue = await t.query(internal.mcp.listTaskReviews, {
+      presentedKey: plaintext,
+      now,
+      eventSlug,
+    });
+    expect(queue.tasks).toHaveLength(TASK_REVIEW_CAP);
+    // The real history: five attachments, five versions, five counted.
+    const slides = queue.tasks.find((task) => task.taskId === fileTask.instanceId);
+    expect(slides).toMatchObject({ requirementTitle: "Slides", uploadCount: 5 });
+    // …and every seeded file task reports its own three, not a shared guess.
+    // (The manual task the fixture submitted is in this page too, and counts
+    // nothing — evidence kind decides whether a version count means anything.)
+    const seeded = queue.tasks.filter(
+      (task) =>
+        task.requirementTitle === "Slides" &&
+        task.taskId !== fileTask.instanceId,
+    );
+    expect(seeded).toHaveLength(TASK_REVIEW_CAP - 2);
+    expect(seeded.every((task) => task.uploadCount === 3)).toBe(true);
+    expect(
+      queue.tasks
+        .filter((task) => task.evidence === "manual")
+        .every((task) => task.uploadCount === 0),
+    ).toBe(true);
+    // A manual task has no versions to count and pays nothing to say so.
+    expect(
+      (
+        await t.query(internal.mcp.listTaskReviews, {
+          presentedKey: plaintext,
+          now,
+          eventSlug,
+          status: "pending",
+        })
+      ).tasks.every((task) => task.uploadCount === 0),
+    ).toBe(true);
+  });
+
+  test("a revoked key stops writing mid-session", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, t } = await writeFixture();
+    const { plaintext, keyId } = await mint(alice, orgSlug);
+
+    await t.mutation(internal.mcp.updateSessionContent, {
+      presentedKey: plaintext,
+      eventSlug,
+      sessionId,
+      title: "First edit",
+    });
+    await alice.mutation(api.apiKeys.revoke, { orgSlug, keyId });
+    await expectRejectedWith(
+      t.mutation(internal.mcp.updateSessionContent, {
+        presentedKey: plaintext,
+        eventSlug,
+        sessionId,
+        title: "Second edit",
+      }),
+      "api_key_revoked",
+    );
+    const session = await t.run(async (ctx) => ctx.db.get("sessions", sessionId));
+    expect(session?.title).toBe("First edit");
+  });
+});
+
+describe("mcp write tools over HTTP", () => {
+  test("tools/call writes, and a read key's write comes back sanitized", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, t } = await writeFixture();
+    const { plaintext } = await mint(alice, orgSlug, { ceiling: "organizer" });
+
+    const called = await mcpPost(
+      t,
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "update_session_content",
+          arguments: {
+            eventSlug,
+            sessionId,
+            title: "Edited by an agent over HTTP",
+          },
+        },
+      },
+      bearer(plaintext),
+    );
+    const result = (
+      called.message as {
+        result: { content: Array<{ text: string }>; isError?: boolean };
+      }
+    ).result;
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      eventSlug,
+      title: "Edited by an agent over HTTP",
+      revisionRecorded: true,
+    });
+    const session = await t.run(async (ctx) => ctx.db.get("sessions", sessionId));
+    expect(session?.title).toBe("Edited by an agent over HTTP");
+
+    // The read-ceiling refusal, as an agent actually experiences it: the
+    // registered sentence, never the model's own wording.
+    const readKey = await mint(alice, orgSlug, {
+      name: "Read only",
+      ceiling: "read",
+    });
+    const refused = await mcpPost(
+      t,
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "approve_task",
+          arguments: { eventSlug, taskId: "whatever" },
+        },
+      },
+      bearer(readKey.plaintext),
+    );
+    const refusal = (
+      refused.message as {
+        result: { content: Array<{ text: string }>; isError?: boolean };
+      }
+    ).result;
+    expect(refusal.isError).toBe(true);
+    expect(refusal.content[0].text).toBe(
+      "This API key does not have access to that.",
+    );
+  });
+
+  test("a JSON-RPC batch is refused before it can spend one token on three writes", async () => {
+    const { alice, orgSlug, eventSlug, sessionId, t } = await writeFixture();
+    const { plaintext, keyId } = await mint(alice, orgSlug);
+
+    const call = (id: number, title: string) => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: {
+        name: "update_session_content",
+        arguments: { eventSlug, sessionId, title },
+      },
+    });
+    const batched = await mcpPost(
+      t,
+      [call(1, "First"), call(2, "Second"), call(3, "Third")],
+      bearer(plaintext),
+    );
+
+    expect(batched.status).toBe(400);
+    expect(batched.message).toMatchObject({
+      error: {
+        message:
+          "Send one JSON-RPC message per request — batched arrays are not supported.",
+      },
+    });
+
+    // None of the three ran…
+    const session = await t.run(async (ctx) => ctx.db.get("sessions", sessionId));
+    expect(session?.title).toBe("Opening keynote");
+    // …and the refusal happened before authentication, so it never touched the
+    // key either (lastUsedAt is written by `authenticate`).
+    expect(
+      (await t.run(async (ctx) => ctx.db.get("apiKeys", keyId)))?.lastUsedAt,
+    ).toBeUndefined();
+
+    // The same three calls, sent one per request, all work — refusing batches
+    // costs a client nothing but the batching.
+    for (const [index, title] of ["First", "Second", "Third"].entries()) {
+      const one = await mcpPost(t, call(index + 1, title), bearer(plaintext));
+      expect(
+        (one.message as { result: { isError?: boolean } }).result.isError,
+      ).toBeUndefined();
+    }
+    expect(
+      (await t.run(async (ctx) => ctx.db.get("sessions", sessionId)))?.title,
+    ).toBe("Third");
   });
 });

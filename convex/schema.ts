@@ -1008,6 +1008,18 @@ export default defineSchema({
   })
     .index("by_eventId", ["eventId"])
     .index("by_status_and_dueAt", ["status", "dueAt"])
+    // One event's tasks in one review state, DUE FIRST — the shape the review
+    // queue reads (model/tasks.ts `reviewQueue`). Without it that read filters
+    // a whole event's instances in code and cannot say honestly whether it
+    // stopped short of the matching rows.
+    //
+    // `dueAt` is in the key, not just in a sort afterwards, because the queue
+    // truncates: Convex appends `_creationTime` as the final column, so an
+    // (eventId, status) index would page the OLDEST-CREATED matches and call
+    // them the queue — burying a task due tomorrow that was created last week
+    // behind 200 tasks due next year. `dueAt` is non-optional on this table,
+    // so every row has a place in that order.
+    .index("by_eventId_and_status_and_dueAt", ["eventId", "status", "dueAt"])
     .index("by_requirementId", ["requirementId"])
     .index("by_sessionId", ["sessionId"])
     .index("by_eventContactId", ["eventContactId"]),

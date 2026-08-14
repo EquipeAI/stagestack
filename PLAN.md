@@ -650,6 +650,23 @@ door; it is not this cycle's.
       authorization in `model/*` as always, audit row `viaAgent: true`,
       negative test that a `read` key is refused.
 
+**DECIDED DEVIATIONS (2026-08-14, found in implementation):** the plan's
+"non-outbound" rule collides with its own tool list twice. (1)
+`request_task_changes` DOES email the responsible speaker — that is
+`Tasks.requestChanges`'s own M4 semantics (a change request nobody is told
+about is not one), not agent-added behavior; suppressing it for agents would
+fork the capability. Kept, with the tool description leading with THIS TOOL
+NOTIFIES and the server instructions naming it as the single exception.
+"Non-outbound" is recorded as meaning no outreach *campaigns*
+(`sendBulkOutreach`/`sendOneOff` stay absent). (2) `update_session_content`
+on an ALREADY-published event updates the public page at once
+(`republishIfPublished`), exactly as the same edit in the web app does; it
+never publishes an unpublished event. Described verbatim in the tool
+description rather than papered over. Also: one read tool was added beyond
+the D2 ten — `list_task_reviews` — because no other tool emits the
+`taskInstances` id that `approve_task`/`request_task_changes` require;
+discovery for the acting half, not scope creep.
+
 ## D4 — Key management UI + connect flow
 
 - [ ] **Org settings surface**: an "API keys" tab on

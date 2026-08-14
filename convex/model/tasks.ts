@@ -6,7 +6,12 @@ import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
 import { notifyOrganizers, sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
-import { assertEventActive, assertText, takeAll } from "./validation";
+import {
+  assertEventActive,
+  assertText,
+  takeAll,
+  takeCapped,
+} from "./validation";
 import { eventUserDisplayName } from "./userDisplay";
 import {
   CONTACT_SCAN,
@@ -1450,6 +1455,128 @@ export async function listInstances(
     });
   }
   return rows;
+}
+
+export type ReviewQueueRow = {
+  instanceId: Id<"taskInstances">;
+  requirementTitle: string;
+  sessionTitle: string;
+  speakerName?: string;
+  status: TaskStatus;
+  evidence: Evidence;
+  reviewRequired: boolean;
+  dueAt: number;
+  uploadCount: number;
+  reviewNote?: string;
+};
+
+/**
+ * One event's tasks in ONE review state, SOONEST DUE FIRST — the worklist
+ * behind "what is waiting for a decision".
+ *
+ * Deliberately NOT `listInstances(...).filter(...)`: that reads a whole
+ * event's instances under a ceiling chosen for the full table, then filters,
+ * so the rows that matter can be missing from a page that reports itself
+ * complete. Here the STATUS is part of the index range, the read asks for one
+ * row more than it will return, and `capped` is a fact about the matching rows
+ * rather than about their neighbours. Dependencies are point-loaded for the
+ * selected rows only, so the cost is the page, not the event.
+ *
+ * THE ORDER IS PART OF THE ANSWER, because the page can be short of the whole
+ * queue: `by_eventId_and_status_and_dueAt` puts the most urgent tasks in the
+ * page, where an (eventId, status) index would have paged whatever was created
+ * first. A truncated worklist sorted by the wrong key is not a shorter answer,
+ * it is the wrong 200 rows.
+ *
+ * Truncates instead of refusing (`takeCapped`, not `takeAll`): a worklist is
+ * something you work through, and "here are the first N, there are more" is a
+ * useful answer. A DERIVED fact about the event would not be.
+ */
+export async function reviewQueue(
+  ctx: QueryCtx,
+  caller: EventCaller,
+  status: TaskStatus,
+  limit: number,
+): Promise<{ rows: ReviewQueueRow[]; capped: boolean }> {
+  requireOrganizer(caller);
+  const { rows: instances, capped } = await takeCapped(
+    ctx.db
+      .query("taskInstances")
+      .withIndex("by_eventId_and_status_and_dueAt", (q) =>
+        q.eq("eventId", caller.event._id).eq("status", status),
+      ),
+    limit,
+  );
+
+  const requirements = new Map<Id<"requirements">, Doc<"requirements"> | null>();
+  const sessions = new Map<Id<"sessions">, Doc<"sessions"> | null>();
+  const contacts = new Map<Id<"eventContacts">, Doc<"eventContacts"> | null>();
+  const load = async <Table extends "requirements" | "sessions" | "eventContacts">(
+    cache: Map<Id<Table>, Doc<Table> | null>,
+    table: Table,
+    id: Id<Table>,
+  ): Promise<Doc<Table> | null> => {
+    const seen = cache.get(id);
+    if (seen !== undefined) return seen;
+    const doc = await ctx.db.get(table, id);
+    cache.set(id, doc);
+    return doc;
+  };
+
+  const rows: ReviewQueueRow[] = [];
+  for (const instance of instances) {
+    const requirement = await load(
+      requirements,
+      "requirements",
+      instance.requirementId,
+    );
+    if (requirement === null) continue;
+    const session = await load(sessions, "sessions", instance.sessionId);
+    const contact =
+      instance.eventContactId === undefined
+        ? null
+        : await load(contacts, "eventContacts", instance.eventContactId);
+    // Upload counts only mean something for file evidence — and even then the
+    // count is ONE row, not the version history.
+    //
+    // The invariant this rests on, verified in this file rather than assumed:
+    // `attachUpload` is the only place an `uploads` row is created, it numbers
+    // each one `latest.version + 1` starting at 1, nothing anywhere deletes an
+    // upload, and the one patch on the table writes approval fields only. So
+    // the newest row's `version` IS the number of versions, exactly.
+    //
+    // Reading them all instead would have been the read that breaks this
+    // capability at its own ceiling: 200 file tasks × up to 200 versions is
+    // 40,000 documents against a 32,000-document transaction limit, i.e. a
+    // full page of file tasks would fail rather than answer.
+    let uploadCount = 0;
+    if (requirement.evidence === "file") {
+      const newest = await ctx.db
+        .query("uploads")
+        .withIndex("by_taskInstanceId", (q) =>
+          q.eq("taskInstanceId", instance._id),
+        )
+        .order("desc")
+        .first();
+      uploadCount = newest?.version ?? 0;
+    }
+    rows.push({
+      instanceId: instance._id,
+      requirementTitle: requirement.title,
+      sessionTitle: session?.title ?? "",
+      speakerName:
+        contact === null
+          ? undefined
+          : `${contact.firstName} ${contact.lastName}`.trim(),
+      status: instance.status,
+      evidence: requirement.evidence,
+      reviewRequired: requirement.reviewRequired,
+      dueAt: instance.dueAt,
+      uploadCount,
+      reviewNote: instance.reviewNote,
+    });
+  }
+  return { rows, capped };
 }
 
 // ── File comments (W5: CNT-05) ───────────────────────────────────────────

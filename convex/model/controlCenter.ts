@@ -622,6 +622,10 @@ export type ChangeRow = {
  * silently swallowed either — hence the honest fallback.
  */
 const ACTION_CLAUSE: Record<string, string> = {
+  // No `agent.*` codes here on purpose. A write reached through an API key is
+  // the SAME act as the same write from the web app, so it gets the same
+  // sentence from the same audit row; `withAgentAudit` only sets `viaAgent` on
+  // it, which this panel renders as the agent chip (see model/apiKeys.ts).
   "agenda.autoPlace": "ran assisted placement",
   "agenda.autoPlace.undo": "undid an assisted placement run",
   "agenda.place": "placed a session on the schedule",

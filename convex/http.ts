@@ -138,8 +138,11 @@ function raiseHeadshotFailure(code: unknown): never {
 //   2. bearer extraction — ONE function, `mcpBearerToken`, deliberately the
 //      only place an inbound request becomes a credential. OAuth 2.1 (D5)
 //      goes in front of exactly this line without touching a tool;
-//   3. authenticate + spend the per-key budget, once per HTTP request;
-//   4. hand the request to the SDK.
+//   3. refuse JSON-RPC batch arrays (`isBatchBody`) — the one body shape that
+//      would make "once per HTTP request" mean something other than "once per
+//      action";
+//   4. authenticate + spend the per-key budget, once per HTTP request;
+//   5. hand the request to the SDK.
 // Every tool body re-resolves the key itself (convex/mcp.ts): step 3 is a
 // budget gate, never an authorization one.
 // ─────────────────────────────────────────────────────────────────────────
@@ -175,6 +178,38 @@ function mcpBearerToken(request: Request): string | null {
   if (header === null) return null;
   const match = /^Bearer[ \t]+(\S+)$/i.exec(header.trim());
   return match === null ? null : match[1];
+}
+
+/**
+ * JSON-RPC BATCHES ARE REFUSED HERE, before anything else looks at the body.
+ *
+ * The budget is spent once per HTTP REQUEST (step 3 below). A batched array is
+ * the one shape where that stops being the same thing as once per action: the
+ * SDK's legacy 2025 leg parses an array and dispatches EVERY element, so one
+ * token could buy N tool calls — and with D3, N writes. Batching was removed
+ * from MCP in 2025-06-18 and does not exist in 2026-07-28; the only revision
+ * that ever had it is 2025-03-26, and no client we serve sends one.
+ *
+ * Refusing beats charging N tokens: per-element charging would fix the
+ * accounting while keeping an obsolete, untested execution path alive on the
+ * write surface, where "how many actions did this credential just take" is
+ * exactly the question the endpoint has to be able to answer. And it beats
+ * `legacy: 'reject'` on the handler, which is the only related knob the SDK
+ * exposes: that removes ALL 2025 serving, including a single `initialize`,
+ * breaking real 2025-era clients to close a hole that only array bodies open.
+ *
+ * The body is read from a CLONE, so the SDK still owns every other verdict on
+ * it — 415 for the wrong media type, 406 for a bad Accept, its own parse
+ * error. A body we cannot read or parse is not our business: pass it through
+ * and let the SDK answer, rather than inventing a second error vocabulary.
+ */
+async function isBatchBody(request: Request): Promise<boolean> {
+  if (request.method.toUpperCase() !== "POST") return false;
+  try {
+    return Array.isArray(JSON.parse(await request.clone().text()));
+  } catch {
+    return false;
+  }
 }
 
 /** A JSON-RPC error response, which is what an MCP client can actually read.
@@ -225,6 +260,8 @@ const mcpEndpoint = httpAction(async (ctx, request) => {
 
   const presentedKey = mcpBearerToken(request);
   if (presentedKey === null) return mcpRpcError("api_key_missing");
+
+  if (await isBatchBody(request)) return mcpRpcError("batch_unsupported");
 
   try {
     await ctx.runMutation(internal.mcp.authenticate, {

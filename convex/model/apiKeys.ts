@@ -76,6 +76,9 @@ export const MCP_REFUSAL_MESSAGES: Record<string, string> = {
   api_key_limit: "This organization has reached its API key limit.",
   event_too_large:
     "This event has more records than one read can return, so no complete answer is available.",
+  batch_unsupported:
+    "Send one JSON-RPC message per request — batched arrays are not supported.",
+  ambiguous_room: "More than one room on this event has that name.",
 };
 
 export const MCP_GENERIC_REFUSAL = "That request could not be completed.";
@@ -308,36 +311,85 @@ export async function revokeKey(
 }
 
 /**
- * The one producer of an audit row for work done through an API key.
+ * How a write reached through an API key becomes an agent-attributed one.
  *
- * Every write reached with a key goes through here rather than calling
- * `logAudit` directly, so `viaAgent` can never be forgotten at a call site —
- * the Control Center renders that flag, and a write that lies about being
- * agent-driven is worse than no audit row at all. D3's write tools are its
- * callers; it lives here because the flag is a property of the credential,
- * not of any one capability.
+ * FIRST DESIGN, AND WHY IT WAS WRONG (D3 review): this used to INSERT a second
+ * audit row next to the one the capability writes for itself. That made every
+ * agent write two rows the Control Center rendered as two sentences — one act
+ * described twice, once flagged and once not, so the unflagged half read as a
+ * human doing it. Worse, the envelope was written by the tool, which knows
+ * what it ASKED for; the capability's row is written by the code that knows
+ * what it DID. So a no-op edit still produced an "an agent changed this" row,
+ * and the envelope's copy of an argument (a change-request note) could differ
+ * from the normalized value actually stored and emailed.
+ *
+ * THE SEAM THAT IS RIGHT: don't describe the write a second time — MARK the
+ * rows the capability actually wrote. `run` is the capability call; every
+ * audit row it appends is patched with `viaAgent: true` and the key's prefix,
+ * inside the SAME transaction, so no reader ever observes an unflagged agent
+ * write. It follows for free that:
+ *
+ *   • a call that changed nothing writes no audit row, so it gets no flag and
+ *     invents no history — "records only writes that actually happened" is not
+ *     a rule anybody has to remember at a call site;
+ *   • the flagged row is the capability's own, so its `action`, `targetId` and
+ *     `meta` are the values the capability used, already trimmed, capped and
+ *     normalized — the audit trail cannot disagree with the record;
+ *   • the Control Center needs no new vocabulary: `viaAgent` decorates the
+ *     sentence it already renders.
+ *
+ * The boundary is the newest audit row for this event BEFORE the call; rows
+ * appended after it are this call's. Rows are found through `by_eventId`,
+ * which is how the panel reads them too.
  */
-export async function agentAudit(
+const AGENT_AUDIT_MARK_CAP = 100;
+
+export async function withAgentAudit<T>(
   ctx: MutationCtx,
   identity: { key: Doc<"apiKeys">; user: Doc<"users"> },
-  entry: {
-    eventId?: Id<"events">;
-    action: string;
-    targetType?: string;
-    targetId?: string;
-    meta?: Record<string, unknown>;
-  },
-): Promise<Id<"auditLog">> {
-  return await logAudit(ctx, {
-    orgId: identity.key.orgId,
-    eventId: entry.eventId ?? identity.key.eventId,
-    actorUserId: identity.user._id,
-    viaAgent: true,
-    action: entry.action,
-    targetType: entry.targetType,
-    targetId: entry.targetId,
-    meta: { ...(entry.meta ?? {}), apiKeyPrefix: identity.key.prefix },
-  });
+  eventId: Id<"events">,
+  run: () => Promise<T>,
+): Promise<{ result: T; marked: number }> {
+  const newestBefore = await ctx.db
+    .query("auditLog")
+    .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+    .order("desc")
+    .first();
+  const result = await run();
+  // One row MORE than the cap, so "exactly `AGENT_AUDIT_MARK_CAP` rows were
+  // appended" is distinguishable from "the boundary is somewhere past this
+  // page" — at `.take(cap)` the boundary could not fit and a legitimate
+  // cap-sized write would be refused by a sentence that says "more than".
+  const page = await ctx.db
+    .query("auditLog")
+    .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
+    .order("desc")
+    .take(AGENT_AUDIT_MARK_CAP + 1);
+  const boundaryAt = page.findIndex((row) => row._id === newestBefore?._id);
+  const appended = boundaryAt === -1 ? page : page.slice(0, boundaryAt);
+  // Structural check, not a formality: if the boundary is not inside the page
+  // we just read, we cannot tell this call's rows from history, and marking a
+  // person's past action as an agent's is worse than refusing the write. The
+  // whole mutation rolls back.
+  if (appended.length > AGENT_AUDIT_MARK_CAP) {
+    throw new ConvexError({
+      code: "agent_audit_overflow",
+      message: `One agent action recorded more than ${AGENT_AUDIT_MARK_CAP} audit rows, which this attribution cannot bound. Refused.`,
+    });
+  }
+  let marked = 0;
+  for (const row of appended) {
+    const meta =
+      row.meta !== null && typeof row.meta === "object" && !Array.isArray(row.meta)
+        ? (row.meta as Record<string, unknown>)
+        : {};
+    await ctx.db.patch("auditLog", row._id, {
+      viaAgent: true,
+      meta: { ...meta, apiKeyPrefix: identity.key.prefix },
+    });
+    marked += 1;
+  }
+  return { result, marked };
 }
 
 /**

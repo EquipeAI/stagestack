@@ -32,3 +32,18 @@ export const vParticipantState = v.union(
   v.literal("declined"),
   v.literal("withdrawn"),
 );
+
+/**
+ * A speaker task's review state. Mirrors `taskInstances.status` in the schema;
+ * declared once here for the same reason as the two above — the task surface
+ * and the agent tool surface both return it, and a second copy is a chance to
+ * drift.
+ */
+export const vTaskStatus = v.union(
+  v.literal("pending"),
+  v.literal("provided"),
+  v.literal("changesRequested"),
+  v.literal("approved"),
+  v.literal("complete"),
+  v.literal("notApplicable"),
+);
