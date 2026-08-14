@@ -4,98 +4,124 @@ StageStack ships with a seeded demo event so you can try every surface with
 realistic data: **Meridian Dev Summit 2026** — a two-day conference (Oct 13–14,
 2026, Fort Mason, San Francisco) run by the fictional org **Meridian
 Conferences**. The data is deliberately imperfect: an unfinished review round,
-an agenda with real scheduling conflicts, speakers at every state of readiness,
-and a public page that is out of date on purpose. Your job as a tester is to
-live in that mess the way a real organizer would.
+an agenda with real scheduling conflicts, speakers at every state of
+readiness, and a public page that is out of date on purpose. Live in that
+mess the way a real organizer would.
 
 Public page (no account needed):
 `https://stagestack.dev/e/meridian-dev-summit-2026`
 
-## The cast
+## Three shared accounts
 
-Each persona is a real seat at the event. To take one over, send your email
-address to the maintainer **before** the seed runs; the seeder attaches the
-persona's assignments to whatever account owns that address (tag → email via
-the `SEED_DEMO_EMAILS` deployment env var).
+Credentials are shared privately by the maintainer — never in this repo.
 
-| Tag | Persona | Role | What you inherit |
-|---|---|---|---|
-| `demo-organizer` | Maya Okonkwo, Program Chair | Org admin + event organizer | The whole cockpit: review board, agenda, tasks, publishing, API keys |
-| `reviewer1` | Priya Raman, Principal Engineer | Reviewer | 10/10 reviews already done — the finished-reviewer view |
-| `reviewer2` | Tomas Ferreira, Staff SRE | Reviewer | 8/8 done plus one declared conflict of interest |
-| `reviewer3` | Lena Hoffmann, Head of Platform | Reviewer | **0/10 done — the best seat**: a fresh queue, and the gap the organizer is chasing |
-| `speaker1` | Ada Whitfield, Distinguished Engineer | Speaker | Portal claimed, bio + headshot in, a task with changes requested |
-| `speaker2` | Kenji Nakamura, Director of Infrastructure | Speaker | Portal claimed, bio + headshot in |
-| `speaker3` | Rosa Delgado, Developer Advocate | Speaker | Portal claimed, bio in, **no headshot** |
-| `speaker4` | Omar Haddad, Founding Engineer | Speaker | Portal **unclaimed**, no bio, no headshot — the cold-start speaker |
-| `speaker5` | Ingrid Solberg, ML Systems Lead | Speaker | Portal unclaimed; she is also double-booked on the agenda |
-| `speaker6` | Marcus Bell, CTO | Speaker | Portal unclaimed, no bio — and a single point of failure across three sessions |
+| Seat | Persona | What the seat holds |
+|---|---|---|
+| **Admin** | Maya Okonkwo, Program Chair | Org admin + event organizer: review board, agenda, tasks, publishing, API keys |
+| **Reviewer 1** | Lena Hoffmann, Head of Platform | A completely fresh queue — 0 of 10 reviews done. The seat where you actually *do* reviewing |
+| **Reviewer 2** | Tomas Ferreira, Staff SRE | All 8 reviews done, plus a declared conflict of interest — the finished state, as a worked example |
 
-## Getting in
+The other characters (a third reviewer, six speakers) are synthetic. Their
+mail goes to the maintainer, and their half-done states are what make the
+organizer's dashboards honest.
 
-**Order matters for organizer and reviewer seats.** Sign up at
-[stagestack.dev](https://stagestack.dev) with the email you sent, and verify
-it, **before** the seed runs — the seeder finds your account by email and
-hangs the persona's memberships and review assignments on it. If you sign up
-after the seed, those assignments belong to a placeholder instead of you.
+**Shared seat, shared consequences**: two people signed in as Maya at once
+are editing the same agenda, and the audit log records "Maya Okonkwo" no
+matter which human clicked. Fine for a demo — just call dibs in the team
+channel for anything big.
 
-**Speakers are forgiving.** The speaker portal matches your verified email
-when you enter it, so you can sign up before or after the seed. Visit:
+## What to do in each seat
 
-`https://stagestack.dev/portal/meridian-dev-summit-2026`
-
-## What to test, by seat
-
-### As Maya (organizer)
+### Admin (Maya)
 
 - **Review round**: the completion board shows a real gap — one reviewer has
-  not started. Chase it the way you would in production.
+  not started (that's Lena; maybe it's you in the other tab). Chase it the
+  way you would in production.
 - **Agenda**: three deliberate blockers are seeded — a Main Hall double-book,
   one speaker on two overlapping sessions, and a same-track warning — plus
-  three sessions still in the unscheduled tray. One replot fixes more than one
+  three sessions in the unscheduled tray. One replot fixes more than one
   problem; see if the board leads you there.
-- **Tasks**: the review queue holds submissions in every state (pending,
-  provided, approved, changes requested), with real PDF uploads attached.
-  Approve one; request changes on another and check what the speaker receives.
+- **Tasks**: submissions sit in every state (pending, provided, approved,
+  changes requested) with real PDFs attached. Approve one; request changes on
+  another.
 - **Publishing**: the public page was published before the latest changes
   landed, so the publish screen reports a genuine pending diff — read it
   before you ship it.
-- **Agent access**: mint an API key in org settings, connect an agent (see
-  [AGENT_ACCESS.md](AGENT_ACCESS.md)), and watch the Control Center attribute
-  agent-assisted actions.
+- **Speakers**: the roster shows every readiness state — unclaimed portals,
+  missing bios, missing headshots — which is what the task machinery is for.
 
-### As Lena (reviewer)
+### Reviewer 1 (Lena)
 
-Work your queue of 10 from zero: score, comment, and try declaring a conflict
-of interest on a proposal you "know the author of". Compare against Priya's
-finished queue and Tomas's COI if those seats are taken by teammates.
+Work the queue of 10 from zero: score, comment, and try declaring a conflict
+of interest on a proposal you "know the author of". Tomas's seat shows what
+done-with-a-COI looks like when you want to compare.
 
-### As a speaker
+### Reviewer 2 (Tomas)
 
-- Unclaimed seats (Omar, Ingrid, Marcus): enter the portal, claim your
-  profile, and fill in what's missing — the missing bios and headshots are
-  real gaps the organizer sees on their side.
-- Ada's seat: respond to the requested changes on the slide deck and re-upload.
-- Everyone: check what lands in your inbox along the way — portal invitations,
-  task reminders, change requests. Every email's links should bring you back
-  to the right page.
+Everything is already submitted — this seat is for seeing the reviewer's
+finished state and how a declared conflict renders, on both sides: check the
+same round from the Admin seat afterwards.
 
-### As anyone (no persona needed)
+## Bring your own account
 
-- Browse the public page; the CFP is open with a conditional workshop field —
-  submit a proposal and watch it appear in the organizer's pipeline.
-- Point an MCP-capable agent at the read-only API with a key an organizer
-  mints for you: [AGENT_ACCESS.md](AGENT_ACCESS.md) has copy-paste setup for
-  Claude Code and Codex.
+Sign up at [stagestack.dev](https://stagestack.dev) with your real email if
+you want the journey a stranger gets:
+
+1. Browse the public event page and hit the open CFP — it has a conditional
+   workshop field worth triggering.
+2. Submit a proposal. The confirmation and everything after it lands in your
+   real inbox, links and all.
+3. Ping whoever holds the Admin seat: they'll see your proposal appear in the
+   pipeline, can run it through review, and accept it.
+
+Your own account holds no demo state — personas above are how you get the
+pre-seeded mess.
+
+## Drive it with an agent (MCP)
+
+StageStack exposes a hosted MCP server — fifteen tools over the same
+permission model as the UI. Full setup: [AGENT_ACCESS.md](AGENT_ACCESS.md).
+
+1. In the Admin seat: **org settings → API keys → mint**. A `read` key can
+   never write; an `organizer` key can use the three reversible write tools
+   plus request changes on tasks. The connect panel shows your exact server
+   URL.
+2. Connect your agent — both clients read the key from the environment, so
+   the secret never lands in a config file (the single quotes below are
+   load-bearing; see [AGENT_ACCESS.md](AGENT_ACCESS.md)):
+
+   ```bash
+   export STAGESTACK_MCP_KEY=ssk_…
+   ```
+
+   ```bash
+   claude mcp add --transport http stagestack https://<your-deployment>.convex.site/mcp --header 'Authorization: Bearer ${STAGESTACK_MCP_KEY}'
+   ```
+
+   ```bash
+   codex mcp add stagestack --url https://<your-deployment>.convex.site/mcp --bearer-token-env-var STAGESTACK_MCP_KEY
+   ```
+
+3. Ask questions the dashboards answer slowly. Prompts that show it off:
+   - *"Run a morning sweep of Meridian Dev Summit 2026: what's blocking the
+     agenda, and what's the smallest set of moves that fixes it?"*
+   - *"Where is the review round stuck, and who exactly is the gap?"*
+   - *"If I publish right now, what changes — and is anything in that diff
+     not ready?"*
+- Writes are attributed: an agent-assisted change shows up in the Control
+  Center as the key's owner, marked agent-assisted, with the key prefix in
+  the audit log.
+- `request_task_changes` emails a real human — in the demo that's the
+  maintainer's inbox, so fire away, but know it's live mail.
+- Revoking the key in org settings kills the agent's access on the next call
+  — also worth testing.
 
 ## Ground rules
 
-- The demo org is synthetic except for the emails you volunteered — but mail
-  is **real**: change requests and reminders you trigger will land in real
-  inboxes of teammates holding seats.
-- Don't fix all three agenda blockers at once and then wonder why it's tidy
-  for the next tester. Big rearrangements are fine; just say so in the team
-  channel so others know the mess is gone.
-- The seed can be wiped and re-run by the maintainer (`convex/seedDemo.ts`,
-  internal functions only). A wipe destroys the demo org's API keys — re-mint
-  after a reseed.
+- Mail is real. Task emails for the synthetic personas go to the maintainer;
+  anything involving your own account goes to you.
+- Rearranging the seeded mess (fixing the agenda blockers, finishing Lena's
+  queue) is the point — just say so in the team channel so the next tester
+  knows why it's tidy.
+- The maintainer can wipe and re-seed (`convex/seedDemo.ts`, internal
+  functions only). A reseed destroys the demo org's API keys — re-mint after.
