@@ -407,9 +407,11 @@ Both fixes copy patterns already in the tree — no design work, just parity.
       recommendation and dev-only `'unsafe-eval'` deliberately NOT copied,
       pinned by negative tests. KNOWN enforce-blocker, documented in
       vite.config.ts: ClerkProvider mounts on `/embed/*`, so the strict embed
-      policy is a measurement tool until a root-layout split. STILL TO VERIFY
-      on a preview deploy: `curl -sI` a document route AND a hashed asset —
-      local green cannot prove Vercel merged the file.) CSP (report-only first), HSTS,
+      policy is a measurement tool until a root-layout split. VERIFIED
+      2026-08-14 on the develop preview (the Part D merge's deploy):
+      document route carries CSP-report-only + HSTS + XFO DENY + nosniff +
+      referrer-policy; the hashed asset carries HSTS + nosniff; `/embed/*`
+      answers `frame-ancestors *` with no XFO — Vercel merged the file.) CSP (report-only first), HSTS,
       `X-Content-Type-Options`, `X-Frame-Options`/`frame-ancestors`,
       `Referrer-Policy` on the Vercel-served app. FRESH-DOCS-FIRST applies
       hard here: the right mechanism (nitro route rules vs `vercel.json`
