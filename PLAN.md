@@ -17,8 +17,11 @@ workstream → independent verify → codex review → fix round → one commit.
 C1 ships before Sunday, the rest is staged for after. **Part D** is the
 first post-challenge cycle: agent access — API keys + a hosted MCP server so
 users connect their own Claude Code / Codex to StageStack in minutes. It was
-planned and de-risked (spike validated 2026-08-14) inside this window but
-builds on a feature branch and merges to `develop` only after Sunday.
+planned and de-risked (spike validated 2026-08-14) inside this window on a
+feature branch. RE-STAGED 2026-08-14 (Alvaro): Part D ships WITH the
+submission — built and reviewed to the full merge bar on
+`feature/agent-access`, it merged to `develop` the same day instead of
+waiting out the window.
 
 Part A gates the eval re-run; Part B workstreams land independently and only
 merge if green — an unfinished feature never blocks Sunday. Part C1 is small
@@ -549,10 +552,11 @@ the fast lane and the same endpoint takes OAuth in front of it later.
   `npx convex dev --once` from a clean checkout removes it. The spike code
   lives in disposable worktree `.claude/worktrees/agent-aa7b3108bc572d1c6`.
 
-Staging rationale: **nothing here merges to `develop` before Sunday** — the
-develop preview is what the evals hit. Build on a feature branch off
-`develop`; the first slice (D1 + a read-only D2) is the end-to-end proof and
-ships together. House rules apply unchanged: one producer per sentence in
+Staging rationale (SUPERSEDED 2026-08-14, see the intro: Alvaro ruled Part D
+ships with the submission, so the finished branch merged to `develop` on
+Aug 14 rather than after Sunday): build on a feature branch off `develop`;
+the first slice (D1 + a read-only D2) is the end-to-end proof and ships
+together. House rules apply unchanged: one producer per sentence in
 `convex/model/*`, validators everywhere, convex-test with negative authz per
 new query/mutation, DS primitives first, error text only through the
 sanitization boundary. Merge bar = Part B's.
