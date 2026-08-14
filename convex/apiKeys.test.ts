@@ -810,10 +810,12 @@ describe("mcp read tools", () => {
         "archived",
         "cfpPublished",
         "endsAt",
+        "endsAtIso",
         "name",
         "publicPageEnabled",
         "slug",
         "startsAt",
+        "startsAtIso",
         "timezone",
       ].sort(),
     );

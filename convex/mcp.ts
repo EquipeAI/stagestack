@@ -77,20 +77,82 @@ const eventArgs = { ...keyArgs, eventSlug: v.string() };
 
 // ── Projections ──────────────────────────────────────────────────────────
 
+/**
+ * Every timestamp these tools emit is epoch milliseconds — sortable, but a
+ * model reading `1791907200000` next to `timezone: "America/Sao_Paulo"` has to
+ * do calendar arithmetic in its head, and at least one misread the month. So
+ * every epoch-ms field travels with an `<field>Iso` sibling: the same instant
+ * rendered as ISO-8601 wall time in the EVENT'S OWN timezone, offset included
+ * (e.g. `2026-10-13T09:00:00-03:00`). The numeric field stays authoritative
+ * for sorting and for the write tools' inputs; the Iso string is what a model
+ * should read dates from.
+ */
+function isoInZone(ms: number, timeZone: string): string {
+  try {
+    const parts: Record<string, string> = {};
+    for (const part of new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(ms))) {
+      parts[part.type] = part.value;
+    }
+    const wall = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
+    // The offset is derived, not looked up: re-read the wall-clock fields as if
+    // they were UTC and diff against the real instant. Sub-second precision is
+    // dropped first — the wall time above is whole seconds.
+    const asUtc = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+      Number(parts.second),
+    );
+    const offsetMinutes = Math.round((asUtc - Math.floor(ms / 1000) * 1000) / 60_000);
+    const sign = offsetMinutes < 0 ? "-" : "+";
+    const abs = Math.abs(offsetMinutes);
+    const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+    const mm = String(abs % 60).padStart(2, "0");
+    return `${wall}${sign}${hh}:${mm}`;
+  } catch {
+    // An unrecognized timezone string must not take a read tool down; UTC with
+    // its explicit Z suffix is still an unambiguous rendering of the instant.
+    return new Date(ms).toISOString();
+  }
+}
+
+/** `isoInZone` for optional fields: absent in, absent out. */
+function maybeIso(
+  ms: number | undefined,
+  timeZone: string,
+): string | undefined {
+  return ms === undefined ? undefined : isoInZone(ms, timeZone);
+}
+
 /** An event as an outside agent sees it: what it is and when, never its ids
  * or its storage handles. `slug` is the identifier every other tool takes. */
 const vEvent = v.object({
   slug: v.string(),
   name: v.string(),
   startsAt: v.number(),
+  startsAtIso: v.string(),
   endsAt: v.number(),
+  endsAtIso: v.string(),
   timezone: v.string(),
   type: v.optional(v.string()),
   location: v.optional(v.string()),
   website: v.optional(v.string()),
   description: v.optional(v.string()),
   cfpOpenAt: v.optional(v.number()),
+  cfpOpenAtIso: v.optional(v.string()),
   cfpCloseAt: v.optional(v.number()),
+  cfpCloseAtIso: v.optional(v.string()),
   cfpPublished: v.boolean(),
   publicPageEnabled: v.boolean(),
   archived: v.boolean(),
@@ -101,14 +163,18 @@ function projectEvent(event: Doc<"events">) {
     slug: event.slug,
     name: event.name,
     startsAt: event.startsAt,
+    startsAtIso: isoInZone(event.startsAt, event.timezone),
     endsAt: event.endsAt,
+    endsAtIso: isoInZone(event.endsAt, event.timezone),
     timezone: event.timezone,
     type: event.type,
     location: event.location,
     website: event.website,
     description: event.description,
     cfpOpenAt: event.cfpOpenAt,
+    cfpOpenAtIso: maybeIso(event.cfpOpenAt, event.timezone),
     cfpCloseAt: event.cfpCloseAt,
+    cfpCloseAtIso: maybeIso(event.cfpCloseAt, event.timezone),
     cfpPublished: event.cfpPublished,
     publicPageEnabled: event.publicPageEnabled ?? false,
     archived: event.archivedAt !== undefined,
@@ -327,8 +393,11 @@ export const listProposals = internalQuery({
         status: vProposalStatus,
         speakerCount: v.number(),
         submittedAt: v.optional(v.number()),
+        submittedAtIso: v.optional(v.string()),
         updatedAt: v.number(),
+        updatedAtIso: v.string(),
         withdrawnAt: v.optional(v.number()),
+        withdrawnAtIso: v.optional(v.string()),
       }),
     ),
   }),
@@ -341,6 +410,7 @@ export const listProposals = internalQuery({
       "read",
     );
     const list = await Cfp.listProposals(ctx, caller, { status: args.status });
+    const tz = caller.event.timezone;
     return {
       eventSlug: caller.event.slug,
       capped: list.capped,
@@ -355,8 +425,11 @@ export const listProposals = internalQuery({
         status: row.proposal.status,
         speakerCount: row.speakerCount,
         submittedAt: row.proposal.submittedAt,
+        submittedAtIso: maybeIso(row.proposal.submittedAt, tz),
         updatedAt: row.proposal.updatedAt,
+        updatedAtIso: isoInZone(row.proposal.updatedAt, tz),
         withdrawnAt: row.proposal.withdrawnAt,
+        withdrawnAtIso: maybeIso(row.proposal.withdrawnAt, tz),
       })),
     };
   },
@@ -370,7 +443,9 @@ export const getProposal = internalQuery({
     title: v.string(),
     status: vProposalStatus,
     submittedAt: v.optional(v.number()),
+    submittedAtIso: v.optional(v.string()),
     updatedAt: v.number(),
+    updatedAtIso: v.string(),
     answers: v.record(v.string(), vAnswerValue),
     speakers: v.array(
       v.object({
@@ -408,7 +483,9 @@ export const getProposal = internalQuery({
       title: detail.proposal.title,
       status: detail.proposal.status,
       submittedAt: detail.proposal.submittedAt,
+      submittedAtIso: maybeIso(detail.proposal.submittedAt, caller.event.timezone),
       updatedAt: detail.proposal.updatedAt,
+      updatedAtIso: isoInZone(detail.proposal.updatedAt, caller.event.timezone),
       answers: detail.proposal.answers,
       speakers: detail.speakers.map((speaker) => ({
         firstName: speaker.firstName,
@@ -533,7 +610,9 @@ export const listSessions = internalQuery({
         contentStatus: v.union(v.literal("draft"), v.literal("approved")),
         source: v.union(v.literal("cfp"), v.literal("direct")),
         startsAt: v.optional(v.number()),
+        startsAtIso: v.optional(v.string()),
         endsAt: v.optional(v.number()),
+        endsAtIso: v.optional(v.string()),
         scheduled: v.boolean(),
         speakers: v.array(vSpeakerName),
       }),
@@ -567,7 +646,9 @@ export const listSessions = internalQuery({
         contentStatus: row.session.contentStatus ?? ("approved" as const),
         source: row.session.source,
         startsAt: row.session.startsAt,
+        startsAtIso: maybeIso(row.session.startsAt, caller.event.timezone),
         endsAt: row.session.endsAt,
+        endsAtIso: maybeIso(row.session.endsAt, caller.event.timezone),
         scheduled: row.session.startsAt !== undefined,
         speakers: row.participants.map((p) => ({
           name: `${p.firstName} ${p.lastName}`.trim(),
@@ -584,6 +665,7 @@ export const taskDashboard = internalQuery({
   returns: v.object({
     eventSlug: v.string(),
     asOf: v.number(),
+    asOfIso: v.string(),
     speakers: v.array(
       v.object({
         name: v.string(),
@@ -640,6 +722,7 @@ export const taskDashboard = internalQuery({
     return {
       eventSlug: caller.event.slug,
       asOf: args.now,
+      asOfIso: isoInZone(args.now, caller.event.timezone),
       speakers: dashboard.speakers.map((speaker) => ({
         name: speaker.name,
         state: speaker.state,
@@ -683,7 +766,9 @@ export const agendaBoard = internalQuery({
         format: v.optional(v.string()),
         durationMinutes: v.number(),
         startsAt: v.number(),
+        startsAtIso: v.string(),
         endsAt: v.number(),
+        endsAtIso: v.string(),
         room: v.union(v.string(), v.null()),
         track: v.union(v.string(), v.null()),
         pendingRelease: v.boolean(),
@@ -704,7 +789,9 @@ export const agendaBoard = internalQuery({
       v.object({
         title: v.string(),
         startsAt: v.number(),
+        startsAtIso: v.string(),
         endsAt: v.number(),
+        endsAtIso: v.string(),
         room: v.union(v.string(), v.null()),
         description: v.optional(v.string()),
         conflicts: v.array(vConflict),
@@ -747,7 +834,9 @@ export const agendaBoard = internalQuery({
         format: session.format,
         durationMinutes: session.durationMinutes,
         startsAt: session.startsAt as number,
+        startsAtIso: isoInZone(session.startsAt as number, board.event.timezone),
         endsAt: session.endsAt as number,
+        endsAtIso: isoInZone(session.endsAt as number, board.event.timezone),
         room:
           session.roomId === undefined
             ? null
@@ -772,7 +861,9 @@ export const agendaBoard = internalQuery({
       agendaItems: board.agendaItems.map((item) => ({
         title: item.title,
         startsAt: item.startsAt,
+        startsAtIso: isoInZone(item.startsAt, board.event.timezone),
         endsAt: item.endsAt,
+        endsAtIso: isoInZone(item.endsAt, board.event.timezone),
         room:
           item.roomId === undefined
             ? null
@@ -810,10 +901,18 @@ export const publishState = internalQuery({
       stale: v.boolean(),
       version: v.union(v.number(), v.null()),
       publishedAt: v.union(v.number(), v.null()),
+      publishedAtIso: v.union(v.string(), v.null()),
       acceptedSessions: v.number(),
       releasedSessions: v.number(),
-      publishedSessionCount: v.number(),
-      publishedAgendaItemCount: v.number(),
+      // Two different facts, named apart because an agent read them as one:
+      // `flagged*` counts entries whose per-entry publication flag is ON —
+      // eligibility, which can be non-zero before anything is ever published —
+      // and `served*` counts entries actually on the public page right now
+      // (the same population `diff.*.servedCount` describes).
+      flaggedSessionCount: v.number(),
+      flaggedAgendaItemCount: v.number(),
+      servedSessionCount: v.number(),
+      servedAgendaItemCount: v.number(),
     }),
     diff: v.object({
       neverPublished: v.boolean(),
@@ -854,10 +953,20 @@ export const publishState = internalQuery({
         stale: state.stale,
         version: state.version,
         publishedAt: state.publishedAt,
+        publishedAtIso:
+          state.publishedAt === null
+            ? null
+            : isoInZone(state.publishedAt, caller.event.timezone),
         acceptedSessions: state.acceptedSessions,
         releasedSessions: state.releasedSessions,
-        publishedSessionCount: state.publishedSessionIds.length,
-        publishedAgendaItemCount: state.publishedAgendaItemIds.length,
+        // Flags say what MAY be served; the served blob says what IS. The old
+        // single `published*Count` pair reported the flags while the diff next
+        // to it counted the blob, and an agent rightly called the payload
+        // self-contradictory ("0 published items" beside "serving 6 entries").
+        flaggedSessionCount: state.publishedSessionIds.length,
+        flaggedAgendaItemCount: state.publishedAgendaItemIds.length,
+        servedSessionCount: diff.lineup.servedCount,
+        servedAgendaItemCount: diff.agenda.servedCount,
       },
       diff: {
         neverPublished: diff.neverPublished,
@@ -903,6 +1012,7 @@ export const listTaskReviews = internalQuery({
         ),
         reviewRequired: v.boolean(),
         dueAt: v.number(),
+        dueAtIso: v.string(),
         uploadCount: v.number(),
         reviewNote: v.optional(v.string()),
       }),
@@ -941,6 +1051,7 @@ export const listTaskReviews = internalQuery({
         evidence: row.evidence,
         reviewRequired: row.reviewRequired,
         dueAt: row.dueAt,
+        dueAtIso: isoInZone(row.dueAt, caller.event.timezone),
         uploadCount: row.uploadCount,
         reviewNote: row.reviewNote,
       })),
@@ -1178,7 +1289,9 @@ export const scheduleSession = internalMutation({
     title: v.string(),
     scheduled: v.boolean(),
     startsAt: v.union(v.number(), v.null()),
+    startsAtIso: v.union(v.string(), v.null()),
     endsAt: v.union(v.number(), v.null()),
+    endsAtIso: v.union(v.string(), v.null()),
     room: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args) => {
@@ -1211,7 +1324,9 @@ export const scheduleSession = internalMutation({
       title: session.title,
       scheduled: session.startsAt !== undefined,
       startsAt: session.startsAt ?? null,
+      startsAtIso: maybeIso(session.startsAt, caller.event.timezone) ?? null,
       endsAt: session.endsAt ?? null,
+      endsAtIso: maybeIso(session.endsAt, caller.event.timezone) ?? null,
       room,
     };
   },

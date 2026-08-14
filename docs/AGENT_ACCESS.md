@@ -52,6 +52,14 @@ codex mcp add stagestack --url https://<your-deployment>.convex.site/mcp --beare
 Same variable, same reason: Codex reads `STAGESTACK_MCP_KEY` from the
 environment at connect time, so the key is not written into its config either.
 
+Codex approves MCP tool calls using the annotations each tool declares.
+StageStack's read tools are marked `readOnlyHint: true` and its reversible
+writes `destructiveHint: false`, so `codex exec` runs them without prompting.
+The one exception is `request_task_changes`, which sends email: it is marked
+`openWorldHint: true`, and non-interactive Codex will refuse it ("user
+cancelled MCP tool call") — run Codex interactively to approve it, exactly as
+intended.
+
 **Anything else.** Any client that speaks streamable-HTTP MCP: point it at the
 URL and send the key as a bearer token.
 
@@ -124,6 +132,18 @@ thin call into the same `convex/model/*` capability the web UI calls, returning
 an explicit projection — never a raw document. Lists that can stop short carry a
 `capped` flag, and a capped list is a sample, not an answer.
 
+**Timestamps come in pairs.** Every epoch-milliseconds field a tool emits
+(`startsAt`, `endsAt`, `dueAt`, `publishedAt`, `submittedAt`, `updatedAt`,
+`withdrawnAt`, `cfpOpenAt`, `cfpCloseAt`, `asOf`, ...) travels with an
+`<field>Iso` sibling — the same instant rendered as an ISO-8601 string in the
+event's own timezone, UTC offset included, e.g. `2026-10-13T09:00:00-03:00`.
+The Iso field exists because a model reading a raw epoch number next to a
+separate timezone string has to do calendar arithmetic in its head, and at
+least one misread a demo event's month doing so. Agents should read dates from
+the Iso form and keep the numeric form for sorting and arithmetic; the numeric
+fields are unchanged and remain authoritative. `schedule_session`'s *input*
+still takes epoch milliseconds.
+
 | Tool | What it answers or does | Ceiling |
 |---|---|---|
 | `search` | Finds events by name; with an `eventSlug`, also that event's sessions, speakers and proposals. Start here when you have a name but no id. Minimum two characters. | Read |
@@ -135,7 +155,7 @@ an explicit projection — never a raw document. Lists that can stop short carry
 | `list_sessions` | Every session on the programme with its participants and each speaker's state (awaiting / confirmed / declined / withdrawn). | Read |
 | `task_dashboard` | Speaker readiness and what blocks the programme: missing bios and headshots, outstanding and overdue tasks, draft content, unscheduled sessions, conflicts. The morning-sweep tool. | Read |
 | `agenda_board` | The schedule grid: rooms, tracks, placed sessions, the unscheduled tray, and derived conflicts. | Read |
-| `publish_state` | What the public page serves now versus what it would serve if published — flags, served version, staleness, and a per-channel diff. | Read |
+| `publish_state` | What the public page serves now versus what it would serve if published — flags, served version, staleness, and a per-channel diff. `state` carries two count pairs with different semantics: `servedSessionCount`/`servedAgendaItemCount` count entries actually on the public page (the population the diff's `servedCount` describes), while `flaggedSessionCount`/`flaggedAgendaItemCount` count records whose per-record publication flag is on — eligibility for the next publish. They legitimately diverge: the served agenda mixes scheduled sessions (session flags) with standalone agenda items (agenda-item flags), so six served agenda entries beside zero flagged agenda items is consistent, not a data bug. (These replace the former `publishedSessionCount`/`publishedAgendaItemCount`, which reported the flag counts under a name that read as served counts.) | Read |
 | `list_task_reviews` | Speaker tasks in one review state (default `provided`: submitted, awaiting decision), due date first. The only tool that emits the `taskId` the task write tools need. | Read |
 | `update_session_content` | Edits a session's title, description, format or length. Live at once. Title, description and format changes are snapshotted in the session's revision history; a length (`durationMinutes`) change is a scheduling fact and is not versioned, so a duration-only edit leaves no revision to restore from. On an **already-published** event this updates the public page immediately — exactly as the same edit in the web app does. It never publishes an unpublished event. | Organizer |
 | `schedule_session` | Places a session in a time slot and room (room by name), or `slot: null` to unschedule. An internal draft: emails nobody, publishes nothing, re-issues no calendar invitation. Does not check for clashes — read `agenda_board` afterwards. | Organizer |

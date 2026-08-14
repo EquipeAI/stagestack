@@ -51,9 +51,40 @@ Those stay with a signed-in human in the web app. The single exception to
 owes the work — that notification IS the action, and its own description says
 so.
 
+Timestamps come in pairs: every epoch-milliseconds field (startsAt, endsAt,
+dueAt, publishedAt, ...) has an "<field>Iso" sibling (startsAtIso, ...) holding
+the SAME instant as an ISO-8601 string in the event's own timezone, UTC offset
+included — e.g. "2026-10-13T09:00:00-03:00". Read calendar dates and times from
+the Iso field; use the numeric field for sorting and arithmetic, and for
+schedule_session's input, which takes epoch milliseconds.
+
 Typical questions these answer: what still blocks the program from being
 published, which speakers have not submitted their material, how far a review
 round has got, and what publishing right now would change on the public page.`;
+
+/**
+ * Tool annotations are not decoration here — they are the difference between
+ * working and not working in a non-interactive client. Codex's approval gate
+ * (codex-rs `requires_mcp_tool_approval`) treats a tool with NO annotations as
+ * `destructiveHint: true, openWorldHint: true` and asks the user before every
+ * call; under `codex exec` there is no user to ask, so the call is aborted as
+ * "user cancelled MCP tool call" — reads and writes alike. A truthful
+ * `readOnlyHint: true` lets reads run unprompted, and truthful
+ * `destructiveHint/openWorldHint: false` does the same for the reversible,
+ * non-outbound writes. The one outbound tool (request_task_changes, which
+ * emails a human) truthfully declares `openWorldHint: true` and SHOULD keep
+ * requiring an interactive approval.
+ */
+const READ_ONLY = {
+  readOnlyHint: true,
+  openWorldHint: false,
+} as const;
+
+const REVERSIBLE_WRITE = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  openWorldHint: false,
+} as const;
 
 const eventSlug = z
   .string()
@@ -126,6 +157,7 @@ export function makeStageStackMcpServer(
     "search",
     {
       title: "Search StageStack",
+      annotations: READ_ONLY,
       description:
         "Search everything the API key can reach — by default events by name; pass an eventSlug to also search that event's sessions, speakers and proposals. Use this first when you have a name but not an id or slug. Results come back grouped by kind; a group flagged `capped: true` was truncated, so treat it as a sample rather than the whole answer.",
       inputSchema: z.object({
@@ -155,8 +187,9 @@ export function makeStageStackMcpServer(
     "list_events",
     {
       title: "List events",
+      annotations: READ_ONLY,
       description:
-        "List every event this API key can reach, with its slug, dates, timezone and archived state. An event-scoped key returns exactly one event. Start here to find the `eventSlug` the other tools need.",
+        "List every event this API key can reach, with its slug, dates, timezone and archived state. An event-scoped key returns exactly one event. Start here to find the `eventSlug` the other tools need. Dates come as epoch milliseconds plus an `Iso` sibling (startsAtIso, ...) in the event's own timezone.",
       inputSchema: z.object({}),
     },
     async () =>
@@ -172,8 +205,9 @@ export function makeStageStackMcpServer(
     "get_event",
     {
       title: "Get event",
+      annotations: READ_ONLY,
       description:
-        "Full settings for one event: name, dates, timezone, location, description, the call-for-papers window, and the role the API key holds on it. Use it to establish context before answering anything time-sensitive — every other tool's dates are in this event's timezone.",
+        "Full settings for one event: name, dates, timezone, location, description, the call-for-papers window, and the role the API key holds on it. Use it to establish context before answering anything time-sensitive. Dates come in pairs — epoch milliseconds (startsAt) plus an ISO-8601 rendering in the event's own timezone (startsAtIso); read dates from the Iso form.",
       inputSchema: z.object({ eventSlug }),
     },
     async (args) =>
@@ -190,8 +224,9 @@ export function makeStageStackMcpServer(
     "list_proposals",
     {
       title: "List proposals",
+      annotations: READ_ONLY,
       description:
-        "Every talk proposal submitted to an event's call for papers, with its status and speaker count. Statuses run: draft (speaker still writing) → pending (submitted, awaiting decision) → acceptQueue / declineQueue (decided but not yet told) → accepted / declined (speaker notified) → withdrawn. Filter by one status to answer questions like \"what is still waiting on a decision\". `capped: true` means the event has more proposals than one read returns.",
+        "Every talk proposal submitted to an event's call for papers, with its status and speaker count. Statuses run: draft (speaker still writing) → pending (submitted, awaiting decision) → acceptQueue / declineQueue (decided but not yet told) → accepted / declined (speaker notified) → withdrawn. Filter by one status to answer questions like \"what is still waiting on a decision\". `capped: true` means the event has more proposals than one read returns. Timestamps come as epoch milliseconds plus an `Iso` sibling (submittedAtIso, ...) in the event's timezone.",
       inputSchema: z.object({
         eventSlug,
         status: z
@@ -223,6 +258,7 @@ export function makeStageStackMcpServer(
     "get_proposal",
     {
       title: "Get proposal",
+      annotations: READ_ONLY,
       description:
         "One proposal in full: its answers to the call-for-papers form, its speakers, who submitted it, and links to any uploaded files. Get the `proposalId` from list_proposals or search.",
       inputSchema: z.object({
@@ -247,6 +283,7 @@ export function makeStageStackMcpServer(
     "review_progress",
     {
       title: "Review progress",
+      annotations: READ_ONLY,
       description:
         "How far the review of an event's proposals has got. For an organizer key: per-proposal counts (assigned, submitted, conflicts, average score) plus a per-reviewer completion board — the way to answer \"who has not finished reviewing\". For a reviewer-only key: that reviewer's own assignments and nothing else.",
       inputSchema: z.object({ eventSlug }),
@@ -265,8 +302,9 @@ export function makeStageStackMcpServer(
     "list_sessions",
     {
       title: "List sessions",
+      annotations: READ_ONLY,
       description:
-        "Every session on the event's programme, with its participants and each speaker's participation state (awaiting / confirmed / declined / withdrawn). Sessions are what the public programme is made of — a proposal becomes a session when it is accepted and released. Use this to answer \"who is speaking\" and \"who has not confirmed\".",
+        "Every session on the event's programme, with its participants and each speaker's participation state (awaiting / confirmed / declined / withdrawn). Sessions are what the public programme is made of — a proposal becomes a session when it is accepted and released. Use this to answer \"who is speaking\" and \"who has not confirmed\". Scheduled sessions carry startsAt/endsAt as epoch milliseconds plus startsAtIso/endsAtIso in the event's timezone.",
       inputSchema: z.object({ eventSlug }),
     },
     async (args) =>
@@ -283,6 +321,7 @@ export function makeStageStackMcpServer(
     "task_dashboard",
     {
       title: "Speaker readiness dashboard",
+      annotations: READ_ONLY,
       description:
         "What is outstanding from speakers, and what is blocking the programme. Returns per-speaker readiness (missing bio, missing headshot, outstanding and overdue tasks), per-session readiness, headline totals, and the current blockers (draft content, unscheduled sessions, schedule conflicts). This is the \"morning sweep\" tool: ask it before chasing anybody.",
       inputSchema: z.object({ eventSlug }),
@@ -301,8 +340,9 @@ export function makeStageStackMcpServer(
     "agenda_board",
     {
       title: "Agenda board",
+      annotations: READ_ONLY,
       description:
-        "The schedule grid: rooms, tracks, the sessions placed into time slots, the tray of sessions still unscheduled, and any derived conflicts (a speaker double-booked, a room clash). Use it to answer \"is the schedule finished\" and \"what still has no slot\".",
+        "The schedule grid: rooms, tracks, the sessions placed into time slots, the tray of sessions still unscheduled, and any derived conflicts (a speaker double-booked, a room clash). Use it to answer \"is the schedule finished\" and \"what still has no slot\". Slot times come as epoch milliseconds (startsAt/endsAt — what schedule_session takes) plus startsAtIso/endsAtIso, ISO-8601 in the event's own timezone; read times from the Iso form.",
       inputSchema: z.object({ eventSlug }),
     },
     async (args) =>
@@ -319,8 +359,9 @@ export function makeStageStackMcpServer(
     "publish_state",
     {
       title: "Publish state and diff",
+      annotations: READ_ONLY,
       description:
-        "What the public page currently serves versus what it would serve if published now. `state` gives the published-lineup and published-agenda flags, the served version, and whether it is stale; `diff` lists exactly what publishing would add, change and remove per channel. Use it to answer \"is the public programme up to date\" and \"what would publishing change\".",
+        "What the public page currently serves versus what it would serve if published now. `state` gives the published-lineup and published-agenda flags, the served version, and whether it is stale; `diff` lists exactly what publishing would add, change and remove per channel. Two count pairs in `state` measure different things: `servedSessionCount`/`servedAgendaItemCount` are entries actually on the public page right now, while `flaggedSessionCount`/`flaggedAgendaItemCount` count records whose per-record publication flag is switched on — eligibility for the next publish, which can differ from what is served. Note the served agenda mixes scheduled sessions (governed by session flags) with standalone agenda items (governed by agenda-item flags), so `servedAgendaItemCount` can be 6 while `flaggedAgendaItemCount` is 0 without contradiction. Use it to answer \"is the public programme up to date\" and \"what would publishing change\".",
       inputSchema: z.object({ eventSlug }),
     },
     async (args) =>
@@ -337,8 +378,9 @@ export function makeStageStackMcpServer(
     "list_task_reviews",
     {
       title: "List tasks by review state",
+      annotations: READ_ONLY,
       description:
-        "Speaker tasks in one review state, each with the `taskId` that approve_task and request_task_changes need — no other tool emits one. Defaults to `provided`: work a speaker has submitted that is waiting for an organizer's decision, i.e. the review queue. Pass a status to look elsewhere — `approved` to find something to send back, `pending` for work not submitted yet, `changesRequested` for what is already back with the speaker. Ordered by due date, soonest first, so the most urgent tasks are the ones you get. Read-only; `capped: true` means more tasks are in this state than one read returns, and the ones you did not get are the ones due latest.",
+        "Speaker tasks in one review state, each with the `taskId` that approve_task and request_task_changes need — no other tool emits one. Defaults to `provided`: work a speaker has submitted that is waiting for an organizer's decision, i.e. the review queue. Pass a status to look elsewhere — `approved` to find something to send back, `pending` for work not submitted yet, `changesRequested` for what is already back with the speaker. Ordered by due date, soonest first, so the most urgent tasks are the ones you get. Each task's due date comes as `dueAt` (epoch milliseconds) plus `dueAtIso` (ISO-8601 in the event's timezone). Read-only; `capped: true` means more tasks are in this state than one read returns, and the ones you did not get are the ones due latest.",
       inputSchema: z.object({
         eventSlug,
         status: z
@@ -375,6 +417,7 @@ export function makeStageStackMcpServer(
     "update_session_content",
     {
       title: "Edit session content",
+      annotations: REVERSIBLE_WRITE,
       description:
         "Edit one session's title, description, format label or length. The change is LIVE IMMEDIATELY — there is no draft state and no undo call — but it is reversible: every content edit is recorded in the session's revision history, so an organizer can restore an earlier version from the web app, and you can put the previous text back through this tool. Only the fields you pass are touched; omit a field to leave it as it is. This does NOT email anyone and does NOT publish anything. One caveat, stated plainly: if this event's public programme has ALREADY been published, editing a session that appears in it updates the public page text at once — exactly as the same edit in the web app does. It never publishes an event that was not already published. Needs an organizer-ceiling API key.",
       inputSchema: z.object({
@@ -422,6 +465,7 @@ export function makeStageStackMcpServer(
     "schedule_session",
     {
       title: "Place a session on the schedule",
+      annotations: REVERSIBLE_WRITE,
       description:
         "Put a session in a time slot and room on the agenda board, or pass `slot: null` to send it back to the unscheduled tray. Times are epoch milliseconds; the event's own timezone comes from get_event. The room is given BY NAME, exactly as agenda_board reports it. A placement is an internal DRAFT: it changes the board and nothing else — it does NOT email speakers, does NOT publish the schedule, and does NOT re-issue anyone's calendar invitation. Telling speakers about a slot is a separate, deliberate act by an organizer in the web app. Live immediately and fully reversible: move it again, or clear it. This tool does not check for clashes — call agenda_board afterwards to see any conflicts your placement created. Needs an organizer-ceiling API key.",
       inputSchema: z.object({
@@ -459,6 +503,7 @@ export function makeStageStackMcpServer(
     "approve_task",
     {
       title: "Approve submitted speaker work",
+      annotations: REVERSIBLE_WRITE,
       description:
         "Accept a speaker's submitted work on one task — the same review decision an organizer makes in the tasks table. Get the `taskId` from list_task_reviews. Only work that has been submitted and is awaiting review can be approved; anything else is refused. Live immediately, and reversible: request_task_changes sends the same task back afterwards. This sends no email and publishes nothing. Needs an organizer-ceiling API key.",
       inputSchema: z.object({
@@ -482,6 +527,7 @@ export function makeStageStackMcpServer(
     "request_task_changes",
     {
       title: "Send speaker work back for changes",
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       description:
         "Send a speaker's submitted work back with an explanatory note. THIS TOOL NOTIFIES: StageStack emails the person who owes the work — or their manager, or the event's organizers if neither has an address — with your note included, because a change request nobody is told about would not be one. Write the note as a message to the speaker; it is stored on the task and shown to them. Live immediately. The task can be resubmitted and approved afterwards, but the email cannot be recalled once sent, so be sure before you call this. It publishes nothing. Needs an organizer-ceiling API key.",
       inputSchema: z.object({
