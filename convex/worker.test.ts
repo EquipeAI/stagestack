@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { api, internal } from "./_generated/api";
+import { MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
+import { api, components, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
   createEvent,
@@ -18,6 +19,30 @@ import { IMPORT_LIMITS, type PlannedRecord } from "./shared/importPlan";
 
 // Mirrors `test.env.WORKER_SECRET` in vitest.config.ts.
 const SECRET = "test-worker-secret";
+
+// A handle on the SAME shared bucket the worker endpoints consume (the
+// `workerCalls` limit in convex/worker.ts — one bucket for every endpoint, so
+// name and config must match here or this points at a different row). Used to
+// spend the budget in one call instead of making 1200 real worker calls.
+const workerBucket = new RateLimiter(components.rateLimiter, {
+  workerCalls: {
+    kind: "token bucket",
+    rate: 600,
+    period: MINUTE,
+    capacity: 1200,
+  },
+});
+
+const WORKER_BUCKET_CAPACITY = 1200;
+
+/** Spend `count` of the shared worker budget in one go, instead of making that
+ * many real worker calls. */
+async function spendWorkerBudget(t: TestT, count: number): Promise<void> {
+  await t.run(async (ctx) => {
+    const spent = await workerBucket.limit(ctx, "workerCalls", { count });
+    expect(spent.ok).toBe(true);
+  });
+}
 
 /** Claim a job and return its fencing token, asserting the claim succeeded. */
 async function claim(t: TestT, jobId: Id<"jobs">): Promise<string> {
@@ -675,7 +700,7 @@ describe("worker queue", () => {
       return job!._id;
     });
 
-    const context = (await t.query(api.worker.importContext, {
+    const context = (await t.mutation(api.worker.importContext, {
       secret: SECRET,
       jobId,
     })) as { truncated: { contacts: boolean; proposals: boolean } };
@@ -684,5 +709,50 @@ describe("worker queue", () => {
       contacts: false,
       proposals: false,
     });
+  });
+
+  test("importContext CONSUMES the shared worker budget, it doesn't just observe it (F3)", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme");
+    const eventSlug = await createEvent(alice, orgSlug, "DevConf");
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["title,speaker\nTalk A,Ada"])),
+    );
+    const jobId = await alice.mutation(api.imports.start, {
+      eventSlug,
+      storageId,
+      filename: "talks.csv",
+    });
+
+    // Normal use is unaffected: with budget left, the context is served — and
+    // that call spends one token of the shared bucket.
+    expect(
+      await t.mutation(api.worker.importContext, { secret: SECRET, jobId }),
+    ).toMatchObject({ filename: "talks.csv" });
+
+    // Leave exactly one token. If `importContext` only CHECKED the bucket (the
+    // F3 bug — a query can't consume), the two calls below would BOTH succeed:
+    // no other worker call happens in between, so nothing else would ever move
+    // the bucket. Draining the rest by hand keeps the test to a handful of
+    // real calls instead of 1200.
+    await spendWorkerBudget(t, WORKER_BUCKET_CAPACITY - 2);
+
+    // The last token buys one more context...
+    expect(
+      await t.mutation(api.worker.importContext, { secret: SECRET, jobId }),
+    ).toMatchObject({ filename: "talks.csv" });
+    // ...and the next call is refused, which can only be true if the calls
+    // above consumed. Same refusal shape as the sibling endpoints
+    // (`rateLimited()`).
+    await expectRejectedWith(
+      t.mutation(api.worker.importContext, { secret: SECRET, jobId }),
+      "rate_limited",
+    );
+    // One shared bucket: importContext's own spend refuses its siblings too.
+    await expectRejectedWith(
+      t.query(api.worker.pending, { secret: SECRET }),
+      "rate_limited",
+    );
   });
 });

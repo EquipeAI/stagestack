@@ -787,14 +787,7 @@ describe("publish — size guard", () => {
       // Convex's 1MiB document cap.
       const description = "x".repeat(925_000);
       await ctx.db.patch("sessions", seeded.sessionId, { description });
-      const current = published.program as {
-        [key: string]: unknown;
-        lineup: Array<{
-          [key: string]: unknown;
-          sessionId: string;
-          description?: string;
-        }>;
-      };
+      const current = published.program;
       const program = {
         ...current,
         lineup: current.lineup.map((session) =>

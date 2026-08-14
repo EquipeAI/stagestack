@@ -10,6 +10,10 @@ import {
   type TestT,
 } from "./test.helpers";
 
+/** Accepting an invitation authorizes on the LIVE token's verified address
+ * (model/team.acceptInvitation), so a redeemer identity must carry the claim. */
+const VERIFIED = { emailVerified: true };
+
 async function tokenFor(t: TestT, email: string): Promise<string> {
   return await t.run(async (ctx) => {
     const invite = await ctx.db
@@ -57,7 +61,7 @@ describe("team.inviteToEvent / acceptInvitation", () => {
       scope: "organization",
     });
 
-    const rita = await signIn(t, "rita");
+    const rita = await signIn(t, "rita", VERIFIED);
     const token = await tokenFor(t, "rita@example.com");
     const result = await rita.mutation(api.team.acceptInvitation, { token });
     expect(result).toEqual({ orgSlug, eventSlug });
@@ -149,6 +153,161 @@ describe("team.inviteToEvent / acceptInvitation", () => {
     ).toBeNull();
   });
 
+  test("NEGATIVE: a wrong-email account cannot redeem the token, and the invite stays pending", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+
+    const invitationId = await alice.mutation(api.team.inviteToEvent, {
+      eventSlug,
+      email: "rita@example.com",
+      role: "reviewer",
+    });
+    const token = await tokenFor(t, "rita@example.com");
+
+    // The token is a bearer credential; a leaked/forwarded link in the hands of
+    // any other signed-in account must not buy membership.
+    const mallory = await signIn(t, "mallory", VERIFIED);
+    const auditBefore = await t.run(async (ctx) =>
+      ctx.db.query("auditLog").collect(),
+    );
+    await expectRejectedWith(
+      mallory.mutation(api.team.acceptInvitation, { token }),
+      "invitation_email_mismatch",
+    );
+
+    // No membership was granted, in either scope.
+    const [eventMembers, members] = await t.run(async (ctx) => [
+      await ctx.db.query("eventMembers").collect(),
+      await ctx.db.query("members").collect(),
+    ]);
+    expect(eventMembers).toHaveLength(0);
+    // Only alice's founding ownership row survives — mallory gained nothing.
+    expect(members.map((m) => m.role)).toEqual(["owner"]);
+
+    // The refusal wrote no audit row …
+    const auditAfter = await t.run(async (ctx) =>
+      ctx.db.query("auditLog").collect(),
+    );
+    expect(auditAfter).toHaveLength(auditBefore.length);
+
+    // … and did not burn the real invitee's invitation.
+    const invite = await t.run(async (ctx) =>
+      ctx.db.get("invitations", invitationId),
+    );
+    expect(invite?.status).toBe("pending");
+
+    // Which the right account then proves by accepting it.
+    const rita = await signIn(t, "rita", VERIFIED);
+    expect(await rita.mutation(api.team.acceptInvitation, { token })).toEqual({
+      orgSlug,
+      eventSlug,
+    });
+  });
+
+  test("the email match is case- and whitespace-insensitive", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+
+    const invitationId = await alice.mutation(api.team.inviteToEvent, {
+      eventSlug,
+      email: "rita@example.com",
+      role: "reviewer",
+    });
+    const token = await tokenFor(t, "rita@example.com");
+    // Stored casing must not decide the match: an invite row written before
+    // normalisation existed (or by an import) still binds to the same person.
+    await t.run(async (ctx) => {
+      await ctx.db.patch("invitations", invitationId, {
+        email: "  Rita@Example.COM ",
+      });
+    });
+
+    const rita = await signIn(t, "rita", VERIFIED);
+    expect(await rita.mutation(api.team.acceptInvitation, { token })).toEqual({
+      orgSlug,
+      eventSlug,
+    });
+    const eventMembers = await t.run(async (ctx) =>
+      ctx.db.query("eventMembers").collect(),
+    );
+    expect(eventMembers).toHaveLength(1);
+    expect(eventMembers[0].role).toBe("reviewer");
+  });
+
+  test("NEGATIVE: an unverified address cannot redeem the invitation even when it matches", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+
+    const invitationId = await alice.mutation(api.team.inviteToEvent, {
+      eventSlug,
+      email: "rita@example.com",
+      role: "reviewer",
+    });
+    const token = await tokenFor(t, "rita@example.com");
+
+    // Anyone can *type* someone else's address into their Clerk account; only
+    // the verified claim proves they own it. An absent claim reads unverified.
+    const unverified = await signIn(t, "rita", { emailVerified: false });
+    await expectRejectedWith(
+      unverified.mutation(api.team.acceptInvitation, { token }),
+      "email_unverified",
+    );
+    const noClaim = await signIn(t, "rita");
+    await expectRejectedWith(
+      noClaim.mutation(api.team.acceptInvitation, { token }),
+      "email_unverified",
+    );
+
+    const [eventMembers, invite] = await t.run(async (ctx) => [
+      await ctx.db.query("eventMembers").collect(),
+      await ctx.db.get("invitations", invitationId),
+    ]);
+    expect(eventMembers).toHaveLength(0);
+    expect(invite?.status).toBe("pending");
+  });
+
+  test("NEGATIVE: a stale stored users.email cannot stand in for the live token", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+
+    await alice.mutation(api.team.inviteToEvent, {
+      eventSlug,
+      email: "rita@example.com",
+      role: "reviewer",
+    });
+    const token = await tokenFor(t, "rita@example.com");
+
+    // `users.email` is delivery data, not an authorization key: a row carrying
+    // the invited address (stale, imported, or written before the address moved)
+    // must not admit an identity whose live token says someone else.
+    const mallory = await signIn(t, "mallory", VERIFIED);
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("users")
+        .withIndex("by_email", (q) => q.eq("email", "mallory@example.com"))
+        .unique();
+      if (row === null) throw new Error("no users row for mallory");
+      await ctx.db.patch("users", row._id, { email: "rita@example.com" });
+    });
+    await expectRejectedWith(
+      mallory.mutation(api.team.acceptInvitation, { token }),
+      "invitation_email_mismatch",
+    );
+
+    const eventMembers = await t.run(async (ctx) =>
+      ctx.db.query("eventMembers").collect(),
+    );
+    expect(eventMembers).toHaveLength(0);
+  });
+
   test("rejects a duplicate pending invite and a malformed email", async () => {
     const t = setupTest();
     const alice = await signIn(t, "alice");
@@ -214,7 +373,7 @@ describe("team.inviteOrgAdmin", () => {
       await t.query(api.team.previewInvitation, { token, now: Date.now() }),
     ).toMatchObject({ eventName: null, role: "admin", status: "pending" });
 
-    const adam = await signIn(t, "adam");
+    const adam = await signIn(t, "adam", VERIFIED);
     const result = await adam.mutation(api.team.acceptInvitation, { token });
     expect(result).toEqual({ orgSlug, eventSlug: null });
 
@@ -256,7 +415,7 @@ describe("team.inviteOrgAdmin", () => {
       email: "adam@example.com",
       role: "admin",
     });
-    const adam = await signIn(t, "adam");
+    const adam = await signIn(t, "adam", VERIFIED);
     await adam.mutation(api.team.acceptInvitation, {
       token: await tokenFor(t, "adam@example.com"),
     });

@@ -21,6 +21,9 @@ import * as Tasks from "./tasks";
 import * as Speakers from "./speakers";
 import { assertEventActive, assertText, normalizeEmail } from "./validation";
 import { optionalHttpUrl } from "../lib/urls";
+import {
+  PARTICIPANT_SCAN,
+} from "../lib/readCaps";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Speaker portal (M3).
@@ -43,10 +46,12 @@ import { optionalHttpUrl } from "../lib/urls";
 
 /** One event's participant rows fit comfortably; the organizer UI paginates
  * well before this becomes the wrong shape (see model/sessions.ts). */
-const PARTICIPANT_SCAN = 5000;
 const MAX_PARTICIPANTS_PER_SESSION = 100;
-/** A person can hold a handful of snapshots per event at most (one per email). */
-const CONTACT_SCAN = 200;
+/** Per-PERSON, not per-event: both reads below are keyed by one user or one
+ * email address, so this is deliberately far below the shared per-event
+ * `CONTACT_SCAN` in `lib/readCaps` and must not be folded into it. A person
+ * can hold a handful of snapshots per event at most (one per email). */
+const PERSON_CONTACT_SCAN = 200;
 const HANDOFF_SCAN = 50;
 const PROPOSAL_SCAN = 100;
 const SESSION_FETCH = 200;
@@ -441,7 +446,7 @@ async function claimedContacts(
   const mine = await ctx.db
     .query("eventContacts")
     .withIndex("by_userId", (q) => q.eq("userId", user._id))
-    .take(CONTACT_SCAN);
+    .take(PERSON_CONTACT_SCAN);
   return mine.filter((c) => c.eventId === event._id);
 }
 
@@ -567,7 +572,7 @@ export async function enterPortal(
     .withIndex("by_eventId_and_email", (q) =>
       q.eq("eventId", event._id).eq("email", email),
     )
-    .take(CONTACT_SCAN);
+    .take(PERSON_CONTACT_SCAN);
   for (const snapshot of snapshots) {
     // Never re-point a snapshot someone else already claimed.
     if (snapshot.userId !== undefined) continue;

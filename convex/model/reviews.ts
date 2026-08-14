@@ -3,9 +3,12 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
+import {
+  REVIEW_SCAN,
+} from "../lib/readCaps";
 import { logAudit } from "./audit";
 import type { AnswerValue, FormDef } from "../shared/formDef";
-import { findForm } from "./cfp";
+import { findForm } from "./cfpForms";
 import {
   MAX_SCORECARD_FIELDS,
   answerProblem,
@@ -43,7 +46,6 @@ import { sendLoggedEmail, siteUrl } from "./comms";
 
 const MAX_BULK = 500;
 /** Ceiling for the event-wide review scans backing the progress map. */
-const REVIEW_SCAN = 5000;
 const REVIEW_SUMMARY_SCAN = 200;
 const MAX_SPEAKERS_PER_PROPOSAL = 40;
 

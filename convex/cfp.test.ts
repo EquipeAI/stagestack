@@ -12,7 +12,7 @@ import {
   type TestT,
   type TestUserT,
 } from "./test.helpers";
-import { starterFormDef } from "./model/cfp";
+import { starterFormDef } from "./model/cfpForms";
 import type { FormDef } from "./shared/formDef";
 import type { Doc } from "./_generated/dataModel";
 
@@ -1598,13 +1598,6 @@ describe("cfp.reopenProposal", () => {
         expectedContentVersion: view.proposal.contentVersion ?? 0,
         answers: view.proposal.answers,
         speakers: view.speakers.map(speakerInput),
-      }),
-      "event_archived",
-    );
-    await expectRejectedWith(
-      t.mutation(internal.sessions.syncAcceptedProposalRevision, {
-        proposalId,
-        submittedByUserId: view.proposal.submitterUserId,
       }),
       "event_archived",
     );

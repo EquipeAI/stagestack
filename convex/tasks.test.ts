@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_SPEAKER_CUSTOM_VALUES_BYTES } from "./model/speakers";
-import { completeHeadshotContactPage } from "./model/tasks";
+import { completeHeadshotContactPage } from "./model/taskFiles";
 import {
   createEvent,
   createOrg,
@@ -2115,6 +2115,31 @@ describe("file evidence", () => {
     expect(portalView.map((comment) => comment.createdAt)).toEqual(
       organizerView.map((comment) => comment.createdAt),
     );
+  });
+
+  test("generateUploadUrl is rate limited per user (F4)", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await eventSetup(t);
+
+    // 20/hour, same bucket size as imports.generateUploadUrl. The 21st mint in
+    // the same hour is refused (no fake clock needed — the period never
+    // elapses mid-test).
+    for (let i = 0; i < 20; i++) {
+      expect(
+        await alice.mutation(api.tasks.generateUploadUrl, { eventSlug }),
+      ).toBeTypeOf("string");
+    }
+    await expectRejectedWith(
+      alice.mutation(api.tasks.generateUploadUrl, { eventSlug }),
+      "rate_limited",
+    );
+
+    // Per-user, so a second organizer of the same event has their own bucket.
+    const dave = await signIn(t, "dave");
+    await grantEventRole(t, eventSlug, "dave", "organizer");
+    expect(
+      await dave.mutation(api.tasks.generateUploadUrl, { eventSlug }),
+    ).toBeTypeOf("string");
   });
 });
 

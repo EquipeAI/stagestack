@@ -234,6 +234,43 @@ export async function acceptInvitation(
       message: "This invitation has expired — ask for a new one.",
     });
   }
+  // The token is a bearer credential, so it is not enough on its own: a leaked
+  // or forwarded link must not let an arbitrary signed-in account redeem
+  // someone else's org/event membership. Matching the address IS the
+  // authorization step here, so — exactly as in `portal.enterPortal` — it reads
+  // the LIVE token, never `users.email`: that row is display/delivery data,
+  // written regardless of verification and possibly stale (see users.ts), so
+  // authorizing on it would let anyone add an invitee's address to their Clerk
+  // account unverified and redeem the invite.
+  //
+  // Every refusal below leaves the invitation PENDING and writes no audit row:
+  // a wrong account trying must not burn the right account's invite, and the
+  // invitee's address is never echoed back to whoever holds the token.
+  const identity = await ctx.auth.getUserIdentity();
+  const redeemerEmail = identity?.email?.trim().toLowerCase() ?? "";
+  if (redeemerEmail === "") {
+    throw new ConvexError({
+      code: "invitation_email_mismatch",
+      message:
+        "This invitation was sent to a specific email address, and this account has none. Sign in with the account it was sent to, or ask the organizer to invite this address.",
+    });
+  }
+  // Verification is checked BEFORE the comparison, so the two codes never form
+  // an oracle telling a token holder whether they guessed the invited address.
+  // Distinct code, same shape as the portal's `email_unverified`.
+  if (identity?.emailVerified !== true) {
+    throw new ConvexError({
+      code: "email_unverified",
+      message: "Verify your email address before accepting this invitation.",
+    });
+  }
+  if (redeemerEmail !== invite.email.trim().toLowerCase()) {
+    throw new ConvexError({
+      code: "invitation_email_mismatch",
+      message:
+        "This invitation was sent to a different email address. Sign in with the account it was sent to, or ask the organizer to invite this address.",
+    });
+  }
   const org = await ctx.db.get("organizations", invite.orgId);
   if (org === null) {
     throw new ConvexError({

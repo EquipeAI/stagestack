@@ -9,6 +9,13 @@ import type { ControlRow } from "./controlCenter";
 import { isPublished, publicationFlags } from "./publish";
 import { isOpen, isOverdue } from "./tasks";
 import { takeAll, takeCapped } from "./validation";
+import {
+  CONTACT_SCAN,
+  INSTANCE_SCAN,
+  ITEM_SCAN,
+  PARTICIPANT_SCAN,
+  SESSION_SCAN,
+} from "../lib/readCaps";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Readiness & the speaker-tracking dashboard (M4).
@@ -23,15 +30,12 @@ import { takeAll, takeCapped } from "./validation";
 // reactive instead of quietly stale.
 // ─────────────────────────────────────────────────────────────────────────
 
-// Read ceilings. The dashboard is an ASSERTION about readiness, so each read
-// refuses (`takeAll` → `event_too_large`) rather than truncating: a dropped
-// task or participant row would report a session as Ready that nobody
-// verified, which is worse than an error the organizer can escalate (H5).
-const SESSION_SCAN = 1000;
-const PARTICIPANT_SCAN = 5000;
-const INSTANCE_SCAN = 8000;
-const CONTACT_SCAN = 2000;
-const ITEM_SCAN = 1000;
+// Read ceilings come from `lib/readCaps` (imported above). The dashboard is an
+// ASSERTION about readiness, so each read refuses (`takeAll` →
+// `event_too_large`) rather than truncating: a dropped task or participant row
+// would report a session as Ready that nobody verified, which is worse than an
+// error the organizer can escalate (H5). The `COUNT_*` ceilings further down
+// are deliberately lower and truncate instead — see their own note.
 
 export type ReadinessStatus = "ready" | "needsAttention" | "blocked";
 

@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { eventMutation, eventQuery } from "./lib/functions";
-import { vv } from "./lib/validators";
+import { vParticipantState, vv } from "./lib/validators";
 import * as Agenda from "./model/agenda";
+import * as Planner from "./model/agendaPlanner";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public surface for the agenda builder (M6). Thin wrappers; the rules live in
@@ -18,13 +19,6 @@ const vSlot = v.object({
   endsAt: v.number(),
   roomId: v.optional(v.id("rooms")),
 });
-
-const vParticipantState = v.union(
-  v.literal("awaiting"),
-  v.literal("confirmed"),
-  v.literal("declined"),
-  v.literal("withdrawn"),
-);
 
 const vAck = v.union(
   v.literal("awaitingAck"),
@@ -180,7 +174,7 @@ export const suggestSchedule = eventQuery({
     fingerprint: v.string(),
   }),
   handler: async (ctx) => {
-    return await Agenda.suggestSchedule(ctx, ctx.caller);
+    return await Planner.suggestSchedule(ctx, ctx.caller);
   },
 });
 
@@ -206,7 +200,7 @@ export const applySchedule = eventMutation({
     runId: vv.id("auditLog"),
   }),
   handler: async (ctx, args) => {
-    return await Agenda.applySchedule(ctx, ctx.caller, args);
+    return await Planner.applySchedule(ctx, ctx.caller, args);
   },
 });
 
@@ -220,7 +214,7 @@ export const undoPlacement = eventMutation({
     message: v.string(),
   }),
   handler: async (ctx, args) => {
-    return await Agenda.undoPlacement(ctx, ctx.caller, args.runId);
+    return await Planner.undoPlacement(ctx, ctx.caller, args.runId);
   },
 });
 

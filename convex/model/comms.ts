@@ -3,6 +3,9 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
+import {
+  MESSAGE_SCAN,
+} from "../lib/readCaps";
 import { mailFromAddress, resendTestMode } from "../emails";
 import { internal } from "../_generated/api";
 import { logAudit } from "./audit";
@@ -279,7 +282,6 @@ const MAX_ONEOFF_SUBJECT = 300;
 const MAX_ONEOFF_HTML = 50_000;
 /** Newest-first rows read per source in the per-contact log. Both sources are
  * indexed (M4), so this is a display bound, not a scan bound. */
-const MESSAGE_SCAN = 2000;
 
 export type OneOffTarget =
   | { kind: "contact"; eventContactId: Id<"eventContacts"> }

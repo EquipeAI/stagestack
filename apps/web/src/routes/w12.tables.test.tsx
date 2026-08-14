@@ -504,6 +504,23 @@ describe('the contact directory', () => {
     expect(screen.getByText('No events yet')).toBeTruthy()
   })
 
+  it('gates the API keys tab on org admin, exactly like Team (D4)', () => {
+    // Minting a key hands out a durable credential that acts as the minter —
+    // the same class of act as inviting an admin, so the same gate and the
+    // same fallback. A non-admin asking for ?tab=keys gets Events.
+    state.orgRole = ''
+    renderRoute(OrgRoute, parseOrgSearch({ tab: 'keys' }))
+    expect(screen.queryByRole('tab', { name: /API keys/ })).toBeNull()
+    expect(screen.getByText('No events yet')).toBeTruthy()
+  })
+
+  it('offers the API keys tab, with the connect panel, to an org admin', () => {
+    state.orgRole = 'admin'
+    renderRoute(OrgRoute, parseOrgSearch({ tab: 'keys' }))
+    expect(screen.getByRole('tab', { name: /API keys/ })).toBeTruthy()
+    expect(screen.getByText('Connect your agent')).toBeTruthy()
+  })
+
   it('has no batch bar until something is selected', () => {
     renderRoute(OrgRoute, contactsSearch())
     expect(screen.queryByRole('region', { name: 'Contact bulk actions' })).toBeNull()

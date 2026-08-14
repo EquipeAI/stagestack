@@ -2,7 +2,7 @@ import { ConvexError, v } from "convex/values";
 import { HOUR, RateLimiter } from "@convex-dev/rate-limiter";
 import { components } from "./_generated/api";
 import { authedMutation, authedQuery } from "./lib/functions";
-import { vv } from "./lib/validators";
+import { vParticipantState, vv } from "./lib/validators";
 import * as Portal from "./model/portal";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -14,13 +14,6 @@ import * as Portal from "./model/portal";
 // Organizer-side portal controls (invite, handoff, preview, participation
 // override) live in convex/sessions.ts, on the event-scoped wrappers.
 // ─────────────────────────────────────────────────────────────────────────
-
-const vParticipantState = v.union(
-  v.literal("awaiting"),
-  v.literal("confirmed"),
-  v.literal("declined"),
-  v.literal("withdrawn"),
-);
 
 const vProposalStatus = v.union(
   v.literal("draft"),

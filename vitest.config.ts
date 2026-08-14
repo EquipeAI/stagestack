@@ -45,6 +45,11 @@ export default defineConfig({
       // deployment env lives in one place.
       RESEND_TEST_MODE: "false",
       SITE_URL: "https://test.stagestack.dev",
+      // Convex sets this on every real deployment; the /mcp endpoint's
+      // Host/Origin allowlist is derived from it and FAILS CLOSED without it
+      // (convex/http.ts). convex-test issues its HTTP-action requests against
+      // `https://some.convex.site`, so this is that host, spelled once.
+      CONVEX_SITE_URL: "https://some.convex.site",
       WORKER_SECRET: "test-worker-secret",
     },
     server: {
