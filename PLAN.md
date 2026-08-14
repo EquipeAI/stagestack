@@ -565,7 +565,7 @@ departed teammate's keys die with their membership (a feature, not a bug; org
 "service identities" are the later answer, already named in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md):85).
 
-- [ ] **`apiKeys` table** in `convex/schema.ts`: `keyHash` (SHA-256,
+- [x] **`apiKeys` table** in `convex/schema.ts`: `keyHash` (SHA-256,
       indexed `by_hash` — the `invitations.by_token` shape), display
       `prefix` (e.g. `ssk_…last4`), `name`, `createdByUserId`, `orgId`
       scope, optional `eventId` scope, `ceiling: 'read' | 'organizer'`,
@@ -575,18 +575,21 @@ departed teammate's keys die with their membership (a feature, not a bug; org
       on a hash lookup, but mint uses crypto-strength randomness
       (`convex/model/slugs.ts` is NOT the precedent — use
       `crypto.getRandomValues`).
-- [ ] **Key capabilities** in `convex/model/apiKeys.ts` + thin
+      (DONE 2026-08-14, commit bde47b6.)
+- [x] **Key capabilities** in `convex/model/apiKeys.ts` + thin
       `convex/apiKeys.ts` wrappers (org-admin gated: `requireOrgAdmin`):
       mint (returns plaintext once, stores hash), list (prefix/name/scope/
       lastUsed only — never the hash), rename, revoke. `lastUsedAt` is
       touched from the MCP path, throttled (once per ~5 min per key) so it
       isn't a write per tool call.
-- [ ] **`resolveCallerFromApiKey`** in `convex/lib/functions.ts`: hash the
+      (DONE 2026-08-14; 50-active-key ceiling added in review — budget decidable from one bounded probe over by_orgId_and_revokedAt.)
+- [x] **`resolveCallerFromApiKey`** in `convex/lib/functions.ts`: hash the
       presented key → `by_hash` lookup → refuse revoked/expired → load the
       creating user → resolve the SAME `OrgCaller`/`EventCaller` objects the
       wrappers build, clamped by the key's `ceiling`. All writes through this
       path set `viaAgent: true` via `convex/model/audit.ts` — the Control
       Center already renders it.
+      (DONE 2026-08-14; ceiling implemented as read|write INTENT per the recorded deviation above; server-side clock after codex caught a client-suppliable now.)
   - **Ceiling semantics — DECIDED DEVIATION (2026-08-14, shipped).** This
     bullet originally read "a `read` key never resolves organizer even if the
     user is one". Taken literally — downgrading `EventCaller.role` to
@@ -600,24 +603,27 @@ departed teammate's keys die with their membership (a feature, not a bug; org
     `intent: "read" | "write"` parameter on `apiKeyOrgCaller` /
     `apiKeyEventCaller` (see `assertCeilingAllows`), so a `read` key can never
     reach a mutation capability however its minter is privileged.
-- [ ] **Negative authz tests** (convex-test): revoked refused · expired
+- [x] **Negative authz tests** (convex-test): revoked refused · expired
       refused · unknown key refused · `read`-ceiling key refused on a
       mutation capability · key of a removed member dead · event-scoped key
       refused outside its event · audit rows carry `viaAgent`.
+      (DONE 2026-08-14: all listed negatives plus HTTP-boundary t.fetch suite.)
 
 ## D2 — MCP endpoint (read-only first slice)
 
-- [ ] **`/mcp` route** in `convex/http.ts` (POST/GET/DELETE → one
+- [x] **`/mcp` route** in `convex/http.ts` (POST/GET/DELETE → one
       `httpAction`, the spike shape): bearer-token extraction → D1
       resolution → Host/Origin validation via the SDK's exports →
       `createMcpHandler` per request. Auth failures return proper JSON-RPC
       errors; nothing but the sanitization boundary's vocabulary leaks.
-- [ ] **Per-key rate limit**: a token bucket alongside `workerCalls`
+      (DONE 2026-08-14; host validation fails closed to loopback without CONVEX_SITE_URL; JSON-RPC batch bodies refused so one token = one action.)
+- [x] **Per-key rate limit**: a token bucket alongside `workerCalls`
       (`@convex-dev/rate-limiter`, key = apiKey id; start ~300/min). Heed
       the C2 lesson: `check()` only observes — spend in a mutation. Note
       the documented rollback caveat (a throwing call refunds its spend);
       acceptable for v1 exactly as it is for the worker.
-- [ ] **Curated read tools (~10, not a mirror of the ~150-function
+      (DONE 2026-08-14: 300/min capacity 600, spent in mcp.authenticate once per HTTP request.)
+- [x] **Curated read tools (~10, not a mirror of the ~150-function
       surface)** — each a thin call into `convex/model/*` with the resolved
       caller, JSON output, respecting the existing `readCaps` ceilings and
       surfacing their `capped` flags in the tool output: `search`
@@ -626,14 +632,17 @@ departed teammate's keys die with their membership (a feature, not a bug; org
       `list_sessions` · `task_dashboard` · `agenda_board` · `publish_state`
       (+ diff). Tool descriptions are product docs — write them for an agent
       that has never seen StageStack.
-- [ ] **End-to-end proof** (the slice's exit test): a real Claude Code
+      (DONE 2026-08-14: 11 read tools — list_task_reviews added, see D3 deviations; explicit validated projections; honest capped flags after three review rounds.)
+- [x] **End-to-end proof** (the slice's exit test): a real Claude Code
       session added via
       `claude mcp add --transport http stagestack <url>/mcp --header
       "Authorization: Bearer …"` answers a real question about a seeded
       event; a revoked key observably stops it mid-session.
-- [ ] **Spike cleanup**: `/mcp-spike` gone from dev (redeploy), worktree
+      (DONE 2026-08-14: proven with a real Codex client session — streamable HTTP + bearer env var — plus raw curl; Claude Code CLI blocked only by its own expired login. Revoked key refused 401 mid-session.)
+- [x] **Spike cleanup**: `/mcp-spike` gone from dev (redeploy), worktree
       deleted; the MCP packages move from spike-installed to deliberate,
       exact-pinned root deps per the volatile-pins convention.
+      (DONE 2026-08-14: /mcp-spike 404 on dev, worktree+branch deleted, @modelcontextprotocol/server 2.0.0 + zod 4.4.3 exact-pinned.)
 
 ## D3 — Write tools (organizer-ceiling keys only)
 
@@ -646,9 +655,10 @@ Explicitly NOT in v1, listed so nobody "helpfully" adds them:
 touching membership. A per-key "allow sends/publishes" toggle is the later
 door; it is not this cycle's.
 
-- [ ] Each write tool: `organizer` ceiling required, capability re-checks
+- [x] Each write tool: `organizer` ceiling required, capability re-checks
       authorization in `model/*` as always, audit row `viaAgent: true`,
       negative test that a `read` key is refused.
+      (DONE 2026-08-14, commit b2515ee: 4 write tools + withAgentAudit marking the capability's own rows; all negatives tested; live write smoke audited viaAgent on dev.)
 
 **DECIDED DEVIATIONS (2026-08-14, found in implementation):** the plan's
 "non-outbound" rule collides with its own tool list twice. (1)
@@ -669,31 +679,35 @@ discovery for the acting half, not scope creep.
 
 ## D4 — Key management UI + connect flow
 
-- [ ] **Org settings surface**: an "API keys" tab on
+- [x] **Org settings surface**: an "API keys" tab on
       `apps/web/src/routes/app.org.$orgSlug.tsx` (the existing
       `events | contacts | team` tab bar; org-admin gated like team
       actions). Create (name + scope + ceiling → full key shown ONCE, with
       copy button + "you won't see this again"), list with prefix/scope/
       last-used, rename, revoke with confirm. DS primitives; clipboard via
       `apps/web/src/lib/clipboard.ts`.
-- [ ] **"Connect your agent" panel** next to the key list: the ready-to-
+      (DONE 2026-08-14, commit 129c6e7: ADMIN_TABS gate shared with Team; reveal-once pinned by tests; browser-verified signed-in at 1440/375.)
+- [x] **"Connect your agent" panel** next to the key list: the ready-to-
       paste `claude mcp add --transport http …` command with the
       deployment's `.convex.site` URL filled in (derive, don't hardcode),
       plus the Codex/generic streamable-HTTP equivalent. This panel is the
       minutes-to-connected moment — treat its copy as product surface, not
       docs.
+      (DONE 2026-08-14: single-quoted ${STAGESTACK_MCP_KEY} env indirection probed against the installed CLI; footer states the key lives outside StageStack.)
 - *Mobile*: the tab is a stacked list; the reveal-once dialog and connect
   command must be copyable at 375px (no horizontal scroll traps).
 
 ## D5 — Skill, docs, and the deferred OAuth door
 
-- [ ] **Published skill** (SKILL.md, the open Agent Skills format): teaches
+- [x] **Published skill** (SKILL.md, the open Agent Skills format): teaches
       workflows over the tools — "prep a review round", "morning readiness
       sweep", "chase missing speaker tasks" — not tool syntax (the MCP
       schemas carry that). Lives in-repo (e.g. `skills/stagestack/`) so it
       ships with the public repo; users install it alongside the MCP server.
-- [ ] **Docs page**: connect instructions (Claude Code, Codex, claude.ai
+      (DONE 2026-08-14: skills/stagestack/SKILL.md — five workflows, role-aware after codex caught the reviewer path directing at organizer-only tools; refusal sentences quoted as the sanitizer actually emits them.)
+- [x] **Docs page**: connect instructions (Claude Code, Codex, claude.ai
       when OAuth lands), key scoping model, rate limits, tool catalog.
+      (DONE 2026-08-14: docs/AGENT_ACCESS.md + README link; every number, command and refusal sentence cross-checked against code, then re-checked by codex — six accuracy fixes applied.)
 - [ ] Optional: MCP Registry listing under a DNS-verified namespace.
 - **Deferred, explicitly**: OAuth 2.1 CIMD in front of the same endpoint
   (unlocks claude.ai custom connectors + per-user identity for enterprise
