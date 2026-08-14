@@ -22,7 +22,7 @@ describe('resolveOrigin', () => {
     ).toBe('http://127.0.0.1:3000')
   })
 
-  it('lets the forwarded host beat Host, and honours the forwarded proto', () => {
+  it('lets the forwarded host beat Host', () => {
     expect(
       resolveOrigin({
         header: headersOf({
@@ -32,6 +32,11 @@ describe('resolveOrigin', () => {
         }),
       }),
     ).toBe('https://program.acme.com')
+  })
+
+  it('floors non-loopback hosts at https, whatever the proto header says', () => {
+    // `x-forwarded-proto` is client-supplied. The edge overwrites it in
+    // practice, but a forged `http` must never downgrade a generated link.
     expect(
       resolveOrigin({
         header: headersOf({
@@ -40,7 +45,33 @@ describe('resolveOrigin', () => {
           'x-forwarded-proto': 'http',
         }),
       }),
-    ).toBe('http://staging.internal')
+    ).toBe('https://staging.internal')
+    expect(
+      resolveOrigin({
+        header: headersOf({
+          host: 'events.acme.com',
+          'x-forwarded-proto': 'http',
+        }),
+      }),
+    ).toBe('https://events.acme.com')
+    // Only a loopback host may still select http — and may still opt into
+    // https when it is genuinely served over TLS.
+    expect(
+      resolveOrigin({
+        header: headersOf({
+          host: 'localhost:3000',
+          'x-forwarded-proto': 'http',
+        }),
+      }),
+    ).toBe('http://localhost:3000')
+    expect(
+      resolveOrigin({
+        header: headersOf({
+          host: 'localhost:3000',
+          'x-forwarded-proto': 'https',
+        }),
+      }),
+    ).toBe('https://localhost:3000')
   })
 
   it('takes the visitor-facing hop when a proxy chain appended', () => {

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { Show, SignInButton } from '@clerk/tanstack-react-start'
 import { useConvexAuth, useMutation, useQuery } from 'convex/react'
@@ -5,6 +6,7 @@ import { api } from '@convex/_generated/api'
 import { Badge, Button, Callout, Card, DescriptionList, Logo } from '~/ds'
 import { PageBody } from '~/components/PageBody'
 import { usePending } from '~/lib/usePending'
+import { errorCode } from '~/lib/errors'
 import { useLastLoaded, useNow } from '~/components/tasks/useNow'
 import { ROLE_LABEL } from '~/lib/roles'
 
@@ -134,23 +136,32 @@ function PendingActions({ token }: { token: string }) {
   const accept = useMutation(api.team.acceptInvitation)
   const navigate = useNavigate()
   const { pending, error, run } = usePending()
+  // usePending only keeps the human message; the code decides the headline
+  // (an invitation addressed to another account is not a generic failure).
+  const [code, setCode] = useState<string | null>(null)
 
   const acceptInvitation = () => {
     void run(async () => {
-      // The invitation is accepted as the signed-in user, so the user row has
-      // to exist first.
-      await ensure({})
-      const result = await accept({ token })
-      if (result.eventSlug !== null) {
-        await navigate({
-          to: '/app/e/$eventSlug',
-          params: { eventSlug: result.eventSlug },
-        })
-      } else {
-        await navigate({
-          to: '/app/org/$orgSlug',
-          params: { orgSlug: result.orgSlug },
-        })
+      setCode(null)
+      try {
+        // The invitation is accepted as the signed-in user, so the user row
+        // has to exist first.
+        await ensure({})
+        const result = await accept({ token })
+        if (result.eventSlug !== null) {
+          await navigate({
+            to: '/app/e/$eventSlug',
+            params: { eventSlug: result.eventSlug },
+          })
+        } else {
+          await navigate({
+            to: '/app/org/$orgSlug',
+            params: { orgSlug: result.orgSlug },
+          })
+        }
+      } catch (err) {
+        setCode(errorCode(err))
+        throw err
       }
     })
   }
@@ -161,7 +172,20 @@ function PendingActions({ token }: { token: string }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-      {error !== null ? <Callout tone="blocked">{error}</Callout> : null}
+      {error !== null ? (
+        <Callout
+          tone="blocked"
+          title={
+            code === 'invitation_email_mismatch'
+              ? 'This invitation belongs to a different account'
+              : code === 'email_unverified'
+                ? 'Verify your email address first'
+                : undefined
+          }
+        >
+          {error}
+        </Callout>
+      ) : null}
       <Show when="signed-out">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <p style={{ color: 'var(--text-secondary)' }}>
