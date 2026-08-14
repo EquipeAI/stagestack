@@ -5,12 +5,14 @@ import type { EventCaller } from "../lib/functions";
 import { notFound, requireOrganizer } from "../lib/functions";
 import { logAudit } from "./audit";
 import { assertEventActive, assertText, takeAll, takeCapped } from "./validation";
+import {
+  ITEM_SCAN,
+  SESSION_SCAN,
+} from "../lib/readCaps";
 
 // Event library (M0): tracks, tags, rooms, formats, custom fields — one
 // generic CRUD over the five tables since they share shape and rules.
 
-const SESSION_SCAN = 1000;
-const ITEM_SCAN = 1000;
 
 /** Library names are capped here; the backfill below honours the same cap. */
 const MAX_NAME = 80;

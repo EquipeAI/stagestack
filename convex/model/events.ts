@@ -5,7 +5,7 @@ import type { EventCaller, OrgCaller } from "../lib/functions";
 import { requireOrgAdmin } from "../lib/functions";
 import { assertSlugFree, assertValidSlug, uniqueSlug } from "./slugs";
 import { logAudit } from "./audit";
-import { ensureForm } from "./cfp";
+import { ensureForm } from "./cfpForms";
 import { republishIfPublished } from "./publish";
 import { assertText, normalizeEmail } from "./validation";
 import { optionalHttpUrl } from "../lib/urls";

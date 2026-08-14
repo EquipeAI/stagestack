@@ -13,6 +13,9 @@ import {
 } from "./publish";
 import { whyNotPublic } from "./readiness";
 import { assertEventActive, takeAll } from "./validation";
+import {
+  SESSION_SCAN,
+} from "../lib/readCaps";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Bulk publish (W10). "Publish everything eligible", per channel.
@@ -37,7 +40,6 @@ import { assertEventActive, takeAll } from "./validation";
 // rolls back with it.
 // ─────────────────────────────────────────────────────────────────────────
 
-const SESSION_SCAN = 1000;
 const ITEM_SCAN = 500;
 
 export type PublishChannel = "lineup" | "agenda";

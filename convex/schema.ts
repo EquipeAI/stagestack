@@ -36,6 +36,88 @@ export const contactProfileFields = {
   ),
 };
 
+// ── The published program blob (M7) ────────────────────────────────────
+// The privacy-filtered snapshot stored in `publishedPrograms.program`, and the
+// only shape the public page, read API and embeds ever see. Its sole producer
+// is `computeProgram` in convex/model/publish.ts, whose `PublicProgram` type is
+// asserted assignable to this validator there.
+//
+// PERMISSIVE ON PURPOSE. This validates rows written by every past version of
+// the producer, not just today's — a schema push that rejected a live row would
+// take the public page down for that event. `speakerId`, `jobTitle` and
+// `company` were added to the speaker shape after the first programs were
+// published (commit 0c7d1d0), so they are optional here even though the current
+// producer always writes `speakerId`. Nothing has ever been REMOVED from the
+// shape, so no field here is dead weight.
+
+const vPublicSpeaker = v.object({
+  /** Opaque stable id (the event-contact id). Absent in pre-0c7d1d0 rows. */
+  speakerId: v.optional(v.string()),
+  name: v.string(),
+  tagline: v.optional(v.string()),
+  jobTitle: v.optional(v.string()),
+  company: v.optional(v.string()),
+  bio: v.optional(v.string()),
+  headshotUrl: v.optional(v.string()),
+  links: v.optional(
+    v.object({
+      website: v.optional(v.string()),
+      twitter: v.optional(v.string()),
+      linkedin: v.optional(v.string()),
+      github: v.optional(v.string()),
+    }),
+  ),
+});
+
+const publicSessionFields = {
+  sessionId: v.string(),
+  title: v.string(),
+  description: v.optional(v.string()),
+  format: v.optional(v.string()),
+  trackName: v.optional(v.string()),
+  /** Present only when the session's slot is released. */
+  startsAt: v.optional(v.number()),
+  endsAt: v.optional(v.number()),
+  roomName: v.optional(v.string()),
+  /** Named speakers are Confirmed only; `toBeAnnounced` covers the rest. */
+  speakers: v.array(vPublicSpeaker),
+  toBeAnnounced: v.boolean(),
+};
+
+const publicAgendaItemFields = {
+  itemId: v.string(),
+  title: v.string(),
+  startsAt: v.number(),
+  endsAt: v.number(),
+  roomName: v.optional(v.string()),
+  description: v.optional(v.string()),
+};
+
+export const vPublicProgram = v.object({
+  event: v.object({
+    name: v.string(),
+    slug: v.string(),
+    startsAt: v.number(),
+    endsAt: v.number(),
+    timezone: v.string(),
+    location: v.optional(v.string()),
+    description: v.optional(v.string()),
+    website: v.optional(v.string()),
+    logoUrl: v.optional(v.string()),
+  }),
+  lineupPublished: v.boolean(),
+  agendaPublished: v.boolean(),
+  /** Accepted sessions + confirmed speakers. */
+  lineup: v.array(v.object(publicSessionFields)),
+  /** Released+slotted sessions and agenda items, time-ordered. */
+  agenda: v.array(
+    v.union(
+      v.object({ kind: v.literal("session"), ...publicSessionFields }),
+      v.object({ kind: v.literal("item"), ...publicAgendaItemFields }),
+    ),
+  ),
+});
+
 export default defineSchema({
   // ── Identity & tenancy ────────────────────────────────────────────────
   users: defineTable({
@@ -957,7 +1039,7 @@ export default defineSchema({
     publishedBy: v.id("users"),
     // Denormalized, already-privacy-filtered snapshot (only Confirmed
     // participants' event-profile fields; no backstage/host links).
-    program: v.any(),
+    program: vPublicProgram,
   }).index("by_eventId", ["eventId"]),
 
   // Per-item publication flags — which sessions/speakers/agenda items the

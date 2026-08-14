@@ -2,7 +2,7 @@ import { ConvexError, v } from "convex/values";
 import { HOUR, RateLimiter } from "@convex-dev/rate-limiter";
 import { components } from "./_generated/api";
 import { eventMutation, eventQuery } from "./lib/functions";
-import { vv } from "./lib/validators";
+import { vParticipantState, vv } from "./lib/validators";
 import * as Tasks from "./model/tasks";
 import * as Readiness from "./model/readiness";
 import { vControlRow } from "./readiness";
@@ -31,12 +31,6 @@ const vTaskStatus = v.union(
   v.literal("approved"),
   v.literal("complete"),
   v.literal("notApplicable"),
-);
-const vParticipantState = v.union(
-  v.literal("awaiting"),
-  v.literal("confirmed"),
-  v.literal("declined"),
-  v.literal("withdrawn"),
 );
 
 // ── Requirements ─────────────────────────────────────────────────────────

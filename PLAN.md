@@ -439,18 +439,64 @@ Verified snapshot in the review doc. None of this is judged value this week;
 it is the debt list for the first post-challenge cycle, roughly in order of
 leverage:
 
-- [ ] Consolidate the ~10 redeclared scan caps (portal's drifted `200`
+- [x] Consolidate the ~10 redeclared scan caps (portal's drifted `200`
       included) and the 5 copies of `vParticipantState` into one shared
-      definition each.
-- [ ] Replace the 17-string plain-message whitelist (`convex/http.ts:69-87`)
-      with error-code-driven mapping.
-- [ ] `program: v.any()` at `convex/schema.ts:960` gets a real validator
+      definition each. (DONE 2026-08-13: `convex/lib/readCaps.ts` holds the
+      eight full-read ceilings; truncating summary caps stay distinct on
+      purpose. Portal's `200` was NOT drift — it is per-person, introduced at
+      that value; renamed `PERSON_CONTACT_SCAN` so it can't be re-flagged. The
+      reminders sweep keeps its own `INSTANCE_SCAN = 4000`: codex showed 8000
+      note-heavy instances could blow the 16 MiB transaction byte budget in
+      the one mutation that reads the whole graph. `vParticipantState` now
+      lives in lib/validators.ts.)
+- [x] Replace the 17-string plain-message whitelist (`convex/http.ts:69-87`)
+      with error-code-driven mapping. (DONE 2026-08-13: registry in
+      `model/headshotImages.ts` — code → sentence, `HTTP_SAFE_FAILURE_CODES`
+      allowlist, sentences looked up from the registry so a throw site cannot
+      smuggle text. All 17 verified to still reach the client; six internal
+      codes deliberately non-public. Known residual, stated in the boundary
+      comment: ConvexError `data.message` (app-authored) still passes through
+      for any code — pre-existing behavior, kept to avoid a public-surface
+      change this week.)
+- [x] `program: v.any()` at `convex/schema.ts:960` gets a real validator
       (it is a privacy-filtered snapshot — its shape is known).
-- [ ] Unwind the cfp↔sessions nested `runMutation`
+      (DONE 2026-08-13: `vPublicProgram`, derived from `computeProgram` and
+      history-checked commit-by-commit — the shape changed once (0c7d1d0 added
+      speaker fields, nothing ever removed), so exactly `speakerId`/`jobTitle`/
+      `company` are optional and the rest is strict. convex-test enforces the
+      validator on every test publish. NOT yet pushed to any deployment —
+      the next `convex dev/deploy` carries it; watch that push.)
+- [x] Unwind the cfp↔sessions nested `runMutation`
       (`convex/model/cfp.ts:1485`) into a direct model call.
-- [ ] Split the monster models (`agenda` 2404 · `reviews` 2289 · `tasks`
+      (DONE 2026-08-13: same-ctx call, wrapper deleted (no other callers);
+      the wrapper's re-read-after-patch semantics preserved by re-fetching
+      rather than reconstructing. The import cycle this created was then
+      BROKEN by the cfpForms split below. Codex verdict: clean.)
+- [x] Split the monster models (`agenda` 2404 · `reviews` 2289 · `tasks`
       2231 · `cfp` 1966 · `speakers` 1908 lines), starting with extracting
       reminders out of tasks.
-- [ ] DS vendor dir: decide the story for the 37 `.jsx`+`.d.ts` pairs
-      (convert or document why vendored as-is).
-- [ ] Replace boilerplate `convex/README.md`; dedupe workspace dependencies.
+      (DONE 2026-08-13, with two premise corrections. Four pure-move
+      extractions: `taskFiles` (tasks 2235→1594), `headshots` (speakers
+      1928→785), `agendaPlanner` (agenda 2406→1644), `cfpForms` (cfp
+      1976→1529, and moving the shared form helpers to this leaf broke the
+      cfp↔sessions cycle). Public api paths unchanged. NOT split, by
+      measurement: `reviews.ts` — every candidate seam needs 10+ names from a
+      shared round-resolution core; a hub, not a seam. And the "reminders out
+      of tasks" premise was stale: reminders never lived in model/tasks —
+      the sweep is its own top-level `convex/reminders.ts` whose public
+      handlers ARE the capability; moving its helpers would trade one big
+      file for 21 re-imports.)
+- [x] DS vendor dir: decide the story for the 37 `.jsx`+`.d.ts` pairs
+      (convert or document why vendored as-is). (DECIDED 2026-08-13:
+      documented, not converted — `apps/web/src/ds/README.md`. The vendor
+      ships the pair, the `.d.ts` is the published API so the boundary is
+      fully typed, and conversion guarantees 37 conflicts on the next
+      DesignSync.)
+- [x] Replace boilerplate `convex/README.md`; dedupe workspace dependencies.
+      (DONE 2026-08-13. README is real now. Deps: audited all nine
+      cross-workspace names — every one is deliberate (Vercel installs only
+      the apps/web subtree; the TS6/TS7 bin split), so NOTHING was hoisted,
+      and `npm dedupe` was run and REVERTED: its only wins were two nested
+      safe-buffer copies at the price of floating four transitive versions —
+      a version bump wearing a hygiene costume. Reasoning appended to
+      ARCHITECTURE.md so it isn't "cleaned up" later.)

@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_SPEAKER_CUSTOM_VALUES_BYTES } from "./model/speakers";
-import { completeHeadshotContactPage } from "./model/tasks";
+import { completeHeadshotContactPage } from "./model/taskFiles";
 import {
   createEvent,
   createOrg,

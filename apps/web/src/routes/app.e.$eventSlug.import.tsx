@@ -2,17 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
+import { IMPORT_LIMITS, importFileTooLargeMessage } from '@convex/shared/importPlan'
+import type { ExecutionReport, ImportPlan, PlannedRecord } from '@convex/shared/importPlan'
 import type { Id } from '@convex/_generated/dataModel'
 // The plan's shape is the same contract the executor re-validates against, so
 // the review UI reads it from convex/shared/importPlan.ts instead of restating
 // it — a field added to vImportRecord must not silently become invisible here.
-import {
-  IMPORT_LIMITS,
-  importFileTooLargeMessage,
-  type ExecutionReport,
-  type ImportPlan,
-  type PlannedRecord,
-} from '@convex/shared/importPlan'
 import { ActionResult, Badge, Button, Callout, Card, Checkbox, DescriptionList, EmptyState, Tag, Textarea } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'

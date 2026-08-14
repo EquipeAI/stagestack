@@ -1,7 +1,7 @@
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import { eventMutation, eventQuery } from "./lib/functions";
-import { vv } from "./lib/validators";
+import { vParticipantState, vv } from "./lib/validators";
 import * as Sessions from "./model/sessions";
 import * as Portal from "./model/portal";
 import { vPortalContext } from "./portal";
@@ -21,13 +21,6 @@ const vBulkResults = v.array(
     /** Stable code: "not_found" | "invalid_status". */
     error: v.optional(v.string()),
   }),
-);
-
-const vParticipantState = v.union(
-  v.literal("awaiting"),
-  v.literal("confirmed"),
-  v.literal("declined"),
-  v.literal("withdrawn"),
 );
 
 export const setStatus = eventMutation({
@@ -59,41 +52,6 @@ export const sendDirectInvitation = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await Sessions.sendDirectInvitation(ctx, args);
-    return null;
-  },
-});
-
-/** Internal half of an accepted-proposal resubmission. The public CFP
- * mutation owns submitter authorization and the active reopen grant; this
- * function only reconciles the already-accepted session in the same logical
- * operation without exposing a second public write surface. */
-export const syncAcceptedProposalRevision = internalMutation({
-  args: {
-    proposalId: v.id("proposals"),
-    submittedByUserId: v.id("users"),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const proposal = await ctx.db.get("proposals", args.proposalId);
-    if (proposal === null) {
-      throw new ConvexError({
-        code: "not_found",
-        message: "The accepted proposal no longer exists.",
-      });
-    }
-    const event = await ctx.db.get("events", proposal.eventId);
-    if (event === null) {
-      throw new ConvexError({
-        code: "not_found",
-        message: "The proposal's event no longer exists.",
-      });
-    }
-    await Sessions.syncAcceptedProposalRevision(
-      ctx,
-      event,
-      proposal,
-      args.submittedByUserId,
-    );
     return null;
   },
 });

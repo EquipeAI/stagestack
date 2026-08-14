@@ -8,7 +8,7 @@ import * as Agenda from "./agenda";
 import { logAudit } from "./audit";
 import { sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
-import { findForm, proposalAbstract, proposalLink } from "./cfp";
+import { findForm, proposalAbstract, proposalLink } from "./cfpForms";
 import {
   assertDurationMinutes,
   loadFormats,
@@ -31,6 +31,11 @@ import {
 import { instantiateForSession } from "./tasks";
 import { eventUserDisplayName } from "./userDisplay";
 import { assertEventActive, assertText, normalizeEmail } from "./validation";
+import {
+  CONTACT_SCAN,
+  PARTICIPANT_SCAN,
+  SESSION_SCAN,
+} from "../lib/readCaps";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Decisions & sessions (M2).
@@ -56,9 +61,6 @@ import { assertEventActive, assertText, normalizeEmail } from "./validation";
 const MAX_BULK = 100;
 const MAX_SPEAKERS_PER_PROPOSAL = 40;
 const MAX_PARTICIPANTS_PER_SESSION = 100;
-const SESSION_SCAN = 1000;
-const PARTICIPANT_SCAN = 5000;
-const CONTACT_SCAN = 2000;
 const MAX_NOTE = 2000;
 
 export type StageTarget = "pending" | "acceptQueue" | "declineQueue";

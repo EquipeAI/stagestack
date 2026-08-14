@@ -5,7 +5,13 @@ import type { Id } from "./_generated/dataModel";
 import { resend } from "./emails";
 import { programIcs } from "./model/embeds";
 import {
+  GENERIC_UPLOAD_FAILURE,
+  HEADSHOT_FAILURE_MESSAGES,
+  HTTP_SAFE_FAILURE_CODES,
+  HeadshotFailure,
   MAX_HEADSHOT_SOURCE_BYTES,
+  asHeadshotFailureCode,
+  headshotFailure,
   validateHeadshotBytes,
 } from "./model/headshotImages";
 
@@ -41,9 +47,7 @@ async function readBoundedBody(
     total += value.byteLength;
     if (total > maxBytes) {
       await reader.cancel();
-      throw new Error(
-        "The uploaded byte size did not match the selected image.",
-      );
+      headshotFailure("byte_size_mismatch");
     }
     chunks.push(value);
   }
@@ -56,47 +60,57 @@ async function readBoundedBody(
   return bytes;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// The one place an upload failure becomes a public sentence.
+//
+// INVARIANT: text from an ARBITRARY throw never reaches the client — a `sharp`
+// failure quoting a temp path, a Convex system error naming a table, a
+// stack-carrying bug all land on the generic sentence, because `error.message`
+// on a plain Error is never read. Two kinds of text DO pass:
+//
+//   ConvexError `data.message` → passes through for any code. That text is
+//     app-authored at a deliberate `throw new ConvexError({...})`, never
+//     runtime-generated — but it is NOT allowlisted here, so a throw site
+//     choosing its words is trusting this boundary. (Pre-C4 behavior, kept.)
+//   HeadshotFailure whose code is in HTTP_SAFE_FAILURE_CODES → the registered
+//     sentence, looked up from the registry (not taken from the error object).
+//   everything else, including unknown and non-public codes → GENERIC
+//
+// Publishing a new registry sentence means adding its code to
+// `HTTP_SAFE_FAILURE_CODES` in `model/headshotImages.ts` — a visible, reviewed
+// edit — and can never happen by accident at a throw site.
+// ─────────────────────────────────────────────────────────────────────────
 function actionError(error: unknown): { status: number; message: string } {
   const record =
     error !== null && typeof error === "object"
-      ? (error as { data?: unknown; message?: unknown })
+      ? (error as { data?: unknown })
       : undefined;
   const data =
     record?.data !== null && typeof record?.data === "object"
       ? (record.data as { code?: unknown; message?: unknown })
       : undefined;
   const code = typeof data?.code === "string" ? data.code : undefined;
-  const safePlainMessages = new Set([
-    "The selected image is empty.",
-    "Source headshots must be 4 MB or smaller.",
-    "The uploaded byte size did not match the selected image.",
-    "The upload content type did not match the selected image.",
-    "The file contents did not match a supported image format.",
-    "The image could not be decoded as a complete JPEG, PNG, or WebP file.",
-    "The decoded image format did not match its content type.",
-    "The image has invalid dimensions.",
-    "Headshots must be at most 8192 pixels on either side.",
-    "Headshots must contain 25 million pixels or fewer.",
-    "Animated headshots are not supported.",
-    "The normalized headshot is still larger than 5 MB.",
-    "The image metadata could not be removed safely.",
-    "That upload lease expired.",
-    "The normalized headshot has an invalid size.",
-    "That upload already reserved storage.",
-    "Headshot storage quota reached. Remove unused photos or ask an administrator for help.",
-  ]);
-  const message =
-    typeof data?.message === "string"
-      ? data.message
-      : typeof record?.message === "string" &&
-          safePlainMessages.has(record.message)
-        ? record.message
-        : "That photo could not be uploaded.";
   if (code === "not_authenticated" || code === "user_not_provisioned") {
     return { status: 401, message: "Sign in to upload a headshot." };
   }
+  const message =
+    error instanceof HeadshotFailure &&
+    HTTP_SAFE_FAILURE_CODES.has(error.code)
+      ? HEADSHOT_FAILURE_MESSAGES[error.code]
+      : typeof data?.message === "string"
+        ? data.message
+        : GENERIC_UPLOAD_FAILURE;
   if (code === "not_found") return { status: 404, message };
   return { status: 400, message };
+}
+
+/** Re-raise a boundary refusal by CODE. An unnamed refusal (or one whose code
+ * this deploy does not know) stays unnamed, so it lands on the generic
+ * sentence rather than carrying whatever string the callee happened to set. */
+function raiseHeadshotFailure(code: unknown): never {
+  const known = asHeadshotFailureCode(code);
+  if (known !== undefined) throw new HeadshotFailure(known);
+  throw new Error(GENERIC_UPLOAD_FAILURE);
 }
 
 http.route({
@@ -167,11 +181,7 @@ http.route({
         internal.headshotUploads.beginStorageAttempt,
         { uploadId },
       );
-      if (!capacity.reserved) {
-        throw new Error(
-          capacity.message ?? "That photo could not reserve storage.",
-        );
-      }
+      if (!capacity.reserved) raiseHeadshotFailure(capacity.code);
       storageAttemptStarted = true;
       // Store the raw source only as a temporary private blob. Its fresh id is
       // immediately bound to the actor/ticket before the Node runtime receives
@@ -188,20 +198,12 @@ http.route({
           size: bytes.byteLength,
         },
       );
-      if (!registration.recorded) {
-        throw new Error(
-          registration.message ?? "That photo could not be processed safely.",
-        );
-      }
+      if (!registration.recorded) raiseHeadshotFailure(registration.code);
       const processed = await ctx.runAction(internal.headshotProcessing.process, {
         uploadId,
         sourceStorageId,
       });
-      if (!processed.ok) {
-        throw new Error(
-          processed.message ?? "That photo could not be processed safely.",
-        );
-      }
+      if (!processed.ok) raiseHeadshotFailure(processed.code);
       return headshotJson({ ok: true }, 200);
     } catch (error) {
       if (claimed) {

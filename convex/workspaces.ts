@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { eventQuery } from "./lib/functions";
-import { vv } from "./lib/validators";
+import { vParticipantState, vv } from "./lib/validators";
 import { vPublicationReason } from "./readiness";
 import * as Workspaces from "./model/workspaces";
 
@@ -12,13 +12,6 @@ import * as Workspaces from "./model/workspaces";
 // Both are organizer-only. The workspaces are organizer surfaces: a reviewer's
 // world is Reviews, and a speaker's is the portal.
 // ─────────────────────────────────────────────────────────────────────────
-
-const vParticipantState = v.union(
-  v.literal("awaiting"),
-  v.literal("confirmed"),
-  v.literal("declined"),
-  v.literal("withdrawn"),
-);
 
 const vAck = v.union(
   v.literal("awaitingAck"),
