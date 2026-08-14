@@ -29,7 +29,29 @@ const EVENT_SLUG = "meridian-dev-summit-2026";
 const DAY = 24 * 60 * 60 * 1000;
 const MIN = 60 * 1000;
 
-const email = (tag: string): string => `alvaro+${tag}@equipeai.com.br`;
+/** Persona addresses. By default every persona is a plus-variation of the
+ * maintainer's inbox, so a solo rehearsal receives all the mail. Set the
+ * `SEED_DEMO_EMAILS` deployment env var to a JSON object mapping persona tags
+ * to real addresses (e.g. `{"reviewer3":"lena@example.com"}`) to hand personas
+ * to real people: any tag absent from the map keeps its default. Because
+ * `persona()` finds-or-creates by email, someone who signs in with Clerk
+ * BEFORE the seed runs gets the persona's assignments attached to their real
+ * account; speakers can also claim their portal after the fact, since the
+ * portal matches on the verified email at entry. */
+const email = (tag: string): string => {
+  const raw = process.env.SEED_DEMO_EMAILS;
+  if (raw !== undefined && raw !== "") {
+    try {
+      const map = JSON.parse(raw) as Record<string, unknown>;
+      const mapped = map[tag];
+      if (typeof mapped === "string" && mapped.includes("@")) return mapped;
+    } catch {
+      // Malformed JSON falls through to the default: a seed run must not
+      // half-apply a mapping, and the default is always safe.
+    }
+  }
+  return `alvaro+${tag}@equipeai.com.br`;
+};
 
 type PersonaSpec = {
   tag: string;
