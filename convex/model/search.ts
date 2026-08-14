@@ -1,5 +1,5 @@
 import type { QueryCtx } from "../_generated/server";
-import type { Doc } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { takeCapped } from "./validation";
 
@@ -193,6 +193,10 @@ function summarySentence(
   term: string,
   groups: Array<SearchGroup>,
   capped: boolean,
+  /** People get the palette's keyboard hint; an agent (a scoped credential)
+   * gets the sentence without it — arrow keys are not something a tool call
+   * can press. Same producer, one audience switch. */
+  audience: "person" | "agent",
 ): string {
   const total = groups.reduce((sum, group) => sum + group.hits.length, 0);
   if (total === 0) {
@@ -205,7 +209,9 @@ function summarySentence(
   // they are not counted as one here.
   const kinds = groups.filter((group) => group.hits.length > 0).length;
   const head = `${capped ? "At least " : ""}${total} ${plural(total, "result", "results")} in ${kinds} ${plural(kinds, "group", "groups")}.`;
-  return `${head} Use the arrow keys to pick one, Enter to open it.`;
+  return audience === "person"
+    ? `${head} Use the arrow keys to pick one, Enter to open it.`
+    : head;
 }
 
 // ── Events, across every membership ──────────────────────────────────────
@@ -297,6 +303,100 @@ async function accessibleEvents(
     events,
     capped: eventsCapped || membershipsCapped,
     membershipsOnly: membershipsCapped && !eventsCapped,
+  };
+}
+
+/**
+ * A CREDENTIAL's ceiling on what "everything I can reach" means (D2).
+ *
+ * The signed-in palette searches every membership its user holds, which is
+ * right for a person: they are looking at their own StageStack. An API key is
+ * not the person — it is scoped to one organization, sometimes to one event,
+ * and a minter who also belongs to a second organization must never see that
+ * second organization through this key.
+ *
+ * The scope is applied to the CANDIDATE READS, not to the results: filtering
+ * afterwards would leave the group sentences and the summary counting rows the
+ * caller was never allowed to see, which is the bug this type exists to make
+ * impossible.
+ */
+export type SearchScope = {
+  orgId: Id<"organizations">;
+  /** Present → this one event, and no other event of the org. */
+  eventId?: Id<"events">;
+};
+
+/** `accessibleEvents`, bounded by a credential's scope. Reads are scoped at
+ * the index rather than filtered after, so the caps below describe only rows
+ * the caller may see. */
+async function scopedAccessibleEvents(
+  ctx: QueryCtx,
+  user: Doc<"users">,
+  scope: SearchScope,
+): Promise<{
+  events: Array<Doc<"events">>;
+  capped: boolean;
+  membershipsOnly: boolean;
+}> {
+  const none = { events: [], capped: false, membershipsOnly: false };
+  const orgMembership = await ctx.db
+    .query("members")
+    .withIndex("by_orgId_and_userId", (q) =>
+      q.eq("orgId", scope.orgId).eq("userId", user._id),
+    )
+    .unique();
+
+  if (scope.eventId !== undefined) {
+    const event = await ctx.db.get("events", scope.eventId);
+    if (event === null || event.orgId !== scope.orgId) return none;
+    if (orgMembership !== null) {
+      return { events: [event], capped: false, membershipsOnly: false };
+    }
+    const seat = await ctx.db
+      .query("eventMembers")
+      .withIndex("by_eventId_and_userId", (q) =>
+        q.eq("eventId", event._id).eq("userId", user._id),
+      )
+      .unique();
+    return seat === null
+      ? none
+      : { events: [event], capped: false, membershipsOnly: false };
+  }
+
+  if (orgMembership !== null) {
+    const page = await takeCapped(
+      ctx.db
+        .query("events")
+        .withIndex("by_orgId", (q) => q.eq("orgId", scope.orgId)),
+      EVENT_SCAN,
+    );
+    return {
+      events: page.rows,
+      capped: page.capped,
+      membershipsOnly: false,
+    };
+  }
+
+  const seats = await takeCapped(
+    ctx.db
+      .query("eventMembers")
+      .withIndex("by_userId_and_orgId", (q) =>
+        q.eq("userId", user._id).eq("orgId", scope.orgId),
+      ),
+    EVENT_MEMBERSHIP_SCAN,
+  );
+  const events: Array<Doc<"events">> = [];
+  const seen = new Set<string>();
+  for (const seat of seats.rows) {
+    if (seen.has(seat.eventId)) continue;
+    seen.add(seat.eventId);
+    const event = await ctx.db.get("events", seat.eventId);
+    if (event !== null) events.push(event);
+  }
+  return {
+    events,
+    capped: seats.capped,
+    membershipsOnly: seats.capped,
   };
 }
 
@@ -587,6 +687,9 @@ export async function search(
   user: Doc<"users">,
   eventCaller: EventCaller | null,
   rawTerm: string,
+  /** A credential's ceiling (D2). Absent → the signed-in palette's "every
+   * membership I hold", which is right for a person and wrong for a key. */
+  scope?: SearchScope,
 ): Promise<SearchResults> {
   const term = normalizeTerm(rawTerm);
   if (term.length < MIN_TERM) {
@@ -596,7 +699,22 @@ export async function search(
     };
   }
 
-  const reachable = await accessibleEvents(ctx, user);
+  // A scoped caller may not search inside an event its scope excludes. The
+  // gate is here rather than at the call site so no future caller can pass a
+  // matching term with a mismatched event caller.
+  const inScopeCaller =
+    scope === undefined || eventCaller === null
+      ? eventCaller
+      : eventCaller.org._id !== scope.orgId ||
+          (scope.eventId !== undefined &&
+            eventCaller.event._id !== scope.eventId)
+        ? null
+        : eventCaller;
+
+  const reachable =
+    scope === undefined
+      ? await accessibleEvents(ctx, user)
+      : await scopedAccessibleEvents(ctx, user, scope);
   const groups: Array<SearchGroup> = [];
   const events = eventGroup(
     reachable.events,
@@ -606,22 +724,30 @@ export async function search(
   );
   if (events !== null) groups.push(events);
 
-  if (eventCaller !== null) {
+  if (inScopeCaller !== null) {
     const inEvent =
-      eventCaller.role === "organizer"
+      inScopeCaller.role === "organizer"
         ? await Promise.all([
-            sessionGroup(ctx, eventCaller, term),
-            speakerGroup(ctx, eventCaller, term),
-            proposalGroup(ctx, eventCaller, term),
+            sessionGroup(ctx, inScopeCaller, term),
+            speakerGroup(ctx, inScopeCaller, term),
+            proposalGroup(ctx, inScopeCaller, term),
           ])
         : // Reviewer: assignments only. Nothing above this line reads a
           // session, a contact or an unassigned proposal for them.
-          [await assignedProposalGroup(ctx, eventCaller, term)];
+          [await assignedProposalGroup(ctx, inScopeCaller, term)];
     for (const group of inEvent) {
       if (group !== null) groups.push(group);
     }
   }
 
   const capped = groups.some((group) => group.capped);
-  return { groups, summary: summarySentence(rawTerm.trim(), groups, capped) };
+  return {
+    groups,
+    summary: summarySentence(
+      rawTerm.trim(),
+      groups,
+      capped,
+      scope === undefined ? "person" : "agent",
+    ),
+  };
 }

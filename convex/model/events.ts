@@ -7,7 +7,7 @@ import { assertSlugFree, assertValidSlug, uniqueSlug } from "./slugs";
 import { logAudit } from "./audit";
 import { ensureForm } from "./cfpForms";
 import { republishIfPublished } from "./publish";
-import { assertText, normalizeEmail } from "./validation";
+import { assertText, normalizeEmail, takeCapped } from "./validation";
 import { optionalHttpUrl } from "../lib/urls";
 
 const IANA_ZONE = /^[A-Za-z_]+\/[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)?$|^UTC$/;
@@ -32,23 +32,61 @@ function assertDateOrder(startsAt: number, endsAt: number): void {
   }
 }
 
-/** Events in one org the caller may see: org owner/admins see them all;
- * event-scoped members see only the events they belong to. */
+/** One org's event list is a navigation surface, not a report. */
+export const ORG_EVENT_SCAN = 200;
+
+/**
+ * Events in one org the caller may see, WITH whether the read saw all of
+ * them: org owner/admins see them all; event-scoped members see only the
+ * events they belong to.
+ *
+ * The `capped` half exists for the agent surface (D2), where a truncated list
+ * read as a complete one is a wrong answer rather than a shorter one — the
+ * browser's sidebar can live with a ceiling it can scroll past, a model
+ * reasoning over "these are all the events" cannot.
+ */
+export async function listVisibleCapped(
+  ctx: QueryCtx,
+  caller: OrgCaller,
+): Promise<{ events: Array<Doc<"events">>; capped: boolean }> {
+  if (caller.orgRole !== null) {
+    const page = await takeCapped(
+      ctx.db
+        .query("events")
+        .withIndex("by_orgId", (q) => q.eq("orgId", caller.org._id)),
+      ORG_EVENT_SCAN,
+    );
+    return { events: page.rows, capped: page.capped };
+  }
+  // The event-scoped path reads its OWN memberships rather than inferring
+  // truncation from the array `resolveOrgCaller` happened to hand over: that
+  // array is already truncated, so `length >= cap` cannot tell a caller with
+  // exactly `cap` memberships (complete) from one with more (not). Asking the
+  // index for one row past the ceiling is the only way to know which.
+  const seats = await takeCapped(
+    ctx.db
+      .query("eventMembers")
+      .withIndex("by_userId_and_orgId", (q) =>
+        q.eq("userId", caller.user._id).eq("orgId", caller.org._id),
+      ),
+    ORG_EVENT_SCAN,
+  );
+  const events = await Promise.all(
+    seats.rows.map((seat) => ctx.db.get("events", seat.eventId)),
+  );
+  return {
+    events: events.filter((e): e is Doc<"events"> => e !== null),
+    capped: seats.capped,
+  };
+}
+
+/** Events in one org the caller may see. The list surface's view of
+ * `listVisibleCapped` — same rows, without the ceiling flag. */
 export async function listVisible(
   ctx: QueryCtx,
   caller: OrgCaller,
 ): Promise<Array<Doc<"events">>> {
-  if (caller.orgRole !== null) {
-    return await ctx.db
-      .query("events")
-      .withIndex("by_orgId", (q) => q.eq("orgId", caller.org._id))
-      .take(200);
-  }
-  // resolveOrgCaller already scoped eventMemberships to this org.
-  const events = await Promise.all(
-    caller.eventMemberships.map((m) => ctx.db.get("events", m.eventId)),
-  );
-  return events.filter((e): e is Doc<"events"> => e !== null);
+  return (await listVisibleCapped(ctx, caller)).events;
 }
 
 export type CreateEventArgs = {

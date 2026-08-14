@@ -7,6 +7,7 @@ import {
 import { mutation, query } from "../_generated/server";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc } from "../_generated/dataModel";
+import { hashApiKey, looksLikeApiKey } from "./apiKeyToken";
 
 // ─────────────────────────────────────────────────────────────────────────
 // The capability layer's entry points (docs/ARCHITECTURE.md): every public
@@ -86,6 +87,20 @@ async function resolveOrgCaller(
     .withIndex("by_slug", (q) => q.eq("slug", orgSlug))
     .unique();
   if (org === null) notFound("organization");
+  return await orgCallerForUser(ctx, user, org);
+}
+
+/**
+ * The org caller, built from an already-identified user. Split out of
+ * `resolveOrgCaller` so the API-key path (which has a user document but no
+ * `ctx.auth` identity) produces the SAME object rather than a second, drifting
+ * definition of what org access means.
+ */
+async function orgCallerForUser(
+  ctx: QueryCtx,
+  user: Doc<"users">,
+  org: Doc<"organizations">,
+): Promise<OrgCaller> {
   const membership = await ctx.db
     .query("members")
     .withIndex("by_orgId_and_userId", (q) =>
@@ -131,6 +146,16 @@ export async function resolveEventCaller(
     .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
     .unique();
   if (event === null) notFound("event");
+  return await eventCallerForUser(ctx, user, event);
+}
+
+/** The event caller, built from an already-identified user — the other half of
+ * the split described on `orgCallerForUser`. */
+async function eventCallerForUser(
+  ctx: QueryCtx,
+  user: Doc<"users">,
+  event: Doc<"events">,
+): Promise<EventCaller> {
   const org = await ctx.db.get("organizations", event.orgId);
   if (org === null) notFound("organization");
   const membership = await ctx.db
@@ -170,6 +195,152 @@ export function requireOrgAdmin(caller: OrgCaller): void {
   if (caller.orgRole === null) {
     forbidden("Only organization owners/admins can do this.");
   }
+}
+
+// ── API-key callers (D1) ─────────────────────────────────────────────────
+//
+// The agent path enters here and nowhere else. It deliberately produces the
+// SAME `OrgCaller` / `EventCaller` objects the signed-in wrappers produce, so
+// every rule in `convex/model/*` applies to an agent without knowing one is
+// calling. What differs is only how the user is identified (a hashed bearer
+// key instead of a JWT) and one extra clamp: the key's `ceiling`.
+//
+// Two properties this file is responsible for, and the model layer is not:
+//   * a key is never more than its minter is RIGHT NOW — membership is
+//     re-read on every call, so a removed teammate's key resolves to nothing;
+//   * a `read` key never reaches a write capability, whatever its minter can
+//     do. (The read ROLE is not downgraded: a read key held by an organizer
+//     still reads organizer surfaces. Downgrading reads too would make read
+//     keys unable to answer any of the questions they exist to answer.)
+
+export type ApiKeyIntent = "read" | "write";
+
+export type ApiKeyIdentity = {
+  key: Doc<"apiKeys">;
+  user: Doc<"users">;
+  /** Live org access, resolved at use time. Present means the minter still
+   * belongs to the org at all; absence is a refusal, not an empty result. */
+  orgCaller: OrgCaller;
+};
+
+function keyRefused(code: string, message: string): never {
+  throw new ConvexError({ code, message });
+}
+
+/**
+ * Turn a presented bearer key into an identity, or refuse.
+ *
+ * Refuses: malformed · unknown · revoked · expired · minter no longer a
+ * member of the key's organization. Never returns a partially-trusted value:
+ * anything this resolves is a credential good for the current instant.
+ */
+export async function resolveCallerFromApiKey(
+  ctx: QueryCtx,
+  presentedKey: string,
+  now: number,
+): Promise<ApiKeyIdentity> {
+  if (!looksLikeApiKey(presentedKey)) {
+    keyRefused("api_key_invalid", "That API key is not valid.");
+  }
+  const keyHash = await hashApiKey(presentedKey);
+  const key = await ctx.db
+    .query("apiKeys")
+    .withIndex("by_hash", (q) => q.eq("keyHash", keyHash))
+    .unique();
+  if (key === null) {
+    keyRefused("api_key_invalid", "That API key is not valid.");
+  }
+  if (key.revokedAt !== undefined) {
+    keyRefused("api_key_revoked", "That API key was revoked.");
+  }
+  if (key.expiresAt !== undefined && key.expiresAt <= now) {
+    keyRefused("api_key_expired", "That API key has expired.");
+  }
+  const user = await ctx.db.get("users", key.createdByUserId);
+  if (user === null) {
+    keyRefused("api_key_invalid", "That API key is not valid.");
+  }
+  const org = await ctx.db.get("organizations", key.orgId);
+  if (org === null) {
+    keyRefused("api_key_invalid", "That API key is not valid.");
+  }
+  // Live membership, every call. A key outlives its minter's account only in
+  // the sense that the row remains — it stops resolving the moment the
+  // membership does.
+  const orgCaller = await orgCallerForUser(ctx, user, org);
+  return { key, user, orgCaller };
+}
+
+/**
+ * Refuse a write attempt made with a read-ceiling key.
+ *
+ * THE SHIPPED MEANING OF `read`, decided deliberately (PLAN.md Part D, D1):
+ * a read key carries its minter's live READ access with every write refused —
+ * it does NOT downgrade the read role to reviewer. Downgrading would be the
+ * literal reading of "a read key never resolves organizer", and it would
+ * refuse all ten of D2's read tools, because `list_sessions`,
+ * `list_proposals`, `agenda_board`, `publish_state`, `review_progress` and
+ * `task_dashboard` every one call `requireOrganizer` in `convex/model/*`. A
+ * read key that can read nothing is not a safer key, it is a broken one.
+ * The ceiling is therefore about WRITE authority, and this is where it bites.
+ */
+function assertCeilingAllows(key: Doc<"apiKeys">, intent: ApiKeyIntent): void {
+  if (intent === "write" && key.ceiling === "read") {
+    forbidden("This API key is read-only.");
+  }
+}
+
+/**
+ * Org-wide caller for a key. Refuses event-scoped keys outright: an
+ * event-scoped key must never widen into "everything this user can see", and
+ * the agent tools route around this by resolving the key's own event instead.
+ */
+export function apiKeyOrgCaller(
+  identity: ApiKeyIdentity,
+  intent: ApiKeyIntent,
+): OrgCaller {
+  assertCeilingAllows(identity.key, intent);
+  if (identity.key.eventId !== undefined) {
+    forbidden("This API key is scoped to a single event.");
+  }
+  return identity.orgCaller;
+}
+
+/**
+ * Event caller for a key, by event slug. An event-scoped key refuses every
+ * other event before any membership is read; an org-scoped key is bounded by
+ * the minter's live event membership exactly as the UI wrapper would be.
+ */
+export async function apiKeyEventCaller(
+  ctx: QueryCtx,
+  identity: ApiKeyIdentity,
+  eventSlug: string,
+  intent: ApiKeyIntent,
+): Promise<EventCaller> {
+  assertCeilingAllows(identity.key, intent);
+  const event = await ctx.db
+    .query("events")
+    .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+    .unique();
+  if (event === null) notFound("event");
+  if (identity.key.eventId !== undefined && identity.key.eventId !== event._id) {
+    forbidden("This API key is scoped to a different event.");
+  }
+  if (event.orgId !== identity.key.orgId) {
+    forbidden("This API key is scoped to a different organization.");
+  }
+  return await eventCallerForUser(ctx, identity.user, event);
+}
+
+/** The event an event-scoped key is bound to, or null for an org-wide key. */
+export async function apiKeyScopedEvent(
+  ctx: QueryCtx,
+  identity: ApiKeyIdentity,
+): Promise<Doc<"events"> | null> {
+  if (identity.key.eventId === undefined) return null;
+  const event = await ctx.db.get("events", identity.key.eventId);
+  if (event === null) notFound("event");
+  return event;
 }
 
 // ── Wrappers ─────────────────────────────────────────────────────────────

@@ -1,8 +1,20 @@
 import { httpRouter } from "convex/server";
+import {
+  createMcpHandler,
+  hostHeaderValidationResponse,
+  localhostAllowedHostnames,
+  originValidationResponse,
+} from "@modelcontextprotocol/server";
 import { httpAction } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { resend } from "./emails";
+import { makeStageStackMcpServer } from "./lib/mcpServer";
+import {
+  MCP_GENERIC_REFUSAL,
+  MCP_REFUSAL_MESSAGES,
+  MCP_REFUSAL_STATUS,
+} from "./model/apiKeys";
 import { programIcs } from "./model/embeds";
 import {
   GENERIC_UPLOAD_FAILURE,
@@ -111,6 +123,126 @@ function raiseHeadshotFailure(code: unknown): never {
   const known = asHeadshotFailureCode(code);
   if (known !== undefined) throw new HeadshotFailure(known);
   throw new Error(GENERIC_UPLOAD_FAILURE);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Hosted MCP server (D2). One `httpAction` behind POST/GET/DELETE at /mcp,
+// with `createMcpHandler` constructed PER REQUEST so the server factory closes
+// over this request's ActionCtx — the stateless model the 2026-07-28 spec
+// expects. The SDK runs unmodified in the Convex isolate (Convex bundles
+// isolate code `platform: "browser"`, so the SDK resolves its browser shims).
+//
+// Order matters and is the security contract:
+//   1. Host/Origin validation (the SDK's own exports) — DNS-rebinding first,
+//      before this endpoint admits it has an opinion about credentials;
+//   2. bearer extraction — ONE function, `mcpBearerToken`, deliberately the
+//      only place an inbound request becomes a credential. OAuth 2.1 (D5)
+//      goes in front of exactly this line without touching a tool;
+//   3. authenticate + spend the per-key budget, once per HTTP request;
+//   4. hand the request to the SDK.
+// Every tool body re-resolves the key itself (convex/mcp.ts): step 3 is a
+// budget gate, never an authorization one.
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Hostnames this deployment answers to, FAIL-CLOSED.
+ *
+ * `CONVEX_SITE_URL` is set by Convex on every real deployment, so the fallback
+ * is unreachable in dev, preview and production alike. If it were ever missing
+ * or unparseable, deriving the allowlist from the request's own Host header
+ * would be a check that agrees with whatever it is handed — worse than no
+ * check, because it looks like one. Fall back to loopback only: a local
+ * harness still works, and anything reachable from the internet refuses.
+ */
+function mcpAllowedHostnames(): Array<string> {
+  const configured = process.env.CONVEX_SITE_URL;
+  if (configured !== undefined) {
+    try {
+      return [new URL(configured).hostname];
+    } catch {
+      // Fall through to loopback.
+    }
+  }
+  return localhostAllowedHostnames();
+}
+
+/**
+ * The only place an inbound HTTP request becomes a credential — the door D5's
+ * OAuth work opens without disturbing anything behind it.
+ */
+function mcpBearerToken(request: Request): string | null {
+  const header = request.headers.get("Authorization");
+  if (header === null) return null;
+  const match = /^Bearer[ \t]+(\S+)$/i.exec(header.trim());
+  return match === null ? null : match[1];
+}
+
+/** A JSON-RPC error response, which is what an MCP client can actually read.
+ * `id: null` is correct for a failure that happened before the request body
+ * was parsed — there is no id yet to echo. */
+function mcpRpcError(code: string): Response {
+  const status = MCP_REFUSAL_STATUS[code] ?? 400;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (status === 401) headers["WWW-Authenticate"] = `Bearer realm="stagestack"`;
+  return new Response(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: null,
+      error: {
+        // -32001 is the reserved server-defined range; the meaningful part is
+        // the sentence, which comes from the registry and never from a throw.
+        code: status === 429 ? -32000 : -32001,
+        message: MCP_REFUSAL_MESSAGES[code] ?? MCP_GENERIC_REFUSAL,
+      },
+    }),
+    { status, headers },
+  );
+}
+
+/** Map a thrown refusal to a REGISTERED code. An unrecognized throw becomes
+ * the generic sentence — no `error.message` from an arbitrary failure ever
+ * reaches an external agent. */
+function mcpRefusalCode(error: unknown): string {
+  const data =
+    error !== null && typeof error === "object"
+      ? (error as { data?: unknown }).data
+      : undefined;
+  const code =
+    data !== null && typeof data === "object"
+      ? (data as { code?: unknown }).code
+      : undefined;
+  return typeof code === "string" && code in MCP_REFUSAL_MESSAGES
+    ? code
+    : "generic";
+}
+
+const mcpEndpoint = httpAction(async (ctx, request) => {
+  const allowed = mcpAllowedHostnames();
+  const rejected =
+    hostHeaderValidationResponse(request, allowed) ??
+    originValidationResponse(request, allowed);
+  if (rejected !== undefined) return rejected;
+
+  const presentedKey = mcpBearerToken(request);
+  if (presentedKey === null) return mcpRpcError("api_key_missing");
+
+  try {
+    await ctx.runMutation(internal.mcp.authenticate, {
+      presentedKey,
+      now: Date.now(),
+    });
+  } catch (error) {
+    return mcpRpcError(mcpRefusalCode(error));
+  }
+
+  const handler = createMcpHandler(() =>
+    makeStageStackMcpServer(ctx, presentedKey),
+  );
+  return await handler.fetch(request);
+});
+
+for (const method of ["POST", "GET", "DELETE"] as const) {
+  http.route({ path: "/mcp", method, handler: mcpEndpoint });
 }
 
 http.route({

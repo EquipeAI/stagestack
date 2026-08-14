@@ -584,11 +584,22 @@ departed teammate's keys die with their membership (a feature, not a bug; org
 - [ ] **`resolveCallerFromApiKey`** in `convex/lib/functions.ts`: hash the
       presented key → `by_hash` lookup → refuse revoked/expired → load the
       creating user → resolve the SAME `OrgCaller`/`EventCaller` objects the
-      wrappers build, clamped by the key's `ceiling` (a `read` key never
-      resolves organizer even if the user is one; `organizer` ceiling still
-      cannot exceed the user's live role). All writes through this path set
-      `viaAgent: true` via `convex/model/audit.ts` — the Control Center
-      already renders it.
+      wrappers build, clamped by the key's `ceiling`. All writes through this
+      path set `viaAgent: true` via `convex/model/audit.ts` — the Control
+      Center already renders it.
+  - **Ceiling semantics — DECIDED DEVIATION (2026-08-14, shipped).** This
+    bullet originally read "a `read` key never resolves organizer even if the
+    user is one". Taken literally — downgrading `EventCaller.role` to
+    `reviewer` — it contradicts D2's own tool list: `list_sessions`,
+    `list_proposals`, `agenda_board`, `publish_state`, `review_progress` and
+    `task_dashboard` all call `requireOrganizer` in `convex/model/*`, so a
+    read key would be refused six of the ten read tools it exists for. What
+    shipped instead: **`read` = the minter's live READ access with every
+    write refused; `organizer` = writes allowed; both always clamped to the
+    minter's live role.** The ceiling is write authority, enforced at one
+    `intent: "read" | "write"` parameter on `apiKeyOrgCaller` /
+    `apiKeyEventCaller` (see `assertCeilingAllows`), so a `read` key can never
+    reach a mutation capability however its minter is privileged.
 - [ ] **Negative authz tests** (convex-test): revoked refused · expired
       refused · unknown key refused · `read`-ceiling key refused on a
       mutation capability · key of a removed member dead · event-scoped key

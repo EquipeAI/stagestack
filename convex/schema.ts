@@ -179,6 +179,48 @@ export default defineSchema({
     .index("by_eventId", ["eventId"])
     .index("by_email", ["email"]),
 
+  // ── Agent access (D1) ─────────────────────────────────────────────────
+  // An API key is a bearer credential that acts AS the user who minted it,
+  // never above that user's live role: membership is re-resolved on every
+  // call (convex/lib/functions.ts `resolveCallerFromApiKey`), so a departed
+  // teammate's keys die with their membership.
+  //
+  // Only the SHA-256 of the plaintext is stored — the `invitations.by_token`
+  // shape, one level stronger: a database read never yields a usable
+  // credential. The plaintext (`ssk_<64 hex>`) exists exactly once, in the
+  // mint mutation's return value.
+  apiKeys: defineTable({
+    orgId: v.id("organizations"),
+    // Absent → the whole org (clamped to the minter's live memberships);
+    // present → this one event and nothing else.
+    eventId: v.optional(v.id("events")),
+    /** SHA-256 hex of the presented key. The only stored form. */
+    keyHash: v.string(),
+    /** Display form, e.g. `ssk_…9f3c`. Safe to render; not a credential. */
+    prefix: v.string(),
+    /** Human label chosen at mint ("Claude Code — laptop"). */
+    name: v.string(),
+    createdByUserId: v.id("users"),
+    /** Write authority ceiling. `read` keys can never reach a mutation
+     * capability; `organizer` keys still cannot exceed the minter's live
+     * role, which the model layer re-checks as it always has. */
+    ceiling: v.union(v.literal("read"), v.literal("organizer")),
+    /** Touched from the MCP path, throttled to ~once per 5 minutes. */
+    lastUsedAt: v.optional(v.number()),
+    revokedAt: v.optional(v.number()),
+    expiresAt: v.optional(v.number()),
+  })
+    .index("by_hash", ["keyHash"])
+    .index("by_orgId", ["orgId"])
+    // The mint ceiling needs to count LIVE keys, and counting them out of
+    // `by_orgId` means paging past every revoked row an org has ever had —
+    // enough dead history and the newest live keys fall off the end of a
+    // bounded read, which is a ceiling that stops holding. A missing field
+    // sorts before every value, so `eq("revokedAt", undefined)` enumerates
+    // exactly the unrevoked keys, and the read never sees a dead row at all.
+    .index("by_orgId_and_revokedAt", ["orgId", "revokedAt"])
+    .index("by_eventId", ["eventId"]),
+
   // ── Events ────────────────────────────────────────────────────────────
   events: defineTable({
     orgId: v.id("organizations"),
