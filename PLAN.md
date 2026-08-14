@@ -4,16 +4,21 @@
 
 The organizers' Aug 13 update (see [docs/CHALLENGE.md](docs/CHALLENGE.md)
 "Post-deadline update") opened an optional working window until **Sunday,
-Aug 16, 2026**. This plan has two parts. **Part A** is the overarching
+Aug 16, 2026**. This plan has three parts. **Part A** is the overarching
 challenge work: make what we built verifiably true on the judged deployments
 and give the AIE team the easiest possible evaluation. **Part B** pulls a
 deliberate slice of **M10 (expert efficiency)** from
 [docs/MILESTONES.md](docs/MILESTONES.md) forward as feature workstreams,
 shaped for the process that worked last cycle: one development agent per
 workstream → independent verify → codex review → fix round → one commit.
+**Part C** remediates the Aug 12 security review (verified against
+`9f2a836` on Aug 13 — see
+[docs/reference/security-review-2026-08-12.md](docs/reference/security-review-2026-08-12.md)):
+C1 ships before Sunday, the rest is staged for after.
 
 Part A gates the eval re-run; Part B workstreams land independently and only
-merge if green — an unfinished feature never blocks Sunday.
+merge if green — an unfinished feature never blocks Sunday. Part C1 is small
+enough to hold to the same bar.
 
 Context: [docs/CHALLENGE.md](docs/CHALLENGE.md) ·
 [docs/MILESTONES.md](docs/MILESTONES.md) ·
@@ -299,3 +304,106 @@ toolbar edges, so they rebase in that order. Merge bar per workstream:
 `tsc` + full test suites green, browser-verified at 1440px and 375px,
 keyboard pass, negative authz for every new query — then it ships to
 `develop`; anything not green by Saturday evening is cut without ceremony.
+
+---
+
+# Part C — Security remediation (Aug 12 review)
+
+Source of truth for the findings:
+[docs/reference/security-review-2026-08-12.md](docs/reference/security-review-2026-08-12.md)
+— every status there was re-verified line-by-line on 2026-08-13 against
+`develop` @ `9f2a836`. Important context: commit `7634031` (Aug 9) closed the
+**earlier** review's findings, not these; nothing from this review has landed
+anywhere.
+
+Staging rationale: the repo is public and prod is judged this week, so the
+one real privilege-escalation path (C1) closes before Sunday; everything else
+is either defense-in-depth on an already-secret-guarded surface (C2), needs
+docs-first research we should not rush against the deadline (C3), or is
+hygiene with zero judged value this week (C4). C1 holds to the Part B merge
+bar; C2–C4 are explicitly NOT this window's work — they are written down here
+so the next cycle starts from a plan, not a memory.
+
+## C1 — Close the exploit path (before Sunday)
+
+- [ ] **F1: bind invitation acceptance to the invited email.**
+      `convex/model/team.ts` `acceptInvitation` (216–293) must compare the
+      redeeming user's verified email against `invite.email`
+      (case-insensitive) and refuse with a clear ConvexError naming the
+      mismatch — today any signed-in account holding a leaked or forwarded
+      token can redeem it into org/event membership. This is the only
+      realistic privilege escalation in the app. Ship with a negative
+      convex-test: wrong-email redeemer refused, right-email redeemer
+      admitted, and the audit row unchanged on refusal. Decision to make in
+      the diff, not silently: whether a mismatch marks the invite spent or
+      leaves it pending (leaning pending — a wrong account trying must not
+      burn the right account's invite).
+- [ ] **S2: stop serializing the Clerk JWT into the SSR payload.**
+      `apps/web/src/routes/__root.tsx:189-196` — drop `token` from the
+      `beforeLoad` return (`setAuth(token)` already ran above it). Verified:
+      nothing outside `__root.tsx` consumes route-context `token`, so this is
+      one line plus the `ClerkAuth` type. Check the app still hydrates
+      signed-in (the Convex client re-auths via `useAuth`, not this field).
+- [ ] **S3 rider: `https` floor for non-loopback hosts.**
+      `apps/web/src/lib/origin.ts:71-78` currently honors a client-supplied
+      `x-forwarded-proto: http`; behind Vercel the edge overwrites it, but
+      the code shouldn't depend on that. Only `LOOPBACK_HOSTS` may resolve to
+      `http`. One conditional + one test in the existing `resolveOrigin`
+      table.
+
+## C2 — Rate-limit parity (next cycle, or Saturday if C1 lands early)
+
+Both fixes copy patterns already in the tree — no design work, just parity.
+
+- [ ] **F3: `worker.importContext` joins the limiter.** `convex/worker.ts`
+      284–351 is the only worker endpoint without a `workerLimiter` check
+      (the sibling endpoints throw `rateLimited()` — see worker.ts:120/143/
+      171/194/376). Same key shape as its siblings.
+- [ ] **F4: cap `tasks.generateUploadUrl`.** `convex/tasks.ts:217-223` mints
+      storage upload URLs with no ceiling; `imports.ts:28` (`importLimiter`,
+      per-user per-hour) is the pattern for exactly this shape. Key on the
+      calling user.
+
+## C3 — Web/worker hardening (next cycle; docs-first)
+
+- [ ] **S1: security headers.** CSP (report-only first), HSTS,
+      `X-Content-Type-Options`, `X-Frame-Options`/`frame-ancestors`,
+      `Referrer-Policy` on the Vercel-served app. FRESH-DOCS-FIRST applies
+      hard here: the right mechanism (nitro route rules vs `vercel.json`
+      headers vs Start middleware) must come from current TanStack
+      Start/nitro docs, not memory — and the public program page + embed
+      (`/api/events/*`, CORS-open by design) must keep working, so
+      `frame-ancestors` needs the embed story decided, not defaulted.
+- [ ] **S5: byte-cap the worker's file download.**
+      `apps/worker/src/import-agent.ts:403-404` buffers the whole body;
+      check `Content-Length` when present AND enforce a streaming cap while
+      reading (the header can lie). Cap should match whatever
+      `imports.upload` already enforces at upload time — one shared constant,
+      not two that agree by luck.
+- [ ] **S4: type the `location.search` read.**
+      `apps/web/src/routes/app.e.$eventSlug.tsx:60` — replace the
+      `as { status?: string }` cast with the route's real `validateSearch`
+      types (the `convex/shared/viewParams.ts` parsers from W2 are the
+      obvious source).
+
+## C4 — Hygiene backlog (post-challenge; parked, not forgotten)
+
+Verified snapshot in the review doc. None of this is judged value this week;
+it is the debt list for the first post-challenge cycle, roughly in order of
+leverage:
+
+- [ ] Consolidate the ~10 redeclared scan caps (portal's drifted `200`
+      included) and the 5 copies of `vParticipantState` into one shared
+      definition each.
+- [ ] Replace the 17-string plain-message whitelist (`convex/http.ts:69-87`)
+      with error-code-driven mapping.
+- [ ] `program: v.any()` at `convex/schema.ts:960` gets a real validator
+      (it is a privacy-filtered snapshot — its shape is known).
+- [ ] Unwind the cfp↔sessions nested `runMutation`
+      (`convex/model/cfp.ts:1485`) into a direct model call.
+- [ ] Split the monster models (`agenda` 2404 · `reviews` 2289 · `tasks`
+      2231 · `cfp` 1966 · `speakers` 1908 lines), starting with extracting
+      reminders out of tasks.
+- [ ] DS vendor dir: decide the story for the 37 `.jsx`+`.d.ts` pairs
+      (convert or document why vendored as-is).
+- [ ] Replace boilerplate `convex/README.md`; dedupe workspace dependencies.
