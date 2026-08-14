@@ -76,6 +76,7 @@ import type * as reminders from "../reminders.js";
 import type * as reviews from "../reviews.js";
 import type * as savedViews from "../savedViews.js";
 import type * as search from "../search.js";
+import type * as seedDemo from "../seedDemo.js";
 import type * as sessions from "../sessions.js";
 import type * as shared_agenda from "../shared/agenda.js";
 import type * as shared_brandColor from "../shared/brandColor.js";
@@ -172,6 +173,7 @@ declare const fullApi: ApiFromModules<{
   reviews: typeof reviews;
   savedViews: typeof savedViews;
   search: typeof search;
+  seedDemo: typeof seedDemo;
   sessions: typeof sessions;
   "shared/agenda": typeof shared_agenda;
   "shared/brandColor": typeof shared_brandColor;
