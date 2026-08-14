@@ -1,6 +1,6 @@
-# PLAN — Challenge close-out + M10 slice (v4)
+# PLAN — Challenge close-out + M10 slice + agent access (v5)
 
-## STATUS: ACTIVE — started 2026-08-13, challenge hard stop Sunday 2026-08-16
+## STATUS: ACTIVE — started 2026-08-13, challenge hard stop Sunday 2026-08-16; Part D is the post-challenge cycle
 
 The organizers' Aug 13 update (see [docs/CHALLENGE.md](docs/CHALLENGE.md)
 "Post-deadline update") opened an optional working window until **Sunday,
@@ -14,7 +14,11 @@ workstream → independent verify → codex review → fix round → one commit.
 **Part C** remediates the Aug 12 security review (verified against
 `9f2a836` on Aug 13 — see
 [docs/reference/security-review-2026-08-12.md](docs/reference/security-review-2026-08-12.md)):
-C1 ships before Sunday, the rest is staged for after.
+C1 ships before Sunday, the rest is staged for after. **Part D** is the
+first post-challenge cycle: agent access — API keys + a hosted MCP server so
+users connect their own Claude Code / Codex to StageStack in minutes. It was
+planned and de-risked (spike validated 2026-08-14) inside this window but
+builds on a feature branch and merges to `develop` only after Sunday.
 
 Part A gates the eval re-run; Part B workstreams land independently and only
 merge if green — an unfinished feature never blocks Sunday. Part C1 is small
@@ -500,3 +504,179 @@ leverage:
       safe-buffer copies at the price of floating four transitive versions —
       a version bump wearing a hygiene costume. Reasoning appended to
       ARCHITECTURE.md so it isn't "cleaned up" later.)
+
+---
+
+# Part D — Agent access: API keys + hosted MCP server (post-challenge cycle)
+
+The deferred half of challenge decision #14 ([docs/CHALLENGE.md](docs/CHALLENGE.md):
+UI and agents were built on the same `convex/model/*` capabilities so a later
+external API is natural — see [docs/MILESTONES.md](docs/MILESTONES.md):196,
+which parked exactly this). Goal: a user creates an API key in org settings,
+runs one `claude mcp add` command, and their own Claude Code / Codex operates
+their events through the same authorized capability layer the UI uses.
+
+**Shape decided 2026-08-14** (research + live spike; details in the memory
+notes and the spike worktree): a **hosted MCP server served directly from
+`convex/http.ts`** with **API keys as bearer headers**, an **org-settings
+key-management UI**, and a **published skill**. OAuth 2.1 CIMD (claude.ai
+connectors, enterprise audit) is deliberately deferred — the API-key path is
+the fast lane and the same endpoint takes OAuth in front of it later.
+
+**Spike facts (validated live on dev, 2026-08-14 — do not re-derive):**
+
+- `createMcpHandler(factory).fetch(request)` from
+  `@modelcontextprotocol/server@2.0.0` runs **directly in an `httpAction`**.
+  No Hono adapter, no `HttpRouterWithHono` (that would replace the whole
+  router export for zero benefit), no hand-rolled JSON-RPC. Proven with real
+  `initialize` / `tools/list` / `tools/call` round-trips plus the official
+  streamable-HTTP client, including live data through `ctx.runQuery`.
+- Why the isolate tolerates it: Convex bundles isolate code
+  `platform: "browser"`, so the SDK resolves its browser shims —
+  `@cfworker/json-schema`, no eval codegen. Nothing to configure.
+- Construct the handler **per request** so the server factory closes over
+  that request's `ActionCtx`; the default `legacy: 'stateless'` serves both
+  2025-era and 2026-07-28 clients from one tool definition.
+- Landmines: never import `@modelcontextprotocol/server/stdio` from anything
+  reachable by `convex/` (real Node stdio); a git worktree must mirror root
+  `.env.local` or `npx convex dev --once` silently creates an anonymous
+  LOCAL deployment; production must put Host/Origin validation (the SDK
+  exports `hostHeaderValidationResponse` / `originValidationResponse`) and
+  real auth in front of `handler.fetch`; `responseMode: 'json'` exists if
+  SSE framing is ever unwanted.
+- **Cleanup owed**: dev (`scintillating-heron-597`) still serves the
+  unauthenticated read-only `/mcp-spike` route — the next
+  `npx convex dev --once` from a clean checkout removes it. The spike code
+  lives in disposable worktree `.claude/worktrees/agent-aa7b3108bc572d1c6`.
+
+Staging rationale: **nothing here merges to `develop` before Sunday** — the
+develop preview is what the evals hit. Build on a feature branch off
+`develop`; the first slice (D1 + a read-only D2) is the end-to-end proof and
+ships together. House rules apply unchanged: one producer per sentence in
+`convex/model/*`, validators everywhere, convex-test with negative authz per
+new query/mutation, DS primitives first, error text only through the
+sanitization boundary. Merge bar = Part B's.
+
+## D1 — API keys: table + caller resolution
+
+The key model, decided: **a key acts as the user who created it, never above
+that user's live role** — membership is re-resolved at use time, so a
+departed teammate's keys die with their membership (a feature, not a bug; org
+"service identities" are the later answer, already named in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md):85).
+
+- [ ] **`apiKeys` table** in `convex/schema.ts`: `keyHash` (SHA-256,
+      indexed `by_hash` — the `invitations.by_token` shape), display
+      `prefix` (e.g. `ssk_…last4`), `name`, `createdByUserId`, `orgId`
+      scope, optional `eventId` scope, `ceiling: 'read' | 'organizer'`,
+      `lastUsedAt`, `revokedAt`, optional `expiresAt`. Plaintext format
+      `ssk_<random>`; shown exactly once at mint. Hashing means a DB read
+      never yields a usable credential; constant-time compare is not needed
+      on a hash lookup, but mint uses crypto-strength randomness
+      (`convex/model/slugs.ts` is NOT the precedent — use
+      `crypto.getRandomValues`).
+- [ ] **Key capabilities** in `convex/model/apiKeys.ts` + thin
+      `convex/apiKeys.ts` wrappers (org-admin gated: `requireOrgAdmin`):
+      mint (returns plaintext once, stores hash), list (prefix/name/scope/
+      lastUsed only — never the hash), rename, revoke. `lastUsedAt` is
+      touched from the MCP path, throttled (once per ~5 min per key) so it
+      isn't a write per tool call.
+- [ ] **`resolveCallerFromApiKey`** in `convex/lib/functions.ts`: hash the
+      presented key → `by_hash` lookup → refuse revoked/expired → load the
+      creating user → resolve the SAME `OrgCaller`/`EventCaller` objects the
+      wrappers build, clamped by the key's `ceiling` (a `read` key never
+      resolves organizer even if the user is one; `organizer` ceiling still
+      cannot exceed the user's live role). All writes through this path set
+      `viaAgent: true` via `convex/model/audit.ts` — the Control Center
+      already renders it.
+- [ ] **Negative authz tests** (convex-test): revoked refused · expired
+      refused · unknown key refused · `read`-ceiling key refused on a
+      mutation capability · key of a removed member dead · event-scoped key
+      refused outside its event · audit rows carry `viaAgent`.
+
+## D2 — MCP endpoint (read-only first slice)
+
+- [ ] **`/mcp` route** in `convex/http.ts` (POST/GET/DELETE → one
+      `httpAction`, the spike shape): bearer-token extraction → D1
+      resolution → Host/Origin validation via the SDK's exports →
+      `createMcpHandler` per request. Auth failures return proper JSON-RPC
+      errors; nothing but the sanitization boundary's vocabulary leaks.
+- [ ] **Per-key rate limit**: a token bucket alongside `workerCalls`
+      (`@convex-dev/rate-limiter`, key = apiKey id; start ~300/min). Heed
+      the C2 lesson: `check()` only observes — spend in a mutation. Note
+      the documented rollback caveat (a throwing call refunds its spend);
+      acceptable for v1 exactly as it is for the worker.
+- [ ] **Curated read tools (~10, not a mirror of the ~150-function
+      surface)** — each a thin call into `convex/model/*` with the resolved
+      caller, JSON output, respecting the existing `readCaps` ceilings and
+      surfacing their `capped` flags in the tool output: `search`
+      (model/search scoped to memberships) · `list_events` · `get_event` ·
+      `list_proposals` + `get_proposal` · `review_progress` ·
+      `list_sessions` · `task_dashboard` · `agenda_board` · `publish_state`
+      (+ diff). Tool descriptions are product docs — write them for an agent
+      that has never seen StageStack.
+- [ ] **End-to-end proof** (the slice's exit test): a real Claude Code
+      session added via
+      `claude mcp add --transport http stagestack <url>/mcp --header
+      "Authorization: Bearer …"` answers a real question about a seeded
+      event; a revoked key observably stops it mid-session.
+- [ ] **Spike cleanup**: `/mcp-spike` gone from dev (redeploy), worktree
+      deleted; the MCP packages move from spike-installed to deliberate,
+      exact-pinned root deps per the volatile-pins convention.
+
+## D3 — Write tools (organizer-ceiling keys only)
+
+The dangerous half, deliberately thin. v1 allows **reversible,
+non-outbound** writes only: `update_session_content` · task
+`approve`/`request_changes` · `schedule_session` (agenda placement).
+Explicitly NOT in v1, listed so nobody "helpfully" adds them:
+`sendBulkOutreach`/`sendOneOff` (outbound email), `bulkPublish`/`setLineup`
+(public surface), contact `merge` (destructive), anything minting invites or
+touching membership. A per-key "allow sends/publishes" toggle is the later
+door; it is not this cycle's.
+
+- [ ] Each write tool: `organizer` ceiling required, capability re-checks
+      authorization in `model/*` as always, audit row `viaAgent: true`,
+      negative test that a `read` key is refused.
+
+## D4 — Key management UI + connect flow
+
+- [ ] **Org settings surface**: an "API keys" tab on
+      `apps/web/src/routes/app.org.$orgSlug.tsx` (the existing
+      `events | contacts | team` tab bar; org-admin gated like team
+      actions). Create (name + scope + ceiling → full key shown ONCE, with
+      copy button + "you won't see this again"), list with prefix/scope/
+      last-used, rename, revoke with confirm. DS primitives; clipboard via
+      `apps/web/src/lib/clipboard.ts`.
+- [ ] **"Connect your agent" panel** next to the key list: the ready-to-
+      paste `claude mcp add --transport http …` command with the
+      deployment's `.convex.site` URL filled in (derive, don't hardcode),
+      plus the Codex/generic streamable-HTTP equivalent. This panel is the
+      minutes-to-connected moment — treat its copy as product surface, not
+      docs.
+- *Mobile*: the tab is a stacked list; the reveal-once dialog and connect
+  command must be copyable at 375px (no horizontal scroll traps).
+
+## D5 — Skill, docs, and the deferred OAuth door
+
+- [ ] **Published skill** (SKILL.md, the open Agent Skills format): teaches
+      workflows over the tools — "prep a review round", "morning readiness
+      sweep", "chase missing speaker tasks" — not tool syntax (the MCP
+      schemas carry that). Lives in-repo (e.g. `skills/stagestack/`) so it
+      ships with the public repo; users install it alongside the MCP server.
+- [ ] **Docs page**: connect instructions (Claude Code, Codex, claude.ai
+      when OAuth lands), key scoping model, rate limits, tool catalog.
+- [ ] Optional: MCP Registry listing under a DNS-verified namespace.
+- **Deferred, explicitly**: OAuth 2.1 CIMD in front of the same endpoint
+  (unlocks claude.ai custom connectors + per-user identity for enterprise
+  audit). The API-key design must not paint over this door: auth extraction
+  stays one function in front of `handler.fetch`.
+
+## Suggested order & orchestration
+
+D1+D2 are one workstream and one merge — the end-to-end slice proves the
+whole architecture and nothing user-visible exists until D4 anyway. D3 and
+D4 then run in parallel (disjoint surfaces: convex tools vs web UI). D5
+last, written against whatever tool surface actually shipped. One
+development agent per workstream → independent verify → codex review → fix
+round → one commit, per the process that has worked for three cycles.
