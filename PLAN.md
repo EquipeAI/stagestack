@@ -33,7 +33,7 @@ the exact screens that prove them.
 (Form submission — https://forms.gle/RJMXWp2jAD32uHvB9 — is handled directly
 by Alvaro, outside this plan.)
 
-- [ ] **Seeded demo event on prod**, in its own demo organization so demo
+- [x] **Seeded demo event on prod**, in its own demo organization so demo
       data never touches anything real: a published CFP, proposals across
       every status, a launched review round with scores, a part-scheduled
       agenda with deliberate conflicts to show detection, speakers at every
@@ -59,11 +59,28 @@ by Alvaro, outside this plan.)
       ```
       `seedDemo:wipe` deletes the demo org's `apiKeys` too, so never re-seed
       after minting a key that is still wanted.
-- [ ] **Zero-friction reviewer access**: organizer invites pre-sent to the
-      four @ai.engineer addresses (our own invite flow is the demo), each
-      deep-linking into the seeded event; verify the Clerk production
-      instance accepts fresh sign-ups cleanly. Invites are staged first and
-      sent only on Alvaro's go.
+      *Closed 2026-08-14:* seeded on prod `healthy-lynx-620` in the recorded
+      order; public page live at stagestack.dev/e/meridian-dev-summit-2026.
+      Three shared team seats (Maya / Lena / Tomas) exist as prod Clerk users
+      at alvaro+{demo-organizer,reviewer3,reviewer2}@; their Convex user rows
+      were imported with the real `https://clerk.stagestack.dev|user_…` token
+      identifiers BEFORE seeding, so the personas' memberships and Lena's
+      10-review queue attach to the real accounts (verified) and dashboard
+      sign-in just works. A wipe+reseed loses that linkage unless the rows
+      survive or are re-imported first. Remaining manual: mint demo API keys
+      from the admin seat (D4 flow); docs/TESTING_GUIDE.md is the team's
+      entry point.
+- [x] **Zero-friction reviewer access** — *superseded 2026-08-14 by the
+      shared-seat model (Alvaro's call):* no invites to the @ai.engineer
+      addresses. Evaluators use the three shared prod accounts (Maya
+      organizer / Lena fresh-reviewer / Tomas finished-reviewer — live and
+      verified, Maya sign-in exercised end to end), with credentials shared
+      privately by Alvaro alongside the submission.
+      [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md) documents the seats and
+      the bring-your-own-email path (public CFP submitter flow) for anyone
+      who wants the real-inbox journey; the invite flow stays demonstrable
+      on demand from the Team tab. Fresh sign-up on the prod Clerk instance
+      is confirmed working (password + email-code strategies).
 - [ ] **Reviewer guide** — `docs/EVALUATION.md`, linked prominently from the
       README: deployed URLs (site, public page, embed, API endpoint), how to
       get in, a 10–15 minute walkthrough mapped requirement-by-requirement to
