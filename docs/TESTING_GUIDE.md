@@ -1,8 +1,9 @@
 # Testing StageStack — the Meridian demo
 
 StageStack ships with a seeded demo event so you can try every surface with
-realistic data: **Meridian Dev Summit 2026** — a two-day conference (Oct 13–14,
-2026, Fort Mason, San Francisco) run by the fictional org **Meridian
+realistic data: **Meridian Dev Summit 2026** — a two-day conference
+(mid-October 2026, Fort Mason, San Francisco; exact dates shift with each
+reseed) run by the fictional org **Meridian
 Conferences**. The data is deliberately imperfect: an unfinished review round,
 an agenda with real scheduling conflicts, speakers at every state of
 readiness, and a public page that is out of date on purpose. Live in that
