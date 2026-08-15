@@ -158,14 +158,27 @@ function raiseHeadshotFailure(code: unknown): never {
  * harness still works, and anything reachable from the internet refuses.
  */
 function mcpAllowedHostnames(): Array<string> {
+  const hostnames: Array<string> = [];
   const configured = process.env.CONVEX_SITE_URL;
   if (configured !== undefined) {
     try {
-      return [new URL(configured).hostname];
+      hostnames.push(new URL(configured).hostname);
     } catch {
-      // Fall through to loopback.
+      // Fall through: the extra list below may still populate the allowlist.
     }
   }
+  // Convex custom domains reach this same deployment under their own Host
+  // (e.g. mcp.stagestack.dev), which the SDK's DNS-rebinding check would
+  // otherwise refuse. Each hostname must be listed explicitly — still an
+  // allowlist, never derived from the request.
+  const extra = process.env.MCP_EXTRA_ALLOWED_HOSTS;
+  if (extra !== undefined) {
+    for (const entry of extra.split(",")) {
+      const hostname = entry.trim().toLowerCase();
+      if (hostname !== "") hostnames.push(hostname);
+    }
+  }
+  if (hostnames.length > 0) return hostnames;
   return localhostAllowedHostnames();
 }
 
