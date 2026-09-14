@@ -9,6 +9,12 @@ import { renderTemplate } from "./model/templates";
 import { routeParticipant, type AudienceRecipient } from "./model/audiences";
 import { takeAll } from "./model/validation";
 import { eventMutation, eventQuery, requireOrganizer } from "./lib/functions";
+import {
+  CONTACT_SCAN,
+  PARTICIPANT_SCAN,
+  REQUIREMENT_SCAN,
+  SESSION_SCAN,
+} from "./lib/readCaps";
 import { logAudit } from "./model/audit";
 import {
   POST_EVENT_GRACE_DAYS,
@@ -62,17 +68,21 @@ const DUE_REMINDER_CADENCE_DAYS = SAFETY_CADENCE_DAYS;
  * because this is where the rule is enforced. */
 export { POST_EVENT_GRACE_DAYS };
 
-// Per-event read ceilings. Every one is enforced with `takeAll` (H5): a
-// truncated read here does not look like an error, it looks like a speaker who
-// stopped being chased — and nothing would ever notice, because the sweep is
-// idempotent and would simply never reach the dropped rows again. Refusing
-// aborts one event's sweep loudly (each event runs in its own mutation, see
-// below) instead of silently under-reminding forever.
-const REQUIREMENT_SCAN = 200;
+// The sweep reads an event's ENTIRE task graph — instances (each carrying up
+// to a 2000-char reviewNote), participants, contacts, sessions, requirements —
+// and patches instances, all inside one mutation whose read+write allowance is
+// 16 MiB. The shared `INSTANCE_SCAN` (8000) is a document-count ceiling for
+// reads that stand alone; at 8000 note-heavy instances this transaction could
+// blow its BYTE budget and fail large valid events outright instead of
+// refusing with `event_too_large`. So the sweep keeps its own lower ceiling.
 const INSTANCE_SCAN = 4000;
-const PARTICIPANT_SCAN = 5000;
-const CONTACT_SCAN = 2000;
-const SESSION_SCAN = 1000;
+
+// The other per-event read ceilings come from `lib/readCaps` (imported above).
+// Every one is enforced here with `takeAll` (H5): a truncated read does not look like an
+// error, it looks like a speaker who stopped being chased — and nothing would
+// ever notice, because the sweep is idempotent and would simply never reach the
+// dropped rows again. Refusing aborts one event's sweep loudly (each event runs
+// in its own mutation, see below) instead of silently under-reminding forever.
 /** Never fan one sweep of one event out past this many addresses. */
 const MAX_RECIPIENTS_PER_EVENT = 200;
 /** Each dispatcher transaction advances every discovery source by one bounded

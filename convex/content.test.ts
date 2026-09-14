@@ -60,31 +60,39 @@ describe("sessions content history (W5)", () => {
       description: "Original abstract. Now with a live demo. Bring a laptop.",
     });
 
-    const beforeProfile = await alice.query(api.sessions.listRevisions, {
+    const beforeProfile = await alice.query(api.sessions.listSnapshots, {
       eventSlug,
       sessionId,
     });
-    expect(beforeProfile[0].editorName).toBe("Event team member");
+    const beforeEdits = beforeProfile.entries.filter(
+      (e) => e.origin !== "current",
+    );
+    expect(beforeEdits[0].editorName).toBe("Event team member");
 
     // Revisions retain the stable editor user id, so completing a profile
     // relabels existing history without rewriting any revision snapshots.
     await alice.mutation(api.users.setDisplayName, {
       displayName: "Jordan Alvarez",
     });
-    const revisions = await alice.query(api.sessions.listRevisions, {
+    const snapshots = await alice.query(api.sessions.listSnapshots, {
       eventSlug,
       sessionId,
     });
+    // Current first, then one entry per revision, newest first.
+    const revisions = snapshots.entries.filter(
+      (e): e is typeof e & { revisionId: Id<"sessionRevisions"> } =>
+        e.origin !== "current" && e.revisionId !== null,
+    );
     expect(revisions).toHaveLength(2);
     expect(revisions[0].editorName).toBe("Jordan Alvarez");
     expect(revisions[0].editorEmail).toBe("alice@example.com");
     expect(revisions[0].editedAt).toBeGreaterThan(0);
-    // Newest first: the top row's `before` is the state after edit #1.
-    expect(revisions[0].before.description).toBe(
+    // Newest first: the top row's content is the state after edit #1.
+    expect(revisions[0].content.description).toBe(
       "Original abstract. Now with a live demo.",
     );
 
-    // Restoring the newest revision's `before` drops the laptop sentence but
+    // Restoring the newest revision's content drops the laptop sentence but
     // keeps the live-demo one (the exact CNT-S3 step 9 check).
     await alice.mutation(api.sessions.restoreRevision, {
       eventSlug,
@@ -98,9 +106,11 @@ describe("sessions content history (W5)", () => {
       "Original abstract. Now with a live demo.",
     );
     // The restore itself is a third revision — history is never destroyed.
-    expect(
-      await alice.query(api.sessions.listRevisions, { eventSlug, sessionId }),
-    ).toHaveLength(3);
+    const after = await alice.query(api.sessions.listSnapshots, {
+      eventSlug,
+      sessionId,
+    });
+    expect(after.entries.filter((e) => e.origin !== "current")).toHaveLength(3);
   });
 
   test("NEGATIVE: a non-member cannot edit content or read history", async () => {
@@ -116,7 +126,7 @@ describe("sessions content history (W5)", () => {
       "forbidden",
     );
     await expectRejectedWith(
-      mallory.query(api.sessions.listRevisions, { eventSlug, sessionId }),
+      mallory.query(api.sessions.listSnapshots, { eventSlug, sessionId }),
       "forbidden",
     );
   });

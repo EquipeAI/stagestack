@@ -1,4 +1,5 @@
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
+import { validate } from "convex-helpers/validators";
 import { HOUR, RateLimiter } from "@convex-dev/rate-limiter";
 import { components } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -6,7 +7,13 @@ import { eventMutation, eventQuery, requireOrganizer } from "./lib/functions";
 import { enqueueJob } from "./model/jobs";
 import { logAudit } from "./model/audit";
 import { assertEventActive } from "./model/validation";
-import { IMPORT_LIMITS, vPlannedRecord } from "./shared/importPlan";
+import * as Imports from "./model/imports";
+import {
+  IMPORT_LIMITS,
+  type PlannedRecord,
+  vExecutionReport,
+  vImportPlan,
+} from "./shared/importPlan";
 
 // Import with AI (M2): upload → agent plans → organizer confirms → execute.
 // The plan/execution runs on the worker VM; see apps/worker/src/import-agent.ts
@@ -140,19 +147,28 @@ export const listJobs = eventQuery({
 // `result` is the raw plan, i.e. speaker names, emails and phone numbers, and
 // reviewers must never see contact details (convex/model/reviews.ts projects
 // their view precisely to avoid this).
+const vGetJob = v.union(
+  v.object({
+    _id: v.id("jobs"),
+    type: v.literal("import-plan"),
+    status: v.string(),
+    result: v.optional(vImportPlan),
+    error: v.optional(v.string()),
+  }),
+  v.object({
+    _id: v.id("jobs"),
+    type: v.literal("import-execute"),
+    status: v.string(),
+    result: v.optional(vExecutionReport),
+    error: v.optional(v.string()),
+  }),
+  v.null(),
+);
+type GetJobResult = Infer<typeof vGetJob>;
 export const getJob = eventQuery({
   args: { jobId: v.id("jobs") },
-  returns: v.union(
-    v.object({
-      _id: v.id("jobs"),
-      type: v.string(),
-      status: v.string(),
-      result: v.optional(v.any()),
-      error: v.optional(v.string()),
-    }),
-    v.null(),
-  ),
-  handler: async (ctx, args) => {
+  returns: vGetJob,
+  handler: async (ctx, args): Promise<GetJobResult> => {
     requireOrganizer(ctx.caller);
     const job = await ctx.db.get("jobs", args.jobId);
     if (
@@ -162,22 +178,51 @@ export const getJob = eventQuery({
     ) {
       return null;
     }
-    return {
-      _id: job._id,
-      type: job.type,
-      status: job.status,
-      result: job.result,
-      error: job.error,
-    };
+    // `result` is stored as `v.any()`, but served under a strict validator —
+    // so a row that does not match would throw at RETURN validation and take
+    // the whole query with it, leaving the review page unable to show even the
+    // job's own status or error. `worker.finish` validates every plan it
+    // writes with the same validator, so this can only be a row that predates
+    // that check: degrade it to a readable failure instead of a broken page.
+    if (job.type === "import-plan") {
+      const usable =
+        job.result === undefined || validate(vImportPlan, job.result);
+      return {
+        _id: job._id,
+        type: job.type,
+        status: usable ? job.status : "failed",
+        result: usable ? job.result : undefined,
+        error: usable
+          ? job.error
+          : (job.error ??
+            "This plan was stored in a format this version can no longer read. Start the import again."),
+      };
+    }
+    if (job.type === "import-execute") {
+      const usable =
+        job.result === undefined || validate(vExecutionReport, job.result);
+      return {
+        _id: job._id,
+        type: job.type,
+        status: usable ? job.status : "failed",
+        result: usable ? job.result : undefined,
+        error: usable
+          ? job.error
+          : (job.error ??
+            "This import's report was stored in a format this version can no longer read."),
+      };
+    }
+    return null;
   },
 });
 
 export const confirm = eventMutation({
   args: {
     planJobId: v.id("jobs"),
-    // The approved subset of the plan's records, exactly as returned by the
-    // planner (the UI may exclude rows the organizer deselected).
-    records: v.array(vPlannedRecord),
+    // The ids of the plan's records the organizer selected. The records
+    // themselves are re-derived server-side from the plan job's result — a
+    // tampered client cannot smuggle records the organizer never reviewed.
+    recordIds: v.array(v.string()),
   },
   returns: v.id("jobs"),
   handler: async (ctx, args) => {
@@ -195,26 +240,54 @@ export const confirm = eventMutation({
         message: "That import plan isn't ready to confirm.",
       });
     }
-    if (args.records.length === 0) {
+    if (planJob.result === undefined) {
+      throw new ConvexError({
+        code: "invalid_plan",
+        message: "The planner returned an unusable plan.",
+      });
+    }
+    // `result` is v.any(): treat it as hostile and validate before trusting.
+    Imports.assertPlanShape(planJob.result);
+    const byId = new Map<string, PlannedRecord>(
+      planJob.result.records.map((r) => [r.id, r]),
+    );
+    const selected: PlannedRecord[] = [];
+    const seen = new Set<string>();
+    for (const id of args.recordIds) {
+      const record = byId.get(id);
+      if (record === undefined) {
+        throw new ConvexError({
+          code: "invalid_plan",
+          message: "This plan does not contain one of the selected records.",
+        });
+      }
+      if (!seen.has(id)) {
+        seen.add(id);
+        selected.push(record);
+      }
+    }
+    if (selected.length === 0) {
       throw new ConvexError({
         code: "empty_plan",
         message: "Select at least one record to import.",
       });
     }
-    if (args.records.length > IMPORT_LIMITS.maxRecords) {
+    if (selected.length > IMPORT_LIMITS.maxRecords) {
       throw new ConvexError({
         code: "invalid_plan",
         message: `Plans are limited to ${IMPORT_LIMITS.maxRecords} records.`,
       });
     }
-    // The confirming organizer becomes the execution authority.
+    // The confirming organizer becomes the execution authority. The approved
+    // records come from the plan's result, so the confirmation boundary is
+    // structural: `importExecuteBatch` later re-slices these exact records.
     const jobId = await enqueueJob(
       ctx,
       "import-execute",
       {
         eventId: ctx.caller.event._id,
         planJobId: args.planJobId,
-        records: args.records,
+        records: selected,
       },
       ctx.caller.user._id,
     );
@@ -226,7 +299,7 @@ export const confirm = eventMutation({
       action: "import.confirm",
       targetType: "jobs",
       targetId: jobId,
-      meta: { planJobId: args.planJobId, records: args.records.length },
+      meta: { planJobId: args.planJobId, records: selected.length },
     });
     return jobId;
   },

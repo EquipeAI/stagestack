@@ -5,14 +5,24 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import { MAX_HEADSHOT_BYTES, supportedHeadshotType } from "./model/headshotImages";
+import {
+  GENERIC_PROCESSING_FAILURE,
+  HeadshotFailure,
+  MAX_HEADSHOT_BYTES,
+  MAX_HEADSHOT_DIMENSION,
+  MAX_HEADSHOT_PIXELS,
+  asHeadshotFailureCode,
+  headshotFailure,
+  supportedHeadshotType,
+} from "./model/headshotImages";
+import type { HeadshotFailureCode } from "./model/headshotImages";
 
-export const MAX_HEADSHOT_DIMENSION = 8192;
-export const MAX_HEADSHOT_PIXELS = 25_000_000;
+// Re-exported so callers and tests keep one import site for the pixel bounds;
+// the values (and the sentences that quote them) live in model/headshotImages.
+export { MAX_HEADSHOT_DIMENSION, MAX_HEADSHOT_PIXELS };
+
 const NORMALIZED_DIMENSION = 2048;
 const NORMALIZED_CONTENT_TYPE = "image/webp";
-
-class InvalidDecodedHeadshot extends Error {}
 
 export function validateDecodedDimensions(width: number, height: number): void {
   if (
@@ -21,17 +31,13 @@ export function validateDecodedDimensions(width: number, height: number): void {
     width <= 0 ||
     height <= 0
   ) {
-    throw new InvalidDecodedHeadshot("The image has invalid dimensions.");
+    headshotFailure("invalid_dimensions");
   }
   if (width > MAX_HEADSHOT_DIMENSION || height > MAX_HEADSHOT_DIMENSION) {
-    throw new InvalidDecodedHeadshot(
-      `Headshots must be at most ${MAX_HEADSHOT_DIMENSION} pixels on either side.`,
-    );
+    headshotFailure("dimensions_too_large");
   }
   if (width * height > MAX_HEADSHOT_PIXELS) {
-    throw new InvalidDecodedHeadshot(
-      "Headshots must contain 25 million pixels or fewer.",
-    );
+    headshotFailure("too_many_pixels");
   }
 }
 
@@ -52,11 +58,7 @@ export async function sanitizeHeadshotBytes(
   height: number;
 }> {
   const declared = supportedHeadshotType(declaredContentType);
-  if (declared === null) {
-    throw new InvalidDecodedHeadshot(
-      "Choose a JPEG, PNG, or WebP image for the headshot.",
-    );
-  }
+  if (declared === null) headshotFailure("declared_type_unsupported");
   const source = Buffer.from(bytes);
   try {
     const decoder = sharp(source, {
@@ -66,12 +68,10 @@ export async function sanitizeHeadshotBytes(
     });
     const metadata = await decoder.metadata();
     if (formatContentType(metadata.format) !== declared) {
-      throw new InvalidDecodedHeadshot(
-        "The decoded image format did not match its content type.",
-      );
+      headshotFailure("decoded_format_mismatch");
     }
     if ((metadata.pages ?? 1) !== 1) {
-      throw new InvalidDecodedHeadshot("Animated headshots are not supported.");
+      headshotFailure("animated_image");
     }
     validateDecodedDimensions(metadata.width ?? 0, metadata.height ?? 0);
 
@@ -90,9 +90,7 @@ export async function sanitizeHeadshotBytes(
       .toBuffer({ resolveWithObject: true });
     validateDecodedDimensions(normalized.info.width, normalized.info.height);
     if (normalized.data.byteLength > MAX_HEADSHOT_BYTES) {
-      throw new InvalidDecodedHeadshot(
-        "The normalized headshot is still larger than 5 MB.",
-      );
+      headshotFailure("normalized_too_large");
     }
     const outputMetadata = await sharp(normalized.data).metadata();
     if (
@@ -102,9 +100,7 @@ export async function sanitizeHeadshotBytes(
       outputMetadata.iptc !== undefined ||
       outputMetadata.icc !== undefined
     ) {
-      throw new InvalidDecodedHeadshot(
-        "The image metadata could not be removed safely.",
-      );
+      headshotFailure("metadata_not_stripped");
     }
     const output = normalized.data.buffer.slice(
       normalized.data.byteOffset,
@@ -117,28 +113,22 @@ export async function sanitizeHeadshotBytes(
       height: normalized.info.height,
     };
   } catch (error) {
-    if (error instanceof InvalidDecodedHeadshot) throw error;
-    throw new InvalidDecodedHeadshot(
-      "The image could not be decoded as a complete JPEG, PNG, or WebP file.",
-    );
+    if (error instanceof HeadshotFailure) throw error;
+    // `sharp` errors quote file paths and library internals — never rethrow one.
+    headshotFailure("undecodable_image");
   }
 }
 
-const SAFE_PROCESSING_MESSAGES = new Set([
-  "That upload lease expired.",
-  "The temporary image was no longer available.",
-  "The temporary image metadata changed before processing.",
-  "The normalized headshot has an invalid size.",
-  "That upload already reserved storage.",
-  "Headshot storage quota reached. Remove unused photos or ask an administrator for help.",
-]);
-
-function safeProcessingMessage(error: unknown): string {
-  if (error instanceof InvalidDecodedHeadshot) return error.message;
-  if (error instanceof Error && SAFE_PROCESSING_MESSAGES.has(error.message)) {
-    return error.message;
-  }
-  return "That photo could not be processed safely.";
+/** Only a named failure travels back out of the Node runtime. Anything else —
+ * a `sharp` throw, a storage error, an unexpected bug — becomes the generic
+ * sentence with no code, and `convex/http.ts` then answers generically too. */
+function safeProcessingFailure(error: unknown): {
+  code?: HeadshotFailureCode;
+  message: string;
+} {
+  return error instanceof HeadshotFailure
+    ? { code: error.code, message: error.message }
+    : { message: GENERIC_PROCESSING_FAILURE };
 }
 
 /** Cross-runtime processing uses only small ids/status values. The raw source
@@ -151,6 +141,10 @@ export const process = internalAction({
   },
   returns: v.object({
     ok: v.boolean(),
+    /** A `HeadshotFailureCode` when the failure was a named one. Validated as
+     * a plain string and re-narrowed by the caller: an unrecognized code is
+     * treated exactly like no code at all. */
+    code: v.optional(v.string()),
     message: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
@@ -173,19 +167,19 @@ export const process = internalAction({
         source.contentType === undefined ||
         source.size === undefined
       ) {
-        throw new Error(source.message ?? "That upload lease expired.");
+        throw new HeadshotFailure(
+          asHeadshotFailureCode(source.code) ?? "lease_expired",
+        );
       }
       const blob = await ctx.storage.get(args.sourceStorageId);
       if (blob === null) {
-        throw new Error("The temporary image was no longer available.");
+        headshotFailure("source_blob_missing");
       }
       if (
         blob.size !== source.size ||
         blob.type.trim().toLowerCase() !== source.contentType
       ) {
-        throw new Error(
-          "The temporary image metadata changed before processing.",
-        );
+        headshotFailure("source_metadata_changed");
       }
       const normalized = await sanitizeHeadshotBytes(
         await blob.arrayBuffer(),
@@ -195,9 +189,7 @@ export const process = internalAction({
         internal.headshotUploads.markOutputStoreStarted,
         { uploadId: args.uploadId },
       );
-      if (!outputStoreStarted) {
-        throw new Error("That upload lease expired.");
-      }
+      if (!outputStoreStarted) headshotFailure("lease_expired");
       const storageId = await ctx.storage.store(
         new Blob([normalized.bytes], { type: normalized.contentType }),
       );
@@ -212,14 +204,14 @@ export const process = internalAction({
         uploadId: args.uploadId,
         ...stored,
       });
-      if (!ready) throw new Error("That upload lease expired.");
+      if (!ready) headshotFailure("lease_expired");
       const settled = await ctx.runMutation(
         internal.headshotUploads.cleanupSource,
         args,
       );
-      if (!settled) {
-        throw new Error("That photo could not be processed safely.");
-      }
+      // Unnamed on purpose: an un-cleaned source is our bookkeeping problem,
+      // not something to describe to the uploader.
+      if (!settled) throw new Error(GENERIC_PROCESSING_FAILURE);
       return { ok: true as const };
     } catch (error) {
       try {
@@ -244,10 +236,7 @@ export const process = internalAction({
           uploadId: args.uploadId,
         }).catch(() => undefined);
       }
-      return {
-        ok: false as const,
-        message: safeProcessingMessage(error),
-      };
+      return { ok: false as const, ...safeProcessingFailure(error) };
     } finally {
       await ctx.runMutation(internal.headshotUploads.cleanupSource, args).catch(
         () => undefined,

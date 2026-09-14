@@ -22,9 +22,11 @@
   "dependencies": {
     "@convex-dev/rate-limiter": "0.3.2",
     "@convex-dev/resend": "0.2.6",
+    "@modelcontextprotocol/server": "2.0.0",
     "convex": "1.43.0",
     "convex-helpers": "0.1.122",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@edge-runtime/vm": "5.0.0",

@@ -4,11 +4,9 @@ import { api } from '@convex/_generated/api'
 import { MenuItem, MenuLabel, Popover } from './Popover'
 import {
   ABSTRACT_STATUS_LABEL,
-  BUILT_IN_VIEWS,
   COLUMNS,
   STATUS_ORDER,
   displayTitle,
-  sameView,
 } from './model'
 import {
   downloadFileBundle,
@@ -20,146 +18,15 @@ import {
   slug,
 } from './exporters'
 import type { ConvexReactClient } from 'convex/react'
-import type {
-  AbstractsSearch,
-  ColumnId,
-  ProposalStatus,
-  ViewDef,
-} from './model'
+import type { ColumnId, ProposalStatus } from './model'
 import type { ExportInput, ReviewExportRow } from './exporters'
-import { ActionResult, Button, Field, Icon, IconButton, Input, Switch } from '~/ds'
+import { ActionResult, Switch } from '~/ds'
 import { visibleFilters } from '~/lib/filters'
 
-// The three toolbar menus. Views and columns are preferences (URL + local
-// storage); export is a client-side action over exactly the rows on screen.
-
-export function ViewsMenu({
-  search,
-  saved,
-  onApply,
-  onSave,
-  onDelete,
-}: {
-  search: AbstractsSearch
-  saved: ReadonlyArray<ViewDef>
-  onApply: (search: AbstractsSearch) => void
-  onSave: (name: string) => void
-  onDelete: (name: string) => void
-}) {
-  const active =
-    [...BUILT_IN_VIEWS, ...saved].find((v) => sameView(v.search, search))
-      ?.name ?? null
-
-  return (
-    <Popover
-      label={active === null ? 'Custom view' : active}
-      icon="list-filter"
-      align="start"
-      width="19rem"
-    >
-      {(close) => (
-        <>
-          <MenuLabel>Built in</MenuLabel>
-          {BUILT_IN_VIEWS.map((view) => (
-            <MenuItem
-              key={view.name}
-              onClick={() => {
-                onApply(view.search)
-                close()
-              }}
-            >
-              {view.name}
-              {view.name === active ? <Icon name="check" size={14} /> : null}
-            </MenuItem>
-          ))}
-          {saved.length > 0 ? (
-            <>
-              <MenuLabel>Saved</MenuLabel>
-              {saved.map((view) => (
-                <div
-                  key={view.name}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--space-1)',
-                  }}
-                >
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <MenuItem
-                      onClick={() => {
-                        onApply(view.search)
-                        close()
-                      }}
-                    >
-                      <span
-                        style={{
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {view.name}
-                      </span>
-                      {view.name === active ? (
-                        <Icon name="check" size={14} />
-                      ) : null}
-                    </MenuItem>
-                  </span>
-                  <IconButton
-                    icon="trash-2"
-                    label={`Delete the ${view.name} view`}
-                    size="sm"
-                    onClick={() => onDelete(view.name)}
-                  />
-                </div>
-              ))}
-            </>
-          ) : null}
-          <SaveViewForm onSave={onSave} />
-        </>
-      )}
-    </Popover>
-  )
-}
-
-function SaveViewForm({ onSave }: { onSave: (name: string) => void }) {
-  const [name, setName] = useState('')
-  const submit = () => {
-    if (name.trim() === '') return
-    onSave(name.trim())
-    setName('')
-  }
-  return (
-    <div
-      style={{
-        paddingTop: 'var(--space-2)',
-        borderTop: 'var(--space-px) solid var(--border-subtle)',
-      }}
-    >
-      <Field
-        label="Save this view"
-        htmlFor="save-view-name"
-        hint="Search, filters, sort and columns, kept in this browser."
-      >
-        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-          <Input
-            id="save-view-name"
-            size="sm"
-            value={name}
-            placeholder="Wave 1 shortlist"
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') submit()
-            }}
-          />
-          <Button size="sm" onClick={submit} disabled={name.trim() === ''}>
-            Save
-          </Button>
-        </div>
-      </Field>
-    </div>
-  )
-}
+// The two toolbar menus this table still owns: columns (a preference of this
+// browser) and export (a client-side action over exactly the rows on screen).
+// The views menu left in W2 — saved views are stored per user on the event now,
+// so the picker is the shared `components/views/SavedViewsMenu`.
 
 /**
  * Statuses whose ZERO is itself operational news (W12).

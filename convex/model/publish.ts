@@ -1,9 +1,16 @@
 import { ConvexError } from "convex/values";
+import type { Infer } from "convex/values";
+import { vPublicProgram } from "../schema";
 import { internal } from "../_generated/api";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { EventCaller } from "../lib/functions";
 import { requireOrganizer } from "../lib/functions";
+import {
+  CONTACT_SCAN,
+  PARTICIPANT_SCAN,
+  SESSION_SCAN,
+} from "../lib/readCaps";
 import { assertEventActive, takeAll } from "./validation";
 import { logAudit } from "./audit";
 import { formatLabel, formatsById } from "./library";
@@ -26,9 +33,6 @@ import { formatLabel, formatsById } from "./library";
 // "speaker to be announced". Backstage/host links never enter the blob.
 // ─────────────────────────────────────────────────────────────────────────
 
-const SESSION_SCAN = 1000;
-const PARTICIPANT_SCAN = 5000;
-const CONTACT_SCAN = 2000;
 const AGENDA_SCAN = 500;
 const FLAG_SCAN = 3000;
 const LIBRARY_SCAN = 500;
@@ -106,6 +110,23 @@ export type PublicProgram = {
     | ({ kind: "item" } & PublicAgendaItem)
   >;
 };
+
+/**
+ * The stored blob's validator (convex/schema.ts) is deliberately PERMISSIVE —
+ * it must accept rows written by every past version of this producer. This
+ * assertion is the other half of that contract: whatever `computeProgram`
+ * produces today must still be storable. Honest limits: `extends` is
+ * structural, so it catches a field whose TYPE no longer fits the validator,
+ * not a NEWLY ADDED field (extra properties are assignable). The guard for
+ * additions is the test suite — convex-test enforces schema validators on
+ * every write, so a producer field missing from `vPublicProgram` fails the
+ * publish tests, not the next schema push.
+ */
+type _ProgramFitsSchema = PublicProgram extends Infer<typeof vPublicProgram>
+  ? true
+  : never;
+const _programFitsSchema: _ProgramFitsSchema = true;
+void _programFitsSchema;
 
 const flagKey = (targetType: string, targetId: string) =>
   `${targetType}:${targetId}`;
@@ -702,6 +723,12 @@ export type PublishState = {
    * "already correct" and "failed" must never look the same.
    */
   stale: boolean;
+  /**
+   * The projection under the CURRENT flags — the same object the `stale`
+   * comparison above computed. The console renders this as its live preview,
+   * so the page needs one projection for state+stale, not two.
+   */
+  preview: PublicProgram;
 };
 
 /** The organizer's view of what's public and what could be. */
@@ -741,16 +768,16 @@ export async function publishState(
     }
   }
   // Compared against a fresh projection rather than against timestamps: it is
-  // the BYTES the public sees that matter, and this page already recomputes the
-  // projection for its live preview.
+  // the BYTES the public sees that matter. That same projection is what the
+  // console previews, so compute it once and serve it back.
+  const preview = await computeProgram(ctx, caller.event);
   const stale =
-    published !== null &&
-    canonical(published.program) !==
-      canonical(await computeProgram(ctx, caller.event));
+    published !== null && canonical(published.program) !== canonical(preview);
   return {
     lineupPublished: caller.event.publicPageEnabled === true,
     agendaPublished: isPublished(flags, "agenda", "event", false),
     stale,
+    preview,
     version: published?.version ?? null,
     publishedAt: published?.publishedAt ?? null,
     publishedSessionIds,

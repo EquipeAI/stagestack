@@ -36,6 +36,11 @@ vi.mock('@tanstack/react-router', () => ({
   }),
   useLocation: ({ select }: { select: (l: unknown) => unknown }) =>
     select({ pathname: state.pathname, search: state.search }),
+  // Non-strict useSearch: the shell has no search schema of its own and reads
+  // the child route's `status` (S4). Same backing state as useLocation, so a
+  // test that sets `state.search` still drives both.
+  useSearch: ({ select }: { select: (s: unknown) => unknown }) =>
+    select(state.search),
   useNavigate: () => navigate,
   Outlet: () => (child === null ? <div data-testid="outlet" /> : <Child />),
 }))

@@ -9,7 +9,6 @@ import type {
   ProposalId,
   ProposalStatus,
   SortKey,
-  ViewDef,
 } from '~/components/abstracts/model'
 import type { BulkOutcomeView } from '~/components/abstracts/BulkBar'
 import type { ActiveFilter } from '~/ds'
@@ -33,13 +32,13 @@ import {
   ColumnsMenu,
   ExportMenu,
   StatusChips,
-  ViewsMenu,
 } from '~/components/abstracts/TableMenus'
+import { SavedViewsMenu } from '~/components/views/SavedViewsMenu'
+import { paramsFromSearch } from '~/components/views/model'
 import {
   ABSTRACT_STATUS_LABEL,
   ALL_COLUMN_IDS,
   filterRows,
-  loadSavedViews,
   loadStoredColumns,
   parseSearch,
   searchFromState,
@@ -47,7 +46,6 @@ import {
   sortRows,
   stateFromSearch,
   storeColumns,
-  storeSavedViews,
   systemFieldIds,
 } from '~/components/abstracts/model'
 
@@ -99,10 +97,8 @@ function Abstracts({
   // Preferences live in this browser, so they are read after mount — the
   // server render always uses the defaults and never mismatches.
   const [storedCols, setStoredCols] = useState<Array<ColumnId> | null>(null)
-  const [savedViews, setSavedViews] = useState<Array<ViewDef>>([])
   useEffect(() => {
     setStoredCols(loadStoredColumns(eventSlug))
-    setSavedViews(loadSavedViews(eventSlug))
   }, [eventSlug])
 
   const state = useMemo(
@@ -354,23 +350,14 @@ function Abstracts({
               placeholder="Search titles, submitters, answers"
               onChange={(e) => setQ(e.target.value)}
             />
-            <ViewsMenu
-              search={searchFromState({ ...state, q })}
-              saved={savedViews}
-              onApply={apply}
-              onSave={(name) => {
-                const next = [
-                  ...savedViews.filter((v) => v.name !== name),
-                  { name, search: searchFromState({ ...state, q }) },
-                ]
-                setSavedViews(next)
-                storeSavedViews(eventSlug, next)
-              }}
-              onDelete={(name) => {
-                const next = savedViews.filter((v) => v.name !== name)
-                setSavedViews(next)
-                storeSavedViews(eventSlug, next)
-              }}
+            {/* W2: the saved-view slot, backed by the `savedViews` table —
+                presets (including Decisions), this organizer's own views, a
+                default that opens the table, and a link that is the share. */}
+            <SavedViewsMenu
+              eventSlug={eventSlug}
+              module="proposals"
+              params={paramsFromSearch(searchFromState({ ...state, q }))}
+              onApply={(next) => apply(parseSearch(next))}
             />
           </div>
         }

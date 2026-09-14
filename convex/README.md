@@ -1,90 +1,30 @@
-# Welcome to your Convex functions directory!
+# `convex/` — the backend
 
-Write your Convex functions here.
-See https://docs.convex.dev/functions for more.
+Everything StageStack knows how to do lives here. The load-bearing rule is that
+a capability is written **once** and called by every surface: the organizer app,
+the speaker portal, the public read API and the agent tools all reach the same
+function. See [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md#the-capability-layer-the-load-bearing-decision)
+for why, and [`_generated/ai/guidelines.md`](_generated/ai/guidelines.md) for the
+Convex API rules — those override anything a model thinks it remembers about
+Convex.
 
-A query function that takes two arguments looks like:
+## What lives where
 
-```ts
-// convex/myFunctions.ts
-import { query } from "./_generated/server";
-import { v } from "convex/values";
+| Path | What it is |
+|---|---|
+| `model/*.ts` | **The capabilities.** Plain TypeScript taking `ctx` plus an already-resolved caller. All authorization, all business rules, all reads and writes. This is where the work happens. |
+| `*.ts` (top level) | **Thin public wrappers.** `query`/`mutation`/`action` declarations with `args` and `returns` validators that resolve the caller and delegate to `model/`. They should read as one call plus its contract. |
+| `http.ts` | HTTP actions on `.convex.site` — the public read API, headshot ingestion, the Resend webhook. Public-facing, so it is the one place that decides what error text reaches the open internet. |
+| `schema.ts` | Tables, indexes, and the validators for stored shapes. |
+| `lib/` | Backend-only helpers: the `customQuery`/`customMutation` wrappers (`functions.ts`), shared validators (`validators.ts`), URL helpers, and the per-event read ceilings (`readCaps.ts`). |
+| `shared/` | Pure logic and validators shared with `apps/web` — parsers, form definitions, view params, schedules. No `ctx`, no database. |
+| `crons.ts`, `reminders.ts` | Scheduled sweeps. |
+| `*.test.ts` | `convex-test` suites, one per module, run with `npx vitest run` from the repo root. |
 
-export const myQueryFunction = query({
-  // Validators for arguments.
-  args: {
-    first: v.number(),
-    second: v.string(),
-  },
+## Conventions
 
-  // Function implementation.
-  handler: async (ctx, args) => {
-    // Read the database as many times as you need here.
-    // See https://docs.convex.dev/database/reading-data.
-    const documents = await ctx.db.query("tablename").collect();
-
-    // Arguments passed from the client are properties of the args object.
-    console.log(args.first, args.second);
-
-    // Write arbitrary JavaScript here: filter, aggregate, build derived data,
-    // remove non-public properties, or create new objects.
-    return documents;
-  },
-});
-```
-
-Using this query function in a React component looks like:
-
-```ts
-const data = useQuery(api.myFunctions.myQueryFunction, {
-  first: 10,
-  second: "hello",
-});
-```
-
-A mutation function looks like:
-
-```ts
-// convex/myFunctions.ts
-import { mutation } from "./_generated/server";
-import { v } from "convex/values";
-
-export const myMutationFunction = mutation({
-  // Validators for arguments.
-  args: {
-    first: v.string(),
-    second: v.string(),
-  },
-
-  // Function implementation.
-  handler: async (ctx, args) => {
-    // Insert or modify documents in the database here.
-    // Mutations can also read from the database like queries.
-    // See https://docs.convex.dev/database/writing-data.
-    const message = { body: args.first, author: args.second };
-    const id = await ctx.db.insert("messages", message);
-
-    // Optionally, return a value from your mutation.
-    return await ctx.db.get("messages", id);
-  },
-});
-```
-
-Using this mutation function in a React component looks like:
-
-```ts
-const mutation = useMutation(api.myFunctions.myMutationFunction);
-function handleButtonPress() {
-  // fire and forget, the most common way to use mutations
-  mutation({ first: "Hello!", second: "me" });
-  // OR
-  // use the result once the mutation has completed
-  mutation({ first: "Hello!", second: "me" }).then((result) =>
-    console.log(result),
-  );
-}
-```
-
-Use the Convex CLI to push your functions to a deployment. See everything
-the Convex CLI can do by running `npx convex -h` in your project root
-directory. To learn more, launch the docs with `npx convex docs`.
+- **Object syntax and validators, always.** `query({ args: {...}, returns: v...., handler })` — on every function, including internal ones. Table-name-first db calls: `ctx.db.get("events", id)`.
+- **One producer per sentence.** A rule, a message, a cap or a shape is declared in exactly one place and imported everywhere else. If you find yourself retyping a constant or a user-facing sentence, that is the bug.
+- **Authorization lives in `model/`, not in the wrapper.** Every mutating capability re-checks its own caller, because the portal and the organizer console both call straight into it.
+- **Bounded reads only.** Ceilings come from `lib/readCaps.ts`. Use `takeAll` when a truncated read would be a wrong answer (it refuses), and `takeCapped` when it would merely be a shorter one (it reports `capped`). Never a bare `.take(n)`.
+- **Never `v.any()` for a shape we control.** If we write it, we can validate it.

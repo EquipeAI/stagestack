@@ -4,6 +4,7 @@ import {
   createFileRoute,
   useLocation,
   useNavigate,
+  useSearch,
 } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
@@ -54,11 +55,17 @@ function EventLayout() {
   const data = useQuery(api.events.get, { eventSlug })
   const navigate = useNavigate()
   const pathname = useLocation({ select: (l) => l.pathname })
-  const status = useLocation({
-    // Only the one param the rail reads. Selecting the whole search object
-    // would re-render the shell on every table sort and keystroke.
-    select: (l) => (l.search as { status?: string } | undefined)?.status,
-  })
+  // Only the one param the rail reads. Selecting the whole search object would
+  // re-render the shell on every table sort and keystroke.
+  //
+  // `strict: false` rather than a cast (S4): this shell has no search schema of
+  // its own — `status` belongs to the proposals child route, whose parser is
+  // `parseProposalsSearch` in convex/shared/viewParams.ts. Non-strict useSearch
+  // types the result from the router's registered routes, so `status` is
+  // `string | undefined` because that route says so, and the day the parser
+  // drops or renames the param this line stops compiling instead of silently
+  // reading undefined.
+  const status = useSearch({ strict: false, select: (s) => s.status })
 
   // /app opens whatever event you were last in. Only record it once the event
   // actually loaded, so a stale or forbidden slug in the URL is not the thing

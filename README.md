@@ -31,6 +31,9 @@ the same code.
   speakers are named; everyone else is "Speaker to be announced".
 - **Import agent** — CSV import planned by an LLM, approved by an organizer,
   executed deterministically through the same capabilities as the UI.
+- **Agent access** — mint a scoped API key and point your own agent at the
+  hosted MCP server, which reaches the same capabilities under the same
+  authorization: [Connect your agent](docs/AGENT_ACCESS.md).
 
 ## Repository layout
 

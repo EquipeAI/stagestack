@@ -12,7 +12,7 @@ import {
   type TestT,
   type TestUserT,
 } from "./test.helpers";
-import { starterFormDef } from "./model/cfp";
+import { starterFormDef } from "./model/cfpForms";
 
 // Review & evaluation (M2). The privacy rules are the point of most of these
 // tests: a reviewer must reach exactly their own assignments, see evaluation

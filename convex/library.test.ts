@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { parseDurationLabel } from "./model/library";
+import { parseDurationLabel, addLibraryItem, updateLibraryItem, removeLibraryItem } from "./model/library";
 import {
   createEvent,
   createOrg,
@@ -186,6 +186,71 @@ describe("library CRUD", () => {
         table: "tracks",
         item: { name: "Reviewer Track" },
       }),
+      "forbidden",
+    );
+  });
+
+  test("NEGATIVE: the model re-checks organizer even under a hand-built reviewer caller", async () => {
+    // The public wrapper already refuses reviewers, so this passes through the
+    // capability layer's own gate: a future direct call site that skips the
+    // wrapper must still hit `requireOrganizer` inside the model functions.
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    await signIn(t, "rita");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+    await grantEventRole(t, eventSlug, "rita", "reviewer");
+    const trackId = await alice.mutation(api.library.add, {
+      eventSlug,
+      table: "tracks",
+      item: { name: "Platform" },
+    });
+
+    const reviewerCaller = await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      const org = await ctx.db
+        .query("organizations")
+        .withIndex("by_slug", (q) => q.eq("slug", orgSlug))
+        .unique();
+      const user = await ctx.db
+        .query("users")
+        .withIndex("by_tokenIdentifier", (q) =>
+          q.eq("tokenIdentifier", "https://test.clerk.example.com|rita"),
+        )
+        .unique();
+      if (event === null || org === null || user === null) {
+        throw new Error("seed missing");
+      }
+      return { event, org, user };
+    });
+
+    await expectRejectedWith(
+      t.run(async (ctx) =>
+        addLibraryItem(ctx, { ...reviewerCaller, role: "reviewer", orgRole: null }, "tags", {
+          name: "Smuggled",
+        }),
+      ),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      t.run(async (ctx) =>
+        updateLibraryItem(
+          ctx,
+          { ...reviewerCaller, role: "reviewer", orgRole: null },
+          "tracks",
+          trackId,
+          { name: "Hijacked" },
+        ),
+      ),
+      "forbidden",
+    );
+    await expectRejectedWith(
+      t.run(async (ctx) =>
+        removeLibraryItem(ctx, { ...reviewerCaller, role: "reviewer", orgRole: null }, "tracks", trackId),
+      ),
       "forbidden",
     );
   });
@@ -708,10 +773,13 @@ describe("formats rename", () => {
         },
       },
     );
-    const revisionsBefore = await alice.query(api.sessions.listRevisions, {
+    const snapshotsBefore = await alice.query(api.sessions.listSnapshots, {
       eventSlug,
       sessionId,
     });
+    const revisionCount = (entries: Array<{ origin: string }>) =>
+      entries.filter((e) => e.origin !== "current").length;
+    const revisionsBefore = revisionCount(snapshotsBefore.entries);
 
     await alice.mutation(api.library.update, {
       eventSlug,
@@ -732,11 +800,11 @@ describe("formats rename", () => {
     expect(renamed.untouched?.formatId).toBeUndefined();
 
     // A library rename is not an editorial change to anyone's session.
-    const revisionsAfter = await alice.query(api.sessions.listRevisions, {
+    const snapshotsAfter = await alice.query(api.sessions.listSnapshots, {
       eventSlug,
       sessionId,
     });
-    expect(revisionsAfter).toHaveLength(revisionsBefore.length);
+    expect(revisionCount(snapshotsAfter.entries)).toBe(revisionsBefore);
 
     // The bug this guards: a later title-only edit re-resolving off a stale
     // label, finding nothing, and silently dropping the link.
@@ -838,5 +906,61 @@ describe("library.backfillFormats — read ceiling", () => {
     expect(
       (await alice.query(api.library.list, { eventSlug })).formats,
     ).toEqual([]);
+  });
+});
+
+describe("library list — read policy (F8)", () => {
+  test("a capped kind reports capped instead of silently shortening", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+    await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      // 201 tracks: one past the 200 LIST_SCAN probe.
+      for (let i = 0; i < 201; i += 1) {
+        await ctx.db.insert("tracks", {
+          eventId: event._id,
+          name: `Track ${i}`,
+          order: i,
+        });
+      }
+    });
+
+    const lib = await alice.query(api.library.list, { eventSlug });
+    expect(lib.tracks).toHaveLength(200);
+    expect(lib.capped.tracks).toBe(true);
+    expect(lib.capped.formats).toBe(false);
+  });
+
+  test("an oversized formats read refuses rather than mis-linking labels", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme Conf Co");
+    const eventSlug = await createEvent(alice, orgSlug, "Acme Summit");
+    await t.run(async (ctx) => {
+      const event = await ctx.db
+        .query("events")
+        .withIndex("by_slug", (q) => q.eq("slug", eventSlug))
+        .unique();
+      if (event === null) throw new Error("no event");
+      // 501 formats: one past FORMAT_SCAN — the policy is REFUSE.
+      for (let i = 0; i < 501; i += 1) {
+        await ctx.db.insert("formats", {
+          eventId: event._id,
+          name: `Format ${i}`,
+          order: i,
+        });
+      }
+    });
+
+    await expectRejectedWith(
+      alice.query(api.library.list, { eventSlug }),
+      "event_too_large",
+    );
   });
 });

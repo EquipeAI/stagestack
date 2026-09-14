@@ -36,6 +36,9 @@ export const recordSource = internalMutation({
   },
   returns: v.object({
     recorded: v.boolean(),
+    /** A `HeadshotFailureCode` when the refusal was a named one; the HTTP
+     * action re-raises it by code. Plain string, re-narrowed by the caller. */
+    code: v.optional(v.string()),
     message: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
@@ -58,6 +61,9 @@ export const sourceDetails = internalQuery({
   },
   returns: v.object({
     processable: v.boolean(),
+    /** A `HeadshotFailureCode` when the refusal was a named one; the HTTP
+     * action re-raises it by code. Plain string, re-narrowed by the caller. */
+    code: v.optional(v.string()),
     message: v.optional(v.string()),
     contentType: v.optional(v.string()),
     size: v.optional(v.number()),
@@ -117,6 +123,9 @@ export const beginStorageAttempt = internalMutation({
   args: { uploadId: v.id("headshotUploads") },
   returns: v.object({
     reserved: v.boolean(),
+    /** A `HeadshotFailureCode` when the refusal was a named one; the HTTP
+     * action re-raises it by code. Plain string, re-narrowed by the caller. */
+    code: v.optional(v.string()),
     message: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {

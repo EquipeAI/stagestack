@@ -4,6 +4,14 @@ import type { EventCaller } from "../lib/functions";
 import { requireOrganizer } from "../lib/functions";
 import { isOpen, isOverdue } from "./tasks";
 import { takeAll } from "./validation";
+import {
+  CONTACT_SCAN,
+  INSTANCE_SCAN,
+  PARTICIPANT_SCAN,
+  REQUIREMENT_SCAN,
+  REVIEW_SCAN,
+  SESSION_SCAN,
+} from "../lib/readCaps";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Operational audiences (M5). Derived ONLY from event relationships and state —
@@ -47,12 +55,6 @@ export type AudienceResult = {
   truncated: boolean;
 };
 
-const PARTICIPANT_SCAN = 5000;
-const CONTACT_SCAN = 2000;
-const SESSION_SCAN = 1000;
-const INSTANCE_SCAN = 8000;
-const REQUIREMENT_SCAN = 200;
-const REVIEW_SCAN = 5000;
 /** One send never fans out past this many addresses. */
 export const MAX_AUDIENCE = 200;
 

@@ -26,7 +26,9 @@ export default defineConfig({
   ],
   test: {
     environment: "edge-runtime",
-    include: ["convex/**/*.test.ts"],
+    // The worker is plain Node code, but its file parsing is the kind of thing
+    // that only breaks on real bytes, so its tests run in the same suite.
+    include: ["convex/**/*.test.ts", "apps/worker/src/**/*.test.ts"],
     // Blocks outbound HTTP (the raw Resend call in the .ics path) so the suite
     // never depends on the network. See convex/test.setup.ts.
     setupFiles: ["./convex/test.setup.ts"],
@@ -43,6 +45,11 @@ export default defineConfig({
       // deployment env lives in one place.
       RESEND_TEST_MODE: "false",
       SITE_URL: "https://test.stagestack.dev",
+      // Convex sets this on every real deployment; the /mcp endpoint's
+      // Host/Origin allowlist is derived from it and FAILS CLOSED without it
+      // (convex/http.ts). convex-test issues its HTTP-action requests against
+      // `https://some.convex.site`, so this is that host, spelled once.
+      CONVEX_SITE_URL: "https://some.convex.site",
       WORKER_SECRET: "test-worker-secret",
     },
     server: {

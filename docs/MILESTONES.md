@@ -1,10 +1,10 @@
 # StageStack — Product Milestones
 
-Product-led decomposition of what StageStack needs, in build order. Each milestone is independently demoable and maps to a business capability, not a technical layer. PLAN.md pulls its current tasks from one milestone at a time — or, where two milestones are one bet, from an explicitly named pair (the current plan covers M8 + M9).
+Product-led decomposition of what StageStack needs, in build order. Each milestone is independently demoable and maps to a business capability, not a technical layer. PLAN.md pulls its current tasks from one milestone at a time — or, where two milestones are one bet, from an explicitly named pair (the last plan covered M8 + M9 together).
 
 Dependency spine: **M0 → M1 → M2 → M3 → M4/M5 (parallel) → M6 → M7**. M3 (portal) unlocks both speaker ops (M4) and comms (M5).
 
-M0–M7 are the capability arc and are shipped. **M8 → M9 → M10** is the UX maturity arc that follows them: same capabilities, made operable. It exists because the 2026-08-11 evaluation scored 100% of applicable requirements while the accompanying expert UX review concluded that "StageStack already behaves like a serious event-operations system, but it still presents itself as a collection of administrative modules." Nothing in M8–M10 adds a new module; each item removes bookkeeping the organizer currently does in their head.
+M0–M7 are the capability arc and are shipped. **M8 → M9 → M10** is the UX maturity arc that follows them: same capabilities, made operable. M8 and M9 shipped 2026-08-12 ([archived plan](PLAN-2026-08-ux-maturity.md)); M10 waits for real usage of M9's surfaces. The arc exists because the 2026-08-11 evaluation scored 100% of applicable requirements while the accompanying expert UX review concluded that "StageStack already behaves like a serious event-operations system, but it still presents itself as a collection of administrative modules." Nothing in M8–M10 adds a new module; each item removes bookkeeping the organizer currently does in their head.
 
 ## M0 — Foundation: event & library
 

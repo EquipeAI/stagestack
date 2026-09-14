@@ -154,6 +154,11 @@ function ContactLog({
                   timezone={timezone}
                   updatedAt={message.deliveryUpdatedAt}
                 />
+                {message.failureReason !== undefined && (
+                  <span style={{ font: 'var(--type-caption)', color: 'var(--text-tertiary)', overflowWrap: 'anywhere' }}>
+                    {message.failureReason}
+                  </span>
+                )}
               </div>
               <span style={sentAt}>
                 {formatDateTime(message.sentAt, timezone)}

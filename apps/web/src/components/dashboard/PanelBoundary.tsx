@@ -29,7 +29,14 @@ import { errorCode, errorMessage } from '~/lib/errors'
 //     The child is keyed by the attempt number, because clearing the error
 //     without remounting would re-render the same failed subtree.
 
-type Props = { title: string; children: React.ReactNode }
+//
+// `quiet` exists for the one panel that is SUPPLEMENTARY rather than an answer
+// the organizer asked for (W4's turnaround analytics, below the four
+// questions). A history panel that cannot compute its medians has nothing to
+// tell anyone, and a red callout under the four answers would make a
+// nice-to-have look like a fault in the event. It degrades to nothing.
+
+type Props = { title: string; children: React.ReactNode; quiet?: boolean }
 type State = { error: unknown | null; attempt: number }
 
 export class PanelBoundary extends Component<Props, State> {
@@ -51,6 +58,7 @@ export class PanelBoundary extends Component<Props, State> {
     if (error === null) {
       return <Fragment key={attempt}>{this.props.children}</Fragment>
     }
+    if (this.props.quiet === true) return null
     const code = errorCode(error)
     return (
       <Callout

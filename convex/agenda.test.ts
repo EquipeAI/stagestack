@@ -1596,10 +1596,10 @@ describe("archived events", () => {
   });
 });
 
-// ── Auto-place (W7: AIA-08) ──────────────────────────────────────────────
+// ── Full-board placement (W7: AIA-08) ────────────────────────────────────
 
-describe("agenda.autoPlace", () => {
-  test("places every unscheduled session into conflict-free slots in one action", async () => {
+describe("agenda placement via suggest/apply", () => {
+  test("places every unscheduled session into conflict-free slots in one flow", async () => {
     const { t, alice, eventSlug } = await setup();
     // Two sessions sharing a speaker: they must not land in overlapping
     // slots; a third with its own speaker can share a time in another room.
@@ -1616,7 +1616,19 @@ describe("agenda.autoPlace", () => {
       email: "alan@example.com",
     });
 
-    const result = await alice.mutation(api.agenda.autoPlace, { eventSlug });
+    // The same flow the UI uses: suggest (query) then apply (mutation) with
+    // the returned fingerprint — there is no second placement implementation.
+    const plan = await alice.query(api.agenda.suggestSchedule, { eventSlug });
+    const result = await alice.mutation(api.agenda.applySchedule, {
+      eventSlug,
+      fingerprint: plan.fingerprint,
+      placements: plan.placements.map((p) => ({
+        sessionId: p.sessionId,
+        startsAt: p.startsAt,
+        endsAt: p.endsAt,
+        roomId: p.roomId,
+      })),
+    });
     expect(result.placed.map((p) => p.title).sort()).toEqual([
       "Talk A",
       "Talk B",
@@ -1635,9 +1647,11 @@ describe("agenda.autoPlace", () => {
       expect(row?.startsAt).toBeGreaterThan(0);
       expect(row?.endsAt).toBe((row?.startsAt ?? 0) + 60 * 60 * 1000);
     }
-    // Re-running places nothing new (idempotent over a full board).
-    const again = await alice.mutation(api.agenda.autoPlace, { eventSlug });
-    expect(again.placed).toEqual([]);
+    // Re-planning over a full board proposes nothing new.
+    const again = await alice.query(api.agenda.suggestSchedule, {
+      eventSlug,
+    });
+    expect(again.placements).toEqual([]);
   });
 });
 

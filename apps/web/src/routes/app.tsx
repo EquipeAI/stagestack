@@ -3,6 +3,7 @@ import { Show, UserButton } from '@clerk/tanstack-react-start'
 import { Logo } from '~/ds'
 import { AuthGate } from '~/components/AuthGate'
 import { EventSwitcher } from '~/components/EventSwitcher'
+import { GlobalSearch } from '~/components/shell/GlobalSearch'
 import { ToastViewport } from '~/components/toast'
 
 export const Route = createFileRoute('/app')({
@@ -48,8 +49,21 @@ function AppLayout() {
           borderBottom: 'var(--space-px) solid var(--border-default)',
         }}
       >
-        <Link to="/app" style={{ display: 'flex', alignItems: 'center' }}>
-          <Logo size={18} />
+        {/* The wordmark costs 104px of a 375px bar [measured], which is most of
+            what the event title needs. Below 640px the mark alone stands in for
+            it — the same collapsed-sidebar affordance the DS already ships —
+            and one of the two is always hidden, so the link keeps one name.
+            That name is on the LINK: the wordmark's text disappears at exactly
+            the width where the remaining mark is aria-hidden, which left the
+            home link with no accessible name on a phone and nowhere else. An
+            explicit label is the same at every width. */}
+        <Link to="/app" className="topbar__home" aria-label="StageStack home">
+          <span className="topbar__logo topbar__logo--full">
+            <Logo size={18} />
+          </span>
+          <span className="topbar__logo topbar__logo--mark" aria-hidden="true">
+            <Logo size={18} wordmark={false} />
+          </span>
         </Link>
         <Show when="signed-in">
           <span
@@ -61,6 +75,11 @@ function AppLayout() {
           <EventSwitcher />
         </Show>
         <div style={{ flex: 1 }} />
+        {/* Visible, not only ⌘K: the shortcut is for the people who already
+            know it, and the button is for everyone else. */}
+        <Show when="signed-in">
+          <GlobalSearch />
+        </Show>
         <UserButton />
       </header>
       <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>

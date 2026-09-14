@@ -12,3 +12,5 @@ walkthrough-*.mp4
 # Verification screenshots from UI passes; regenerate locally rather than
 # carrying ~200KB PNGs per run in git (same reasoning as the walkthrough videos)
 .perf-research/*-preview/
+# CommandCode local agent notes — personal tooling state, not project source
+.commandcode/

@@ -251,6 +251,110 @@ describe("attentionPanel — the rows the review specified", () => {
     expect(rowOf(panel, "reviews").tone).toBe("attention");
   });
 
+  test("a capped reviews read never claims every review is submitted", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, eventId } = await seed(t);
+    await t.run(async (ctx) => {
+      const user = await ctx.db.query("users").first();
+      if (user === null) throw new Error("no user");
+      // 2001 rows: one past PANEL_REVIEW_SCAN, so the read is capped. Every row
+      // is submitted — the filter empties the set, which is exactly the case
+      // that must not print "every assigned review has been submitted".
+      for (let i = 0; i < 2001; i += 1) {
+        const proposalId = await ctx.db.insert("proposals", {
+          eventId,
+          title: `Submitted ${i}`,
+          status: "pending",
+          submitterUserId: user._id,
+          answers: {},
+          formVersion: 1,
+          updatedAt: NOW,
+        });
+        await ctx.db.insert("reviews", {
+          eventId,
+          proposalId,
+          reviewerUserId: user._id,
+          status: "submitted",
+          updatedAt: NOW,
+        });
+      }
+    });
+
+    const panel = await alice.query(api.readiness.attentionPanel, {
+      eventSlug,
+      now: NOW,
+    });
+    const reviews = rowOf(panel, "reviews");
+    expect(reviews.count).toBe(0);
+    expect(reviews.capped).toBe(true);
+    expect(reviews.sentence).toBe(
+      "No outstanding review among the first 2000 read — larger events may have more.",
+    );
+    expect(reviews.tone).toBe("neutral");
+  });
+
+  test("a capped speakers read never claims every speaker answered", async () => {
+    const t = setupTest();
+    const { alice, eventSlug, eventId } = await seed(t);
+    await t.run(async (ctx) => {
+      const event = await ctx.db.get("events", eventId);
+      if (event === null) throw new Error("no event");
+      const sessionId = await ctx.db.insert("sessions", {
+        eventId,
+        title: "Many speakers",
+        source: "direct",
+        status: "planned",
+      });
+      // 1001 confirmed participations: one past PANEL_PARTICIPANT_SCAN.
+      for (let i = 0; i < 1001; i += 1) {
+        const contactId = await ctx.db.insert("eventContacts", {
+          eventId,
+          orgId: event.orgId,
+          firstName: `Speaker`,
+          lastName: `${i}`,
+        });
+        await ctx.db.insert("sessionParticipants", {
+          sessionId,
+          eventId,
+          eventContactId: contactId,
+          role: "speaker",
+          state: "confirmed",
+        });
+      }
+    });
+
+    const panel = await alice.query(api.readiness.attentionPanel, {
+      eventSlug,
+      now: NOW,
+    });
+    const speakers = rowOf(panel, "speakers");
+    expect(speakers.count).toBe(0);
+    expect(speakers.capped).toBe(true);
+    expect(speakers.sentence).toBe(
+      "Every invited speaker among the first 1000 participations read has answered — larger events may have more.",
+    );
+    expect(speakers.tone).toBe("neutral");
+  });
+
+  test("an uncapped true-zero read keeps the confident sentence", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await seed(t);
+
+    const panel = await alice.query(api.readiness.attentionPanel, {
+      eventSlug,
+      now: NOW,
+    });
+    const reviews = rowOf(panel, "reviews");
+    expect(reviews.count).toBe(0);
+    expect(reviews.capped).toBe(false);
+    expect(reviews.sentence).toBe("Every assigned review has been submitted.");
+    expect(reviews.tone).toBe("success");
+    const speakers = rowOf(panel, "speakers");
+    expect(speakers.sentence).toBe("Every invited speaker has answered.");
+    const tasks = rowOf(panel, "tasks");
+    expect(tasks.sentence).toBe("No speaker owes you anything right now.");
+  });
+
   test("speakers and tasks are counted with their own deep links", async () => {
     const t = setupTest();
     const { alice, eventSlug, eventId } = await seed(t);
@@ -745,6 +849,24 @@ describe("dashboard blockers", () => {
     expect(data.blockers.blockedSessions).toBe(
       data.sessions.filter((s) => s.readiness.status === "blocked").length,
     );
+    // F5: the rows the control center prints are composed here, not in TSX.
+    const byId = new Map(data.blockers.rows.map((r) => [r.id, r]));
+    expect(byId.get("contentDrafts")?.sentence).toBe(
+      "1 session is held out of the public program until the content is approved.",
+    );
+    expect(byId.get("contentDrafts")?.tone).toBe("blocked");
+    expect(byId.get("contentDrafts")?.link).toEqual({
+      tab: "sessions",
+      search: { content: "draft" },
+    });
+    expect(byId.get("unscheduled")?.sentence).toBe(
+      "2 planned sessions have no released slot, so they cannot appear on the public schedule.",
+    );
+    expect(byId.get("unscheduled")?.tone).toBe("attention");
+    expect(byId.get("scheduleConflicts")?.sentence).toBe(
+      "No session collides with another.",
+    );
+    expect(byId.get("scheduleConflicts")?.tone).toBe("success");
   });
 
   test("it REFUSES an over-ceiling event rather than under-reporting blockers", async () => {

@@ -32,7 +32,16 @@ function firstHop(raw: string | undefined): string {
   return (raw ?? '').split(',')[0].trim()
 }
 
-/** `SITE_URL`-style config value reduced to a bare origin, or null if unusable. */
+/**
+ * `SITE_URL`-style config value reduced to a bare origin, or null if unusable.
+ *
+ * An `http:` SITE_URL is accepted on purpose, and that is NOT the same gap the
+ * `https` floor below closes: SITE_URL is operator-set deployment config, not
+ * attacker-controlled request input, and a self-host serving a plain-http
+ * internal origin is a legitimate deployment. The S3 threat was the
+ * client-supplied `x-forwarded-proto` header only. Reviewed and ruled on
+ * 2026-08-13 — please don't "fix" this into breaking self-hosters.
+ */
 function configuredOrigin(siteUrl: string | undefined): string | null {
   if (siteUrl === undefined || siteUrl.trim() === '') return null
   try {
@@ -69,12 +78,17 @@ export function resolveOrigin(opts: {
   )
   if (HOST_PATTERN.test(host)) {
     const forwardedProto = firstHop(opts.header('x-forwarded-proto'))
-    const scheme =
-      forwardedProto === 'http' || forwardedProto === 'https'
-        ? forwardedProto
-        : LOOPBACK_HOSTS.has(host.replace(/:\d+$/, ''))
-          ? 'http'
-          : 'https'
+    const isLoopback = LOOPBACK_HOSTS.has(host.replace(/:\d+$/, ''))
+    // `https` floor: the proto header is client-supplied, so it may only
+    // *select* http for a loopback host (where there is no TLS to speak of).
+    // Vercel's edge overwrites the header, but nothing here may depend on it —
+    // otherwise a forged `x-forwarded-proto: http` downgrades every generated
+    // link on any other deployment.
+    const scheme = isLoopback
+      ? forwardedProto === 'https'
+        ? 'https'
+        : 'http'
+      : 'https'
     return `${scheme}://${host}`
   }
   return configuredOrigin(opts.siteUrl) ?? PRODUCT_ORIGIN

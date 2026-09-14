@@ -5,6 +5,7 @@ import type { Id } from "./_generated/dataModel";
 import {
   createEvent,
   createOrg,
+  expectRejectedWith,
   setupTest,
   signIn,
   type TestT,
@@ -106,6 +107,35 @@ describe("embeds", () => {
     expect(
       await t.query(api.embeds.resolve, { embedId: "nonsense" }),
     ).toBeNull();
+  });
+
+  test("a name with a control character is refused at create and update", async () => {
+    const t = setupTest();
+    const { alice, eventSlug } = await seedPublished(t);
+    await expectRejectedWith(
+      alice.mutation(api.embeds.create, {
+        eventSlug,
+        name: "Hacked\r\nX-Evil: yes",
+        widget: "sessions",
+        config: {},
+      }),
+      "invalid_name",
+    );
+
+    const embedId = await alice.mutation(api.embeds.create, {
+      eventSlug,
+      name: "Clean sessions",
+      widget: "sessions",
+      config: {},
+    });
+    await expectRejectedWith(
+      alice.mutation(api.embeds.update, {
+        eventSlug,
+        embedId,
+        name: "Also\r\nBad",
+      }),
+      "invalid_name",
+    );
   });
 
   test("draft content status pulls a session from public output; approve restores it (CNT-12)", async () => {

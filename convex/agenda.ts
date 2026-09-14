@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { eventMutation, eventQuery } from "./lib/functions";
-import { vv } from "./lib/validators";
+import { vParticipantState, vv } from "./lib/validators";
 import * as Agenda from "./model/agenda";
+import * as Planner from "./model/agendaPlanner";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public surface for the agenda builder (M6). Thin wrappers; the rules live in
@@ -18,13 +19,6 @@ const vSlot = v.object({
   endsAt: v.number(),
   roomId: v.optional(v.id("rooms")),
 });
-
-const vParticipantState = v.union(
-  v.literal("awaiting"),
-  v.literal("confirmed"),
-  v.literal("declined"),
-  v.literal("withdrawn"),
-);
 
 const vAck = v.union(
   v.literal("awaitingAck"),
@@ -180,7 +174,7 @@ export const suggestSchedule = eventQuery({
     fingerprint: v.string(),
   }),
   handler: async (ctx) => {
-    return await Agenda.suggestSchedule(ctx, ctx.caller);
+    return await Planner.suggestSchedule(ctx, ctx.caller);
   },
 });
 
@@ -206,7 +200,7 @@ export const applySchedule = eventMutation({
     runId: vv.id("auditLog"),
   }),
   handler: async (ctx, args) => {
-    return await Agenda.applySchedule(ctx, ctx.caller, args);
+    return await Planner.applySchedule(ctx, ctx.caller, args);
   },
 });
 
@@ -220,30 +214,12 @@ export const undoPlacement = eventMutation({
     message: v.string(),
   }),
   handler: async (ctx, args) => {
-    return await Agenda.undoPlacement(ctx, ctx.caller, args.runId);
-  },
-});
-
-/** Plan and apply in one call, for organizers who don't want the preview.
- * Same planner; no second placement implementation. */
-export const autoPlace = eventMutation({
-  args: {},
-  returns: v.object({
-    placed: v.array(
-      v.object({ sessionId: vv.id("sessions"), title: v.string() }),
-    ),
-    unplaced: v.array(
-      v.object({ sessionId: vv.id("sessions"), title: v.string() }),
-    ),
-  }),
-  handler: async (ctx) => {
-    return await Agenda.autoPlace(ctx, ctx.caller);
+    return await Planner.undoPlacement(ctx, ctx.caller, args.runId);
   },
 });
 
 /** Drag-and-drop placement. `slot: null` sends the session back to the tray.
  * Never notifies anyone: board edits are internal drafts (M6). */
-
 export const scheduleSession = eventMutation({
   args: { sessionId: v.id("sessions"), slot: v.union(vSlot, v.null()) },
   returns: v.null(),

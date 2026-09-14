@@ -30,6 +30,22 @@ export const WIDGETS: ReadonlyArray<EmbedWidget> = [
   "gallery",
 ];
 
+/** Embed names land in a `Content-Disposition` header on the .ics feed
+ * (`convex/http.ts`), where a control character would break the response and a
+ * quote would weaken the quoted-string — so the name is bounded AND
+ * control-character-free. The http layer re-sanitizes at the sink anyway
+ * (defense-in-depth for legacy rows). */
+function assertEmbedName(name: string): string {
+  const bounded = assertText(name, { label: "Embed name", max: 120 });
+  if (/[\x00-\x1f\x7f]/.test(bounded)) {
+    throw new ConvexError({
+      code: "invalid_name",
+      message: "Embed names cannot contain line breaks or control characters.",
+    });
+  }
+  return bounded;
+}
+
 function assertConfig(config: EmbedConfig): EmbedConfig {
   const out: EmbedConfig = {};
   if (config.trackName !== undefined && config.trackName.trim() !== "") {
@@ -89,7 +105,7 @@ export async function createEmbed(
   }
   const id = await ctx.db.insert("embeds", {
     eventId: caller.event._id,
-    name: assertText(input.name, { label: "Embed name", max: 120 }),
+    name: assertEmbedName(input.name),
     widget: input.widget,
     enabled: true,
     config: assertConfig(input.config),
@@ -131,7 +147,7 @@ export async function updateEmbed(
   await requireEmbed(ctx, caller, embedId);
   const update: Partial<Doc<"embeds">> = { updatedAt: Date.now() };
   if (patch.name !== undefined) {
-    update.name = assertText(patch.name, { label: "Embed name", max: 120 });
+    update.name = assertEmbedName(patch.name);
   }
   if (patch.enabled !== undefined) update.enabled = patch.enabled;
   if (patch.config !== undefined) update.config = assertConfig(patch.config);

@@ -14,6 +14,8 @@ import { ensureFlue } from "./flue";
 import type { Id } from "../../../convex/_generated/dataModel";
 import {
   IMPORT_LIMITS,
+  importFileTooLargeMessage,
+  type ImportContext,
   type ImportPlan,
   type ImportRecord,
   type PlannedRecord,
@@ -54,24 +56,70 @@ export type ParsedTable = {
   truncated: boolean;
 };
 
+/**
+ * Decode an uploaded text file to a string.
+ *
+ * UTF-8 first, strictly: if the bytes are not valid UTF-8 the file is almost
+ * certainly a legacy Windows export, so fall back to CP1252 rather than
+ * littering the abstracts with U+FFFD. Doing it in this order matters — every
+ * CP1252 byte sequence is *some* UTF-8-invalid input, but the reverse is not
+ * true, so trying UTF-8 first is the only way to tell them apart.
+ */
+export function decodeTextFile(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  // UTF-16 has to be checked by BOM first: its bytes are invalid UTF-8, so it
+  // would otherwise fall through to CP1252 and come back full of NULs. Excel's
+  // "Unicode Text (*.txt)" export is UTF-16LE TSV, and .txt/.tsv are both
+  // accepted here — SheetJS used to sniff this for us when it read the bytes.
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder("utf-16le").decode(bytes);
+  }
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder("utf-16be").decode(bytes);
+  }
+  try {
+    // TextDecoder strips a leading UTF-8 BOM itself, so Excel's CSV export
+    // can't glue one to the first header name.
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return new TextDecoder("windows-1252").decode(bytes);
+  }
+}
+
 export function parseImportFile(
   buffer: ArrayBuffer,
   filename: string,
 ): ParsedTable {
   const lower = filename.toLowerCase();
   let aoa: unknown[][];
-  if (lower.endsWith(".csv") || lower.endsWith(".txt") || lower.endsWith(".tsv")) {
-    const wb = XLSX.read(new Uint8Array(buffer), { type: "array", raw: true });
+  if (
+    lower.endsWith(".csv") ||
+    lower.endsWith(".txt") ||
+    lower.endsWith(".tsv")
+  ) {
+    // Decode ourselves rather than handing bytes to SheetJS: given a text file
+    // as an array it guesses CP1252, so a UTF-8 em-dash (E2 80 94) arrives as
+    // "â€”" — and that corruption is what gets stored and published, since the
+    // agent plans from the decoded string. Excel and Sheets both export UTF-8,
+    // Excel with a BOM, which would otherwise glue itself to the first header.
+    const wb = XLSX.read(decodeTextFile(buffer), { type: "string", raw: true });
     const sheet = wb.Sheets[wb.SheetNames[0]];
-    aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false }) as unknown[][];
+    aoa = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      raw: false,
+    }) as unknown[][];
   } else {
     // xlsx/xls/ods all go through the same reader.
     const wb = XLSX.read(new Uint8Array(buffer), { type: "array" });
     const sheet = wb.Sheets[wb.SheetNames[0]];
-    aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false }) as unknown[][];
+    aoa = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      raw: false,
+    }) as unknown[][];
   }
   const nonEmpty = aoa.filter(
-    (row) => Array.isArray(row) && row.some((c) => String(c ?? "").trim() !== ""),
+    (row) =>
+      Array.isArray(row) && row.some((c) => String(c ?? "").trim() !== ""),
   );
   if (nonEmpty.length === 0) return { headers: [], rows: [], truncated: false };
   const headers = nonEmpty[0].map((c) => String(c ?? "").trim());
@@ -264,16 +312,35 @@ function normalize(
   return out;
 }
 
-export type ImportContext = {
-  event: { name: string; slug: string; timezone: string };
-  filename: string;
-  description: string | null;
-  fileUrl: string | null;
-  tracks: string[];
-  tags: string[];
-  contacts: Array<{ firstName: string; lastName: string; email: string | null }>;
-  proposalTitles: string[];
-};
+/** How many existing titles/emails the PROMPT carries. The deployment sends
+ * up to 500 of each (`worker.importContext`) and `annotateDuplicates` matches
+ * against all of them; only the model's copy is trimmed, to bound the context.
+ * Two different ceilings, so the prompt states its own — a model told "existing
+ * titles: …" reads an unmarked list as exhaustive and will confidently call a
+ * duplicate new. */
+export const HINT_PREVIEW = 200;
+
+/** One "Existing …" prompt line that never overstates what it contains.
+ * `capped` is the deployment's own truncation flag (there were more rows than
+ * it read); the slice below is this file's. Either one makes the list a sample,
+ * and the line says so. */
+export function hintLine(
+  label: string,
+  values: string[],
+  separator: string,
+  capped: boolean,
+): string {
+  if (values.length === 0) {
+    return `${label}: (none)${capped ? " were read, but the event has more than this list holds" : ""}`;
+  }
+  const shown = values.slice(0, HINT_PREVIEW);
+  const note = capped
+    ? ` (a PARTIAL list — ${shown.length} shown, and the event has more than this check covers; absence from it is NOT evidence a record is new)`
+    : shown.length < values.length
+      ? ` (a PARTIAL list — ${shown.length} of ${values.length}; absence from it is NOT evidence a record is new)`
+      : "";
+  return `${label}${note}: ${shown.join(separator)}`;
+}
 
 /** Deterministic duplicate/reuse detection against the event context. */
 function annotateDuplicates(
@@ -306,6 +373,77 @@ function annotateDuplicates(
   }
 }
 
+/**
+ * Say it in the plan the ORGANIZER approves when duplicate detection ran
+ * against a partial directory. `worker.importContext` caps the existing
+ * contacts/proposals it sends and reports the cap in `truncated` precisely so
+ * this is not silent: past the cap, `annotateDuplicates` cannot see a match,
+ * and an existing speaker is presented as a brand-new contact with no mark on
+ * the row. The summary is the one line the review UI always prints, so a
+ * "possible duplicate" badge that CANNOT appear is disclosed where the
+ * approval decision is made.
+ */
+export function withDuplicateCaveat(
+  summary: string,
+  context: ImportContext,
+): string {
+  const partial: string[] = [];
+  if (context.truncated.contacts) partial.push("contacts");
+  if (context.truncated.proposals) partial.push("proposals");
+  if (partial.length === 0) return summary;
+  return `${summary} Note: this event has more existing ${partial.join(" and ")} than duplicate-checking reads in one pass, so some rows marked new may already exist — check before approving.`;
+}
+
+/**
+ * Read a response body into memory, refusing anything over `cap` (S5).
+ *
+ * Two checks, not one, because they fail differently:
+ *   · `Content-Length`, when present, refuses the file BEFORE a byte is read —
+ *     the cheap case, and the only one that saves the transfer;
+ *   · the streaming tally refuses it DURING the read, because the header is
+ *     supplied by whoever serves the URL and can be absent, chunked, or a lie.
+ *     Without it a 10 GB body with no `Content-Length` still lands in the
+ *     worker's heap and takes the VM down for every other job.
+ *
+ * The reader is cancelled on refusal so the socket isn't left draining.
+ */
+export async function downloadCapped(
+  res: Response,
+  cap: number,
+): Promise<ArrayBuffer> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > cap) {
+    throw new Error(importFileTooLargeMessage(declared));
+  }
+  const body = res.body;
+  if (body === null) return new ArrayBuffer(0);
+  const reader = body.getReader();
+  const chunks: Array<Uint8Array> = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > cap) {
+        // `total` is only the bytes read so far, so report the cap rather than
+        // a number that understates the file.
+        throw new Error(importFileTooLargeMessage(null));
+      }
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return out.buffer;
+}
+
 export async function runImportPlan(
   jobId: Id<"jobs">,
   context: ImportContext,
@@ -315,7 +453,10 @@ export async function runImportPlan(
   }
   const res = await fetch(context.fileUrl);
   if (!res.ok) throw new Error(`File download failed: ${res.status}`);
-  const table = parseImportFile(await res.arrayBuffer(), context.filename);
+  const table = parseImportFile(
+    await downloadCapped(res, IMPORT_LIMITS.maxFileBytes),
+    context.filename,
+  );
   if (table.rows.length === 0) {
     return {
       summary: "The file contained no data rows.",
@@ -346,16 +487,18 @@ export async function runImportPlan(
       `File: ${context.filename} — columns: ${table.headers.join(" | ")}`,
       `Existing tracks: ${context.tracks.join(", ") || "(none)"}`,
       `Existing tags: ${context.tags.join(", ") || "(none)"}`,
-      `Existing proposal titles: ${
-        context.proposalTitles.slice(0, 200).join(" ;; ") || "(none)"
-      }`,
-      `Existing contact emails: ${
-        context.contacts
-          .filter((c) => c.email !== null)
-          .slice(0, 200)
-          .map((c) => c.email)
-          .join(", ") || "(none)"
-      }`,
+      hintLine(
+        "Existing proposal titles",
+        context.proposalTitles,
+        " ;; ",
+        context.truncated.proposals,
+      ),
+      hintLine(
+        "Existing contact emails",
+        context.contacts.filter((c) => c.email !== null).map((c) => c.email!),
+        ", ",
+        context.truncated.contacts,
+      ),
       "Row batches follow. Wait for them before planning records.",
     ].join("\n");
     await exchange(agent, contextMsg);
@@ -387,9 +530,11 @@ export async function runImportPlan(
       });
     }
     return {
-      summary:
+      summary: withDuplicateCaveat(
         capture.summary ??
-        `Planned ${records.length} records from ${table.rows.length} rows.`,
+          `Planned ${records.length} records from ${table.rows.length} rows.`,
+        context,
+      ),
       columns: table.headers,
       records,
       skippedRows: skipped,

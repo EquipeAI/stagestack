@@ -33,6 +33,8 @@ import {
   speakerLabel,
 } from '~/components/tasks/model'
 import { parseTasksSearch } from '~/components/tasks/search'
+import { SavedViewsMenu } from '~/components/views/SavedViewsMenu'
+import { paramsFromSearch } from '~/components/views/model'
 import { visibleFilters } from '~/lib/filters'
 import { useLastLoaded, useNow } from '~/components/tasks/useNow'
 import { ReminderFactsPanel } from '~/components/reminders/ReminderFactsPanel'
@@ -502,9 +504,9 @@ function InstancesPanel({
       }}
     >
       <Toolbar
-        // Slot order (W12): filters, then the requirement narrowing. This tab
-        // has no free-text search, saved views or export of its own — the
-        // Files tab owns the bundle download — so those slots stay empty.
+        // Slot order (W12): saved view (W2), filters, then the requirement
+        // narrowing. This tab has no free-text search or export of its own —
+        // the Files tab owns the bundle download — so that slot stays empty.
         left={
           <div
             style={{
@@ -514,6 +516,20 @@ function InstancesPanel({
               alignItems: 'center',
             }}
           >
+            <SavedViewsMenu
+              eventSlug={eventSlug}
+              module="tasks"
+              params={paramsFromSearch(search)}
+              onApply={(next) => {
+                // The tab is part of a tasks view, so applying one can move
+                // the organizer between tabs — which is what "open the view I
+                // saved" has to mean on a page whose tabs are in the URL.
+                void navigate({
+                  search: () => ({ tab: 'instances', ...parseTasksSearch(next) }),
+                  replace: true,
+                })
+              }}
+            />
             {statusChips.map((chip) => (
               <Button
                 key={chip.id}

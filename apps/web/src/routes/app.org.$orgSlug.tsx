@@ -27,6 +27,7 @@ import {
   Textarea,
   Toolbar,
 } from '~/ds'
+import { ApiKeysTab } from '~/components/apikeys/ApiKeysTab'
 import { ContactDetailDialog } from '~/components/contacts/ContactDetailDialog'
 import {
   BulkOutreachDialog,
@@ -63,7 +64,12 @@ export const Route = createFileRoute('/app/org/$orgSlug')({
   ),
 })
 
-type TabId = 'events' | 'contacts' | 'team'
+type TabId = 'events' | 'contacts' | 'team' | 'keys'
+
+/** Tabs an org admin has and nobody else does. Both of them hand out access —
+ * one to a person, one to an agent — so they are gated on the same fact and
+ * fall back to the same default when a stale URL asks for them. */
+const ADMIN_TABS: ReadonlyArray<TabId> = ['team', 'keys']
 
 function OrgPage() {
   const { orgSlug } = Route.useParams()
@@ -96,8 +102,9 @@ function OrgPage() {
   // here is to FALL BACK to the default tab rather than to render a refusal:
   // a tab strip that does not offer Team has already said Team is not yours,
   // and a blank third panel would be the only wrong answer available.
+  const requested = search.tab ?? 'events'
   const tab: TabId =
-    search.tab === 'team' && !isAdmin ? 'events' : (search.tab ?? 'events')
+    ADMIN_TABS.includes(requested) && !isAdmin ? 'events' : requested
 
   const tabs = [
     {
@@ -107,7 +114,12 @@ function OrgPage() {
       count: events.length,
     },
     { id: 'contacts', label: 'Contacts', icon: 'users' },
-    ...(isAdmin ? [{ id: 'team', label: 'Team', icon: 'user-round' }] : []),
+    ...(isAdmin
+      ? [
+          { id: 'team', label: 'Team', icon: 'user-round' },
+          { id: 'keys', label: 'API keys', icon: 'lock' },
+        ]
+      : []),
   ]
 
   return (
@@ -153,6 +165,9 @@ function OrgPage() {
         ) : null}
         {tab === 'team' && isAdmin ? (
           <OrgTeamTab orgSlug={orgSlug} canGrantOwner={org.role === 'owner'} />
+        ) : null}
+        {tab === 'keys' && isAdmin ? (
+          <ApiKeysTab orgSlug={orgSlug} events={events} />
         ) : null}
       </div>
     </PageBody>

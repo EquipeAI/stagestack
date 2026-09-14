@@ -1,8 +1,11 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import { HOUR, RateLimiter } from "@convex-dev/rate-limiter";
+import { components } from "./_generated/api";
 import { eventMutation, eventQuery } from "./lib/functions";
-import { vv } from "./lib/validators";
+import { vParticipantState, vTaskStatus, vv } from "./lib/validators";
 import * as Tasks from "./model/tasks";
 import * as Readiness from "./model/readiness";
+import { vControlRow } from "./readiness";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public surface for speaker ops (M4). Thin wrappers; the rules live in
@@ -20,20 +23,6 @@ const vEvidence = v.union(
   v.literal("file"),
   v.literal("profileField"),
   v.literal("manual"),
-);
-const vTaskStatus = v.union(
-  v.literal("pending"),
-  v.literal("provided"),
-  v.literal("changesRequested"),
-  v.literal("approved"),
-  v.literal("complete"),
-  v.literal("notApplicable"),
-);
-const vParticipantState = v.union(
-  v.literal("awaiting"),
-  v.literal("confirmed"),
-  v.literal("declined"),
-  v.literal("withdrawn"),
 );
 
 // ── Requirements ─────────────────────────────────────────────────────────
@@ -213,10 +202,30 @@ export const setInstanceDue = eventMutation({
 
 // ── File evidence ────────────────────────────────────────────────────────
 
+// Minting an upload URL is a free write into storage the moment the holder
+// uses it, so an uncapped mint is a storage hole rather than mere load. Same
+// shape and reasoning as `imports.ts`'s `importUploadPerUser` (and the CFP /
+// portal mint caps): per-user rather than per-event, so one account can't fan
+// the same spend out across every event it belongs to. 20/hour matches the
+// import cap — far above an organizer attaching evidence by hand, including
+// retries.
+const uploadLimiter = new RateLimiter(components.rateLimiter, {
+  taskUploadPerUser: { kind: "token bucket", rate: 20, period: HOUR },
+});
+
 export const generateUploadUrl = eventMutation({
   args: {},
   returns: v.string(),
   handler: async (ctx) => {
+    const limit = await uploadLimiter.limit(ctx, "taskUploadPerUser", {
+      key: ctx.caller.user._id,
+    });
+    if (!limit.ok) {
+      throw new ConvexError({
+        code: "rate_limited",
+        message: "Too many uploads — try again in a little while.",
+      });
+    }
     return await ctx.storage.generateUploadUrl();
   },
 });
@@ -310,11 +319,14 @@ export const dashboard = eventQuery({
     }),
     // W8's "what is blocked" counts, derived in the SAME pass as the readiness
     // rows above so the panel's headline can never disagree with its list.
+    // `rows` carries the sentences the control center prints, composed in the
+    // model (W4: one explanation, one producer).
     blockers: v.object({
       contentDrafts: v.number(),
       unscheduled: v.number(),
       scheduleConflicts: v.number(),
       blockedSessions: v.number(),
+      rows: v.array(vControlRow),
     }),
   }),
   handler: async (ctx, args) => {

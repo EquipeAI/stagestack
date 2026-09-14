@@ -77,12 +77,15 @@ export type ControlRow = {
   link: ControlLink;
 };
 
-function plural(n: number, one: string, many: string): string {
+// Exported so W4's analytics panel speaks the SAME count vocabulary: two
+// producers with two copies of "at least N" is how a floor starts printing as
+// a total on one panel and not the other.
+export function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
 }
 
 /** "3" or "at least 3" — a capped read never prints as an exact total. */
-function amount(n: number, capped: boolean): string {
+export function amount(n: number, capped: boolean): string {
   return capped ? `at least ${n}` : String(n);
 }
 
@@ -348,7 +351,9 @@ export async function attentionPanel(
       capped: reviews.capped,
       sentence:
         incompleteReviews === 0
-          ? "Every assigned review has been submitted."
+          ? reviews.capped
+            ? `No outstanding review among the first ${PANEL_REVIEW_SCAN} read — larger events may have more.`
+            : "Every assigned review has been submitted."
           : `${amount(incompleteReviews, reviews.capped)} assigned ${plural(incompleteReviews, "review has", "reviews have")} not been submitted` +
             (overdueReviewers.size === 0
               ? "."
@@ -358,7 +363,9 @@ export async function attentionPanel(
           ? "blocked"
           : incompleteReviews > 0
             ? "attention"
-            : "success",
+            : reviews.capped
+              ? "neutral"
+              : "success",
       link: { tab: "reviews", search: { tab: "progress" } },
     },
     {
@@ -383,9 +390,16 @@ export async function attentionPanel(
       capped: participants.capped,
       sentence:
         awaitingSpeakers === 0
-          ? "Every invited speaker has answered."
+          ? participants.capped
+            ? `Every invited speaker among the first ${PANEL_PARTICIPANT_SCAN} participations read has answered — larger events may have more.`
+            : "Every invited speaker has answered."
           : `${amount(awaitingSpeakers, participants.capped)} ${plural(awaitingSpeakers, "speaker has", "speakers have")} not answered their invitation.`,
-      tone: awaitingSpeakers === 0 ? "success" : "attention",
+      tone:
+        awaitingSpeakers === 0
+          ? participants.capped
+            ? "neutral"
+            : "success"
+          : "attention",
       link: { tab: "speakers", search: { state: "awaiting" } },
     },
     {
@@ -395,7 +409,9 @@ export async function attentionPanel(
       capped: instances.capped,
       sentence:
         openInstances.length === 0
-          ? "No speaker owes you anything right now."
+          ? instances.capped
+            ? `No outstanding task among the first ${PANEL_INSTANCE_SCAN} read — larger events may have more.`
+            : "No speaker owes you anything right now."
           : `${amount(openInstances.length, instances.capped)} ${plural(openInstances.length, "task is", "tasks are")} outstanding` +
             (overdueInstances.length === 0
               ? "."
@@ -405,7 +421,9 @@ export async function attentionPanel(
           ? "blocked"
           : openInstances.length > 0
             ? "attention"
-            : "success",
+            : instances.capped
+              ? "neutral"
+              : "success",
       // `outstanding`, not `pending`: the count is every OPEN task — which
       // includes work sitting in Awaiting Review and Changes Requested — and a
       // link to `pending` would show the organizer a shorter list than the
@@ -604,6 +622,10 @@ export type ChangeRow = {
  * silently swallowed either — hence the honest fallback.
  */
 const ACTION_CLAUSE: Record<string, string> = {
+  // No `agent.*` codes here on purpose. A write reached through an API key is
+  // the SAME act as the same write from the web app, so it gets the same
+  // sentence from the same audit row; `withAgentAudit` only sets `viaAgent` on
+  // it, which this panel renders as the agent chip (see model/apiKeys.ts).
   "agenda.autoPlace": "ran assisted placement",
   "agenda.autoPlace.undo": "undid an assisted placement run",
   "agenda.place": "placed a session on the schedule",

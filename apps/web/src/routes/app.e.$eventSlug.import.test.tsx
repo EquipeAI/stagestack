@@ -175,7 +175,7 @@ describe('import approval', () => {
       screen.getByRole('button', { name: /Approve & import 2 records/ }),
     )
     await waitFor(() => expect(mutate).toHaveBeenCalled())
-    const args = mutate.mock.calls[0][0] as { records: Array<{ id: string }> }
-    expect(args.records.map((r) => r.id)).toEqual(['r2', 'r3'])
+    const args = mutate.mock.calls[0][0] as { recordIds: Array<string> }
+    expect(args.recordIds).toEqual(['r2', 'r3'])
   })
 })

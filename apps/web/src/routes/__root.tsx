@@ -193,7 +193,12 @@ export const Route = createRootRouteWithContext<{
     if (token) {
       ctx.context.convexQueryClient.serverHttpClient?.setAuth(token)
     }
-    return { userId, token }
+    // Deliberately NOT returning `token`: whatever `beforeLoad` returns is
+    // serialized into the dehydrated router context and shipped in the SSR
+    // HTML. The JWT has already done its only server-side job above, and the
+    // browser re-auths through Clerk's `useAuth`, so putting it in the payload
+    // buys nothing and leaks a live credential into the page source.
+    return { userId }
   },
   notFoundComponent: RouteNotFound,
   component: RootComponent,

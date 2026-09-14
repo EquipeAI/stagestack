@@ -106,3 +106,48 @@
 .ss-menu__item:focus-visible{outline:2px solid var(--focus-ring-edge);outline-offset:-2px}
 .ss-menu__item--danger{color:var(--text-danger)}
 .ss-menu__item:disabled{opacity:0.45;cursor:not-allowed}
+
+/* ── CommandPalette (W1) ──────────────────────────────────────────────────
+   A Dialog, re-shaped: anchored high rather than centred (the results grow
+   downwards, and a vertically-centred list jumps as it does), and full-screen
+   on a phone, where a bottom sheet would put the field under the thumb but the
+   results behind the keyboard. Only the surface moves; every modal behaviour
+   is Dialog's. `.ss-dialog.ss-palette` outranks `.ss-dialog`, and this file is
+   imported after feedback.css, so it also wins the bottom-sheet rules. */
+.ss-dialog__scrim:has(.ss-palette){align-items:flex-start;padding-top:10vh}
+.ss-dialog.ss-palette{max-height:70dvh}
+.ss-palette .ss-dialog__body{display:flex;flex-direction:column;gap:var(--space-2);min-height:0}
+.ss-palette__field{width:100%}
+.ss-palette__field .ss-input{width:100%}
+.ss-palette__status{font:var(--type-caption);color:var(--text-tertiary);margin:0}
+.ss-palette__list{overflow-y:auto;overscroll-behavior:contain;min-height:0;display:flex;flex-direction:column;gap:var(--space-3)}
+.ss-palette__group{display:flex;flex-direction:column;gap:2px}
+.ss-palette__group-label{font:var(--type-caption);color:var(--text-tertiary);text-transform:uppercase;letter-spacing:var(--tracking-wide);padding:var(--space-1) var(--space-2)}
+.ss-palette__row{display:flex;align-items:center;gap:var(--space-2);min-height:var(--row-height-sm);padding:var(--space-1) var(--space-2);border-radius:var(--radius-control);color:var(--text-primary);cursor:pointer}
+/* The highlight is a filled row AND a leading edge, never colour alone: the
+   palette is driven by a key that moves an invisible cursor, so the current
+   row has to be legible without relying on hue. */
+.ss-palette__row.is-active{background:var(--surface-hover);box-shadow:inset 2px 0 0 0 var(--focus-ring-edge)}
+.ss-palette__label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--type-body)}
+.ss-palette__hint{flex:none;font:var(--type-caption);color:var(--text-tertiary)}
+.ss-palette__spacer{width:16px;flex:none}
+.ss-palette__empty{font:var(--type-body);color:var(--text-secondary);margin:0;padding:var(--space-2)}
+@media (max-width:640px){
+  /* Undo the bottom sheet: a search field belongs at the top of the screen,
+     above its results, with the keyboard under both. */
+  .ss-dialog__scrim:has(.ss-palette){padding-top:0}
+  .ss-dialog.ss-palette{
+    max-width:none;
+    max-height:none;
+    height:100dvh;
+    border-radius:0;
+    padding-top:var(--safe-top);
+    padding-bottom:calc(var(--safe-bottom) + var(--kb, 0px));
+    animation:ss-fade var(--duration-normal) var(--ease-out);
+  }
+  /* The grab handle says "swipe me down"; a full-screen sheet cannot. */
+  .ss-palette::before{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .ss-dialog.ss-palette{animation:none}
+}

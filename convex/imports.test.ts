@@ -33,26 +33,30 @@ describe("imports", () => {
     expect(jobs[0].status).toBe("queued");
     expect(jobs[0].filename).toBe("talks.csv");
 
-    // Worker finishes the plan; the organizer confirms it.
+    // Worker finishes the plan; the organizer confirms it by record id.
     await t.run(async (ctx) =>
       ctx.db.patch("jobs", planJobId, {
         status: "done",
-        result: { summary: "1 record", records: [], skippedRows: [] },
+        result: {
+          summary: "1 record",
+          records: [
+            {
+              id: "r0",
+              record: {
+                kind: "proposal" as const,
+                title: "Talk A",
+                speakers: [{ firstName: "Ada", lastName: "Lovelace" }],
+              },
+            },
+          ],
+          skippedRows: [],
+        },
       }),
     );
     const executeJobId = await alice.mutation(api.imports.confirm, {
       eventSlug,
       planJobId,
-      records: [
-        {
-          id: "r0",
-          record: {
-            kind: "proposal" as const,
-            title: "Talk A",
-            speakers: [{ firstName: "Ada", lastName: "Lovelace" }],
-          },
-        },
-      ],
+      recordIds: ["r0"],
     });
 
     jobs = await alice.query(api.imports.listJobs, { eventSlug });
@@ -89,9 +93,9 @@ describe("imports", () => {
     );
 
     // Another event of the same org sees nothing.
-    expect(await alice.query(api.imports.listJobs, { eventSlug: otherSlug })).toEqual(
-      [],
-    );
+    expect(
+      await alice.query(api.imports.listJobs, { eventSlug: otherSlug }),
+    ).toEqual([]);
   });
 
   test("NEGATIVE: a reviewer cannot read a done plan's result (speaker PII)", async () => {
@@ -126,7 +130,6 @@ describe("imports", () => {
                     firstName: "Ada",
                     lastName: "Lovelace",
                     email: "ada@example.com",
-                    phone: "+1 555 0100",
                   },
                 ],
               },
@@ -150,8 +153,57 @@ describe("imports", () => {
       jobId: planJobId,
     });
     expect(job?.status).toBe("done");
-    expect(job?.result.records[0].record.speakers[0].email).toBe(
-      "ada@example.com",
+    if (job === null || job.type !== "import-plan") {
+      throw new Error("expected the import-plan job");
+    }
+    const first = job.result?.records[0]?.record;
+    if (first === undefined || first.kind !== "proposal") {
+      throw new Error("expected a proposal record");
+    }
+    expect(first.speakers[0].email).toBe("ada@example.com");
+  });
+
+  test("a plan stored in an unreadable shape degrades to a failure, not a broken page", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme");
+    const eventSlug = await createEvent(alice, orgSlug, "DevConf");
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["title\nTalk A"])),
+    );
+    const planJobId = await alice.mutation(api.imports.start, {
+      eventSlug,
+      storageId,
+      filename: "talks.csv",
+    });
+    // `jobs.result` is `v.any()` in the schema but `imports.getJob` serves it
+    // under `vImportPlan`. `worker.finish` now validates against that same
+    // validator, so this row can only be one written before that check — and
+    // it must not take the whole query down: the import page still has to be
+    // able to show the job's status and say what happened.
+    await t.run(async (ctx) =>
+      ctx.db.patch("jobs", planJobId, {
+        status: "done",
+        result: { summary: "legacy", records: [{ id: "r0" }], skippedRows: [] },
+      }),
+    );
+
+    const job = await alice.query(api.imports.getJob, {
+      eventSlug,
+      jobId: planJobId,
+    });
+    expect(job?.status).toBe("failed");
+    expect(job?.result).toBeUndefined();
+    expect(job?.error).toContain("Start the import again");
+
+    // And it can't be confirmed into an execution either.
+    await expectRejectedWith(
+      alice.mutation(api.imports.confirm, {
+        eventSlug,
+        planJobId,
+        recordIds: ["r0"],
+      }),
+      "invalid_plan",
     );
   });
 
@@ -246,7 +298,7 @@ describe("imports", () => {
     const executeJobId = await alice.mutation(api.imports.confirm, {
       eventSlug,
       planJobId,
-      records: approved,
+      recordIds: approved.map((r) => r.id),
     });
 
     const job = await t.run(async (ctx) => ctx.db.get("jobs", executeJobId));
@@ -269,5 +321,87 @@ describe("imports", () => {
       );
     expect(batch(0)).toEqual(approved);
     expect(batch(1)).toEqual([]);
+  });
+
+  test("confirm refuses a record id the plan does not contain", async () => {
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme");
+    const eventSlug = await createEvent(alice, orgSlug, "DevConf");
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["title,speaker\nTalk A,Ada"])),
+    );
+    const planJobId = await alice.mutation(api.imports.start, {
+      eventSlug,
+      storageId,
+      filename: "talks.csv",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch("jobs", planJobId, {
+        status: "done",
+        result: {
+          summary: "1 record",
+          records: [
+            {
+              id: "r0",
+              record: {
+                kind: "proposal" as const,
+                title: "Talk A",
+                speakers: [{ firstName: "Ada", lastName: "Lovelace" }],
+              },
+            },
+          ],
+          skippedRows: [],
+        },
+      }),
+    );
+    await expectRejectedWith(
+      alice.mutation(api.imports.confirm, {
+        eventSlug,
+        planJobId,
+        recordIds: ["r0", "r-not-in-plan"],
+      }),
+      "invalid_plan",
+    );
+  });
+
+  test("confirm executes the plan's own records, not a tampered client's", async () => {
+    // The client names ids only; the executed payload must be the plan's
+    // records verbatim. A tampered client that used to submit its own record
+    // objects under a valid id cannot change what executes.
+    const t = setupTest();
+    const alice = await signIn(t, "alice");
+    const orgSlug = await createOrg(alice, "Acme");
+    const eventSlug = await createEvent(alice, orgSlug, "DevConf");
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["title,speaker\nTalk A,Ada"])),
+    );
+    const planJobId = await alice.mutation(api.imports.start, {
+      eventSlug,
+      storageId,
+      filename: "talks.csv",
+    });
+    const planned: PlannedRecord = {
+      id: "r0",
+      record: {
+        kind: "proposal" as const,
+        title: "The reviewed title",
+        speakers: [{ firstName: "Ada", lastName: "Lovelace" }],
+      },
+    };
+    await t.run(async (ctx) =>
+      ctx.db.patch("jobs", planJobId, {
+        status: "done",
+        result: { summary: "1 record", records: [planned], skippedRows: [] },
+      }),
+    );
+    const executeJobId = await alice.mutation(api.imports.confirm, {
+      eventSlug,
+      planJobId,
+      recordIds: ["r0"],
+    });
+    const job = await t.run(async (ctx) => ctx.db.get("jobs", executeJobId));
+    const payload = job?.payload as { records: unknown };
+    expect(payload.records).toEqual([planned]);
   });
 });

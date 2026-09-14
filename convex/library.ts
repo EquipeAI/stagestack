@@ -39,6 +39,13 @@ export const list = eventQuery({
     rooms: v.array(vv.doc("rooms")),
     formats: v.array(vv.doc("formats")),
     customFields: v.array(vv.doc("customFields")),
+    capped: v.object({
+      tracks: v.boolean(),
+      tags: v.boolean(),
+      rooms: v.boolean(),
+      formats: v.boolean(),
+      customFields: v.boolean(),
+    }),
   }),
   handler: async (ctx) => {
     return await Library.listLibrary(ctx, ctx.caller.event._id);

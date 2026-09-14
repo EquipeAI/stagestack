@@ -152,9 +152,12 @@ describe('the Decisions deep link', () => {
     expect(state.q).toBe('')
   })
 
-  it('is the view the proposals table already called Queues', () => {
-    const queues = BUILT_IN_VIEWS.find((v) => v.name === 'Queues')
-    expect(queues?.search.status).toBe(DECISIONS_SEARCH.status)
+  it('IS the proposals table’s Decisions preset, not a second definition', () => {
+    // W2: the rail entry and the table's view picker read one row in
+    // `convex/shared/viewParams.ts`. If a preset is renamed or re-filtered and
+    // the nav is not, this is where it shows up.
+    const decisions = BUILT_IN_VIEWS.find((v) => v.name === 'Decisions')
+    expect(decisions?.search.status).toBe(DECISIONS_SEARCH.status)
   })
 })
 

@@ -1,0 +1,210 @@
+import React from "react";
+import { Dialog } from "../feedback/Dialog.jsx";
+import { Icon } from "../core/Icon.jsx";
+import { SearchInput } from "../forms/SearchInput.jsx";
+
+/**
+ * The command palette: one field, grouped destinations, keyboard first.
+ *
+ * Like NavDrawer, it is a Dialog wearing a different shape. Dialog already
+ * moves focus in, traps Tab, closes on Escape, restores focus to the opener
+ * and freezes the page behind the scrim — a palette that re-implemented any
+ * of that would be a second trap to keep right forever.
+ *
+ * The keyboard model is the ARIA combobox one, not a roving tabindex: focus
+ * stays in the input the whole time (so typing never stops working) and the
+ * highlighted row is named by `aria-activedescendant`. Rows are `option`s,
+ * not buttons, because a listbox whose children are buttons is announced as a
+ * toolbar and stops being arrow-navigable.
+ *
+ * This component decides nothing about what a result IS — it renders groups
+ * and reports the id that was chosen. Matching, ordering and every sentence
+ * come from the caller.
+ */
+export function CommandPalette({
+  open = false,
+  id,
+  title = "Search",
+  label = "Search",
+  value = "",
+  onValueChange,
+  placeholder = "Search…",
+  shortcut,
+  groups = [],
+  status,
+  emptyLabel = "No matches.",
+  onSelect,
+  onClose,
+  footer,
+}) {
+  if (!open) return null;
+  return (
+    <PaletteSurface
+      id={id}
+      title={title}
+      label={label}
+      value={value}
+      onValueChange={onValueChange}
+      placeholder={placeholder}
+      shortcut={shortcut}
+      groups={groups}
+      status={status}
+      emptyLabel={emptyLabel}
+      onSelect={onSelect}
+      onClose={onClose}
+      footer={footer}
+    />
+  );
+}
+
+function PaletteSurface({
+  id,
+  title,
+  label,
+  value,
+  onValueChange,
+  placeholder,
+  shortcut,
+  groups,
+  status,
+  emptyLabel,
+  onSelect,
+  onClose,
+  footer,
+}) {
+  const listId = React.useId();
+  const statusId = React.useId();
+  const rowPrefix = React.useId();
+  const listRef = React.useRef(null);
+
+  const flat = [];
+  for (const group of groups) {
+    for (const item of group.items || []) flat.push(item);
+  }
+  const ids = flat.map(function (item) { return item.id; });
+  const key = ids.join("\u0000");
+
+  const [activeId, setActiveId] = React.useState(ids[0]);
+  // The highlight follows the results: a new answer must never leave the
+  // highlight on a row that is no longer there (Enter would open nothing).
+  React.useEffect(function () {
+    setActiveId(function (current) {
+      return ids.indexOf(current) >= 0 ? current : ids[0];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  const rowId = function (itemId) {
+    return rowPrefix + "-" + itemId;
+  };
+
+  const move = function (step) {
+    if (ids.length === 0) return;
+    const at = ids.indexOf(activeId);
+    const next = at === -1
+      ? (step > 0 ? 0 : ids.length - 1)
+      : (at + step + ids.length) % ids.length;
+    setActiveId(ids[next]);
+    scrollIntoView(listRef.current, rowId(ids[next]));
+  };
+
+  function onKeyDown(e) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      move(1);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      move(-1);
+      return;
+    }
+    if (e.key === "Home" && ids.length > 0) {
+      e.preventDefault();
+      setActiveId(ids[0]);
+      scrollIntoView(listRef.current, rowId(ids[0]));
+      return;
+    }
+    if (e.key === "End" && ids.length > 0) {
+      e.preventDefault();
+      setActiveId(ids[ids.length - 1]);
+      scrollIntoView(listRef.current, rowId(ids[ids.length - 1]));
+      return;
+    }
+    if (e.key === "Enter") {
+      if (activeId === undefined) return;
+      e.preventDefault();
+      if (onSelect) onSelect(activeId);
+    }
+  }
+
+  return (
+    <Dialog open id={id} className="ss-palette" title={title} width={640} onClose={onClose} footer={footer}>
+      <SearchInput
+        className="ss-palette__field"
+        autoFocus
+        role="combobox"
+        aria-label={label}
+        aria-expanded="true"
+        aria-controls={listId}
+        aria-activedescendant={activeId === undefined ? undefined : rowId(activeId)}
+        aria-describedby={status ? statusId : undefined}
+        autoComplete="off"
+        placeholder={placeholder}
+        shortcut={shortcut}
+        value={value}
+        onChange={function (e) { if (onValueChange) onValueChange(e.target.value); }}
+        onKeyDown={onKeyDown}
+      />
+
+      {status ? (
+        <p className="ss-palette__status" id={statusId}>{status}</p>
+      ) : null}
+
+      <div className="ss-palette__list" id={listId} role="listbox" aria-label={label} ref={listRef}>
+        {flat.length === 0 ? (
+          <p className="ss-palette__empty">{emptyLabel}</p>
+        ) : (
+          groups.map(function (group) {
+            return (
+              <div className="ss-palette__group" role="group" aria-label={group.label} key={group.id}>
+                <div className="ss-palette__group-label" aria-hidden="true">{group.label}</div>
+                {(group.items || []).map(function (item) {
+                  const active = item.id === activeId;
+                  return (
+                    <div
+                      key={item.id}
+                      id={rowId(item.id)}
+                      role="option"
+                      aria-selected={active}
+                      className={["ss-palette__row", active ? "is-active" : ""].filter(Boolean).join(" ")}
+                      // Pointer, not focus: the input keeps the keyboard, so a
+                      // mousedown that stole focus would break typing mid-click.
+                      onMouseDown={function (e) { e.preventDefault(); }}
+                      onMouseMove={function () { if (!active) setActiveId(item.id); }}
+                      onClick={function () { if (onSelect) onSelect(item.id); }}
+                    >
+                      {item.icon ? <Icon name={item.icon} size={16} /> : <span className="ss-palette__spacer" aria-hidden="true" />}
+                      <span className="ss-palette__label">{item.label}</span>
+                      {item.hint ? <span className="ss-palette__hint">{item.hint}</span> : null}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+// jsdom has no layout and no scrollIntoView; the guard keeps the palette
+// testable without a browser.
+function scrollIntoView(list, rowId) {
+  if (!list) return;
+  const row = list.ownerDocument.getElementById(rowId);
+  if (row && typeof row.scrollIntoView === "function") {
+    row.scrollIntoView({ block: "nearest" });
+  }
+}

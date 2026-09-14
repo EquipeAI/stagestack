@@ -4,6 +4,7 @@ import { useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
 import { linkTarget } from './links'
 import { PanelBoundary } from './PanelBoundary'
+import { TurnaroundPanel } from './TurnaroundPanel'
 import type { FunctionReturnType } from 'convex/server'
 import type { Id } from '@convex/_generated/dataModel'
 import type {
@@ -49,8 +50,10 @@ import { formatDateTime } from '~/lib/datetime'
 // (attention, blocked, next) and the drill-down keeps STABLE args so it stays
 // subscribed across every tick instead of re-fetching once a minute.
 //
-// Every sentence here is printed verbatim from convex/model/controlCenter.ts.
-// This file counts nothing and words nothing.
+// Every sentence here is printed verbatim from the model layer — the attention
+// rows from convex/model/controlCenter.ts, the blocked rows from
+// convex/model/readiness.ts (`dashboard.blockers.rows`). This file counts
+// nothing and words nothing.
 // ─────────────────────────────────────────────────────────────────────────
 
 type AttentionPanelData = FunctionReturnType<typeof api.readiness.attentionPanel>
@@ -95,6 +98,19 @@ export function ControlCenter({ eventSlug }: { eventSlug: string }) {
  * Boundaries are keyed by event so a failure never outlives the event that
  * caused it.
  */
+/** The deployment's mail-test-mode notice, rendered verbatim from the model.
+ * Null (nothing at all) when mail is live — this is a fault banner, not a
+ * status line. */
+function MailModeNotice({ eventSlug }: { eventSlug: string }) {
+  const health = useQuery(api.comms.deliveryHealth, { eventSlug })
+  if (health === undefined || health.testModeNotice === null) return null
+  return (
+    <Callout tone="blocked" title="Mail is in test mode on this deployment">
+      {health.testModeNotice}
+    </Callout>
+  )
+}
+
 function Screen({
   eventSlug,
   timezone,
@@ -116,6 +132,15 @@ function Screen({
 
   return (
     <div className="cc">
+      {/* Deployment mail state, ABOVE the four questions: an event whose
+          every email is being refused has nothing more urgent to say. The
+          sentence is the model's (deliveryHealth.testModeNotice) — the same
+          words the comms banner and each refused log row carry. `quiet`
+          boundary: a broken health read must not block the four answers. */}
+      <PanelBoundary key={`mailmode-${eventSlug}`} title="Mail configuration" quiet>
+        <MailModeNotice eventSlug={eventSlug} />
+      </PanelBoundary>
+
       <PanelBoundary key={`attention-${eventSlug}`} title="What needs your attention">
         <AttentionSection
           eventSlug={eventSlug}
@@ -138,6 +163,18 @@ function Screen({
 
           <PanelBoundary key={`next-${eventSlug}`} title="What happens next">
             <NextPanel eventSlug={eventSlug} now={now} timezone={timezone} />
+          </PanelBoundary>
+
+          {/* W4 — the fifth section, below the four answers and collapsed by
+              default. `quiet`: turnaround medians are supplementary, so a
+              failure here removes the section rather than printing a red
+              callout under the four things that DID load. */}
+          <PanelBoundary
+            key={`turnaround-${eventSlug}`}
+            title="How long things are taking"
+            quiet
+          >
+            <TurnaroundPanel eventSlug={eventSlug} />
           </PanelBoundary>
         </>
       )}
@@ -397,44 +434,8 @@ function BlockedPanel({
       ? null
       : (data.speakers.find((s) => s.eventContactId === openSpeaker) ?? null)
 
-  const blockerRows: Array<ControlRow> = [
-    {
-      id: 'contentDrafts',
-      label: 'Content still in Draft',
-      count: data.blockers.contentDrafts,
-      capped: false,
-      sentence:
-        data.blockers.contentDrafts === 0
-          ? 'No session is held back by unapproved content.'
-          : `${countLabel(data.blockers.contentDrafts, 'session is', 'sessions are')} held out of the public program until the content is approved.`,
-      tone: data.blockers.contentDrafts === 0 ? 'success' : 'blocked',
-      link: { tab: 'sessions', search: { content: 'draft' } },
-    },
-    {
-      id: 'unscheduled',
-      label: 'Sessions unscheduled',
-      count: data.blockers.unscheduled,
-      capped: false,
-      sentence:
-        data.blockers.unscheduled === 0
-          ? 'Every planned session has a released slot.'
-          : `${countLabel(data.blockers.unscheduled, 'planned session has', 'planned sessions have')} no released slot, so they cannot appear on the public schedule.`,
-      tone: data.blockers.unscheduled === 0 ? 'success' : 'attention',
-      link: { tab: 'agenda', search: { view: 'list' } },
-    },
-    {
-      id: 'scheduleConflicts',
-      label: 'Schedule conflicts',
-      count: data.blockers.scheduleConflicts,
-      capped: false,
-      sentence:
-        data.blockers.scheduleConflicts === 0
-          ? 'No session collides with another.'
-          : `${countLabel(data.blockers.scheduleConflicts, 'session is', 'sessions are')} in an impossible schedule state — a room or a speaker is double-booked.`,
-      tone: data.blockers.scheduleConflicts === 0 ? 'success' : 'blocked',
-      link: { tab: 'agenda', search: { view: 'room' } },
-    },
-  ]
+  // W4: composed in convex/model/readiness.ts, rendered verbatim.
+  const blockerRows: Array<ControlRow> = data.blockers.rows
 
   return (
     <Panel

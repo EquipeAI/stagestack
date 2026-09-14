@@ -6,7 +6,7 @@
 // saved segment applied filters the URL never learned about. This makes them
 // addressable on the same terms as the other four.
 
-export const ORG_TABS = ['events', 'contacts', 'team'] as const
+export const ORG_TABS = ['events', 'contacts', 'team', 'keys'] as const
 export type OrgTab = (typeof ORG_TABS)[number]
 
 export type OrgSearch = {

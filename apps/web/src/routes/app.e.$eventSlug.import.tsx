@@ -1,12 +1,13 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { api } from '@convex/_generated/api'
+import { IMPORT_LIMITS, importFileTooLargeMessage } from '@convex/shared/importPlan'
+import type { ExecutionReport, ImportPlan, PlannedRecord } from '@convex/shared/importPlan'
 import type { Id } from '@convex/_generated/dataModel'
 // The plan's shape is the same contract the executor re-validates against, so
 // the review UI reads it from convex/shared/importPlan.ts instead of restating
 // it — a field added to vImportRecord must not silently become invisible here.
-import type { ImportPlan, PlannedRecord } from '@convex/shared/importPlan'
 import { ActionResult, Badge, Button, Callout, Card, Checkbox, DescriptionList, EmptyState, Tag, Textarea } from '~/ds'
 import { usePending } from '~/lib/usePending'
 import { pushToast } from '~/components/toast'
@@ -15,13 +16,6 @@ import { errorMessage } from '~/lib/errors'
 export const Route = createFileRoute('/app/e/$eventSlug/import')({
   component: ImportPage,
 })
-
-type ExecutionReport = {
-  total: number
-  ok: number
-  failed: number
-  results: Array<{ id: string; ok: boolean; detail: string }>
-}
 
 const KIND_LABEL: Record<string, string> = {
   contact: 'Contact',
@@ -242,6 +236,10 @@ function UploadView({
 
   const submit = () => {
     if (file === null) return setError('Choose a CSV or spreadsheet first.')
+    // Same constant the worker enforces on download (S5): refusing here means
+    // the file is never stored at all, not rejected minutes later at plan time.
+    if (file.size > IMPORT_LIMITS.maxFileBytes)
+      return setError(importFileTooLargeMessage(file.size))
     void run(async () => {
       const url = await generateUploadUrl({ eventSlug })
       const res = await fetch(url, {
@@ -313,6 +311,53 @@ function UploadView({
   )
 }
 
+/**
+ * The agent is still planning.
+ *
+ * This state used to be a spinner and nothing else, which made it the one
+ * dead end in the flow: the page auto-resumes the most recent job, so leaving
+ * and coming back returns here, and only the job itself reaching done/failed
+ * could release you. When the worker was wedged, that was a fourteen-minute
+ * wait with no way to start a different import. The escape hatch the failed
+ * branch already offers belongs here too.
+ */
+function PlanningView({ onRestart }: { onRestart: () => void }) {
+  const [seconds, setSeconds] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setSeconds((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
+  // We promise "under a minute" — so once that promise is broken, say so
+  // rather than showing the same reassuring copy indefinitely.
+  const overdue = seconds >= 75
+
+  return (
+    <Card
+      title="Planning your import…"
+      subtitle="The agent is reading the file and matching it against this event."
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <p style={{ color: 'var(--text-tertiary)' }}>
+          This usually takes under a minute. You can leave this page; the plan
+          will be waiting on your return.
+        </p>
+        {overdue ? (
+          // role="status" so someone parked on the spinner with a screen
+          // reader hears the wait explained, rather than nothing at all.
+          <Callout role="status" tone="attention" title="This is taking longer than usual">
+            The file is still queued with the import agent. You can keep
+            waiting, or start over with another file — nothing has been written
+            to your event either way.
+          </Callout>
+        ) : null}
+        <div>
+          <Button onClick={onRestart}>Start over</Button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 function PlanView({
   eventSlug,
   jobId,
@@ -334,7 +379,10 @@ function PlanView({
   // toast that took the reason with it when it faded.
   const [startFailure, setStartFailure] = useState<string | null>(null)
 
-  const plan = (job?.status === 'done' ? (job.result as ImportPlan) : null) ?? null
+  const plan: ImportPlan | null =
+    job?.type === 'import-plan' && job.status === 'done'
+      ? job.result ?? null
+      : null
   const included = useMemo(
     () => plan?.records.filter((r) => !excluded.has(r.id)) ?? [],
     [plan, excluded],
@@ -363,14 +411,7 @@ function PlanView({
     )
   }
   if (plan === null) {
-    return (
-      <Card title="Planning your import…" subtitle="The agent is reading the file and matching it against this event.">
-        <p style={{ color: 'var(--text-tertiary)' }}>
-          This usually takes under a minute. You can leave this page; the plan
-          will be waiting on your return.
-        </p>
-      </Card>
-    )
+    return <PlanningView onRestart={onRestart} />
   }
 
   const toggle = (id: string) => {
@@ -493,9 +534,10 @@ function PlanView({
                     const executeJobId = await confirm({
                       eventSlug,
                       planJobId: jobId,
-                      // Typed by the shared contract; the server still
-                      // re-validates against vPlannedRecord.
-                      records: included,
+                      // Only the ids cross the wire: the server re-derives the
+                      // records from the plan's own result, so what executes is
+                      // exactly what was reviewed here.
+                      recordIds: included.map((r) => r.id),
                     })
                     onConfirmed(executeJobId)
                   } catch (err) {
@@ -529,8 +571,10 @@ function ExecutionView({
   onRestart: () => void
 }) {
   const job = useQuery(api.imports.getJob, { eventSlug, jobId })
-  const report =
-    job?.status === 'done' ? (job.result as ExecutionReport) : null
+  const report: ExecutionReport | null =
+    job?.type === 'import-execute' && job.status === 'done'
+      ? job.result ?? null
+      : null
 
   if (job === undefined) {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>

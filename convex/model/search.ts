@@ -1,0 +1,753 @@
+import type { QueryCtx } from "../_generated/server";
+import type { Doc, Id } from "../_generated/dataModel";
+import type { EventCaller } from "../lib/functions";
+import { takeCapped } from "./validation";
+
+// ─────────────────────────────────────────────────────────────────────────
+// Global search (the command palette's one backend capability).
+//
+// ── What it is NOT ───────────────────────────────────────────────────────
+// Not a search service, not an index, not a ranking model. Matching is a
+// case-insensitive substring over titles and names, run in JS over BOUNDED
+// indexed reads. That is a deliberate ceiling, not an oversight: adding a
+// search dependency for a palette that answers "take me to the thing I
+// already know the name of" would be the expensive way to be no better.
+//
+// ── The two scopes, and why there are two ────────────────────────────────
+// EVENTS are searched across every membership the caller has, because
+// "switch to the other conference" is the one jump that crosses events. The
+// RECORDS inside an event (sessions, speakers, proposals) are searched in the
+// event the palette was opened from, and only there. Sweeping every event's
+// tables per keystroke is exactly the unbounded read this codebase refuses to
+// ship; the event hop is one keystroke away, so nothing is unreachable.
+//
+// ── Reviewer scope (the rule this file exists to hold) ───────────────────
+// A reviewer's world is what they were ASSIGNED. So a reviewer's search:
+//   · never reads `sessions` or `eventContacts` at all — those are organizer
+//     surfaces (see the `requires: 'organizer'` nav entries), and a name in a
+//     result row is already a contact detail;
+//   · reaches proposals ONLY through their own `reviews` rows, the same door
+//     `reviews.myAssignments` uses (`by_eventId_and_reviewerUserId`). There is
+//     no by-id proposal read here, so an unassigned proposal cannot surface
+//     however the term is spelled.
+// The gate is the branch below, not a filter applied afterwards: code that
+// reads first and hides later leaks the moment somebody edits the filter.
+//
+// Every sentence a person reads about these results is composed here and
+// printed verbatim.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Below this, a query matches so much that the answer is noise. */
+const MIN_TERM = 2;
+
+/** Longest term we look at — the rest cannot change what matches. */
+const MAX_TERM = 200;
+
+/** Rows returned per group. A palette is a jump list, not a report. */
+const GROUP_LIMIT = 5;
+
+// Candidate reads. Each is `takeCapped`, so a group that could not see the
+// whole table says so (`capped`) instead of quietly answering from a prefix.
+const EVENT_SCAN = 200;
+const SESSION_SCAN = 500;
+const CONTACT_SCAN = 500;
+const PROPOSAL_SCAN = 500;
+const REVIEW_SCAN = 500;
+const ORG_MEMBERSHIP_SCAN = 50;
+const EVENT_MEMBERSHIP_SCAN = 200;
+
+export type SearchKind =
+  | "event"
+  | "session"
+  | "speaker"
+  | "proposal"
+  | "review";
+
+/**
+ * One jump target.
+ *
+ * `id` is a string, not a typed id, because the palette's list is
+ * heterogeneous and the value is only ever spent as a route param. `query` is
+ * the destination route's OWN search vocabulary (proposals' `q`), spelled as
+ * that route already parses it — the same rule the control center's deep
+ * links follow: the server names the filter, the client maps the path.
+ */
+export type SearchHit = {
+  kind: SearchKind;
+  id: string;
+  eventSlug: string;
+  title: string;
+  subtitle?: string;
+  query?: string;
+};
+
+export type SearchGroup = {
+  kind: SearchKind;
+  label: string;
+  /** May be EMPTY on a capped group: a scan that stopped at its ceiling and
+   * matched nothing there still has something to say, and saying it needs a
+   * group to say it in. A group with no hits is an admission, not a result. */
+  hits: Array<SearchHit>;
+  /** True when more rows were read than shown, or than could be read. */
+  capped: boolean;
+  /** Composed here. Printed verbatim. */
+  sentence: string;
+};
+
+export type SearchResults = {
+  groups: Array<SearchGroup>;
+  /** One line about the whole answer — the palette's live region says it. */
+  summary: string;
+};
+
+// ── Matching ─────────────────────────────────────────────────────────────
+
+export function normalizeTerm(term: string): string {
+  return term.trim().slice(0, MAX_TERM).toLowerCase();
+}
+
+/**
+ * Case-insensitive substring, with a prefix match ranked first.
+ *
+ * Returns a rank rather than a boolean so "Ada" beats "Amanda Adams" for the
+ * term "ada" without a second pass over the rows.
+ */
+function rank(haystack: string, needle: string): number | null {
+  const at = haystack.toLowerCase().indexOf(needle);
+  if (at < 0) return null;
+  return at;
+}
+
+type Candidate = { hit: SearchHit; rank: number; tiebreak: string };
+
+function collect(
+  rows: Array<Candidate | null>,
+): { hits: Array<SearchHit>; more: boolean } {
+  const found = rows.filter((row): row is Candidate => row !== null);
+  found.sort(
+    (a, b) => a.rank - b.rank || a.tiebreak.localeCompare(b.tiebreak),
+  );
+  return {
+    hits: found.slice(0, GROUP_LIMIT).map((row) => row.hit),
+    more: found.length > GROUP_LIMIT,
+  };
+}
+
+// ── Sentences ────────────────────────────────────────────────────────────
+
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
+
+/** How a group names itself in a sentence. `one` is the thing a hit is
+ * ("Session"); `many` is the population that was read ("sessions"); `where` is
+ * the surface holding the full list. */
+type GroupWords = { one: string; many: string; where: string };
+
+/**
+ * What a group is showing, and — when it is showing a prefix — that it is.
+ *
+ * A capped group never claims a total. It says the list is the top few and
+ * names the surface that holds the complete answer, because "5 sessions" when
+ * there are 60 is the quiet lie this codebase spends its comments avoiding.
+ *
+ * ZERO shown and capped is the case that used to be dropped on the floor: a
+ * scan that stopped at its ceiling and matched nothing there knows only that it
+ * did not look everywhere, and "no matches" would be a claim it cannot make. It
+ * says how far it looked instead.
+ *
+ * `unread` is WHAT went unread, and the events group is why it is a parameter:
+ * its ceiling is on MEMBERSHIPS, and an unread membership is not an unread
+ * event — fifty-one organizations with nothing in them would have the sentence
+ * promise events that do not exist. A sentence may admit only what its read
+ * actually establishes.
+ */
+function groupSentence(
+  words: GroupWords,
+  shown: number,
+  capped: boolean,
+  scanned: number,
+  unread?: string,
+): string {
+  const noun = plural(shown, "match", "matches");
+  if (!capped) {
+    return `${shown} ${words.one.toLowerCase()} ${noun}.`;
+  }
+  const missing = unread ?? `more ${words.many} exist than could be searched`;
+  if (shown === 0) {
+    // "The first 0 events" is not a sentence anyone should read. A capped read
+    // that got through nothing at all says that, and only that.
+    return scanned === 0
+      ? `Nothing could be searched here; ${missing}. ${words.where} has the full list.`
+      : `Searched the first ${scanned} ${words.many} — no matches there; ${missing}. ${words.where} has the full list.`;
+  }
+  if (unread === undefined) {
+    return `Showing the first ${shown} of more ${words.one.toLowerCase()} matches — ${words.where} has the full list.`;
+  }
+  // Hits AND an admission that is not about matches: the count is what was
+  // found, not a prefix of a larger known set.
+  return `Showing ${shown} ${words.one.toLowerCase()} ${noun}; ${missing}. ${words.where} has the full list.`;
+}
+
+function summarySentence(
+  term: string,
+  groups: Array<SearchGroup>,
+  capped: boolean,
+  /** People get the palette's keyboard hint; an agent (a scoped credential)
+   * gets the sentence without it — arrow keys are not something a tool call
+   * can press. Same producer, one audience switch. */
+  audience: "person" | "agent",
+): string {
+  const total = groups.reduce((sum, group) => sum + group.hits.length, 0);
+  if (total === 0) {
+    // A capped read that matched nothing has not earned "nothing matches".
+    return capped
+      ? `Nothing matches “${term}” in the rows that could be searched — more exist than one pass reads.`
+      : `Nothing matches “${term}”.`;
+  }
+  // Groups that carry only a capped admission are not groups of results, so
+  // they are not counted as one here.
+  const kinds = groups.filter((group) => group.hits.length > 0).length;
+  const head = `${capped ? "At least " : ""}${total} ${plural(total, "result", "results")} in ${kinds} ${plural(kinds, "group", "groups")}.`;
+  return audience === "person"
+    ? `${head} Use the arrow keys to pick one, Enter to open it.`
+    : head;
+}
+
+// ── Events, across every membership ──────────────────────────────────────
+
+/**
+ * Every event this user can open, read through their memberships and nothing
+ * else — the same two doors `orgs.myHome` uses (org membership sees the whole
+ * org; an event membership sees exactly that event), so search can never
+ * reach an org the user was never added to.
+ *
+ * Budgeted rather than per-org capped: one sweep spends at most EVENT_SCAN
+ * document reads no matter how many organizations the account belongs to.
+ *
+ * The two ceilings are reported apart because they know different things. A
+ * truncated EVENT read has seen events it could not search. A truncated
+ * MEMBERSHIP read has seen no such thing: the organizations it never reached
+ * may hold no events at all, so it may say only that it stopped reading.
+ */
+async function accessibleEvents(
+  ctx: QueryCtx,
+  user: Doc<"users">,
+): Promise<{
+  events: Array<Doc<"events">>;
+  capped: boolean;
+  /** Capped, and ONLY by the membership reads. */
+  membershipsOnly: boolean;
+}> {
+  // The membership scans are capped like every other read here: an account in
+  // more organizations than one pass reads cannot see its 51st org's events,
+  // and that omission has to travel with the answer instead of being dropped.
+  const [orgMemberships, eventMemberships] = await Promise.all([
+    takeCapped(
+      ctx.db
+        .query("members")
+        .withIndex("by_userId", (q) => q.eq("userId", user._id)),
+      ORG_MEMBERSHIP_SCAN,
+    ),
+    takeCapped(
+      ctx.db
+        .query("eventMembers")
+        .withIndex("by_userId", (q) => q.eq("userId", user._id)),
+      EVENT_MEMBERSHIP_SCAN,
+    ),
+  ]);
+
+  const events: Array<Doc<"events">> = [];
+  const seen = new Set<string>();
+  let budget = EVENT_SCAN;
+  const membershipsCapped = orgMemberships.capped || eventMemberships.capped;
+  let eventsCapped = false;
+
+  const orgIds = new Set<string>();
+  for (const membership of orgMemberships.rows) {
+    if (budget <= 0) {
+      eventsCapped = true;
+      break;
+    }
+    orgIds.add(membership.orgId);
+    const page = await takeCapped(
+      ctx.db
+        .query("events")
+        .withIndex("by_orgId", (q) => q.eq("orgId", membership.orgId)),
+      budget,
+    );
+    eventsCapped = eventsCapped || page.capped;
+    for (const event of page.rows) {
+      if (seen.has(event._id)) continue;
+      seen.add(event._id);
+      events.push(event);
+      budget -= 1;
+    }
+  }
+
+  for (const membership of eventMemberships.rows) {
+    // An org membership already pulled in every event of that org.
+    if (orgIds.has(membership.orgId) || seen.has(membership.eventId)) continue;
+    if (budget <= 0) {
+      eventsCapped = true;
+      break;
+    }
+    const event = await ctx.db.get("events", membership.eventId);
+    if (event === null) continue;
+    seen.add(event._id);
+    events.push(event);
+    budget -= 1;
+  }
+
+  return {
+    events,
+    capped: eventsCapped || membershipsCapped,
+    membershipsOnly: membershipsCapped && !eventsCapped,
+  };
+}
+
+/**
+ * A CREDENTIAL's ceiling on what "everything I can reach" means (D2).
+ *
+ * The signed-in palette searches every membership its user holds, which is
+ * right for a person: they are looking at their own StageStack. An API key is
+ * not the person — it is scoped to one organization, sometimes to one event,
+ * and a minter who also belongs to a second organization must never see that
+ * second organization through this key.
+ *
+ * The scope is applied to the CANDIDATE READS, not to the results: filtering
+ * afterwards would leave the group sentences and the summary counting rows the
+ * caller was never allowed to see, which is the bug this type exists to make
+ * impossible.
+ */
+export type SearchScope = {
+  orgId: Id<"organizations">;
+  /** Present → this one event, and no other event of the org. */
+  eventId?: Id<"events">;
+};
+
+/** `accessibleEvents`, bounded by a credential's scope. Reads are scoped at
+ * the index rather than filtered after, so the caps below describe only rows
+ * the caller may see. */
+async function scopedAccessibleEvents(
+  ctx: QueryCtx,
+  user: Doc<"users">,
+  scope: SearchScope,
+): Promise<{
+  events: Array<Doc<"events">>;
+  capped: boolean;
+  membershipsOnly: boolean;
+}> {
+  const none = { events: [], capped: false, membershipsOnly: false };
+  const orgMembership = await ctx.db
+    .query("members")
+    .withIndex("by_orgId_and_userId", (q) =>
+      q.eq("orgId", scope.orgId).eq("userId", user._id),
+    )
+    .unique();
+
+  if (scope.eventId !== undefined) {
+    const event = await ctx.db.get("events", scope.eventId);
+    if (event === null || event.orgId !== scope.orgId) return none;
+    if (orgMembership !== null) {
+      return { events: [event], capped: false, membershipsOnly: false };
+    }
+    const seat = await ctx.db
+      .query("eventMembers")
+      .withIndex("by_eventId_and_userId", (q) =>
+        q.eq("eventId", event._id).eq("userId", user._id),
+      )
+      .unique();
+    return seat === null
+      ? none
+      : { events: [event], capped: false, membershipsOnly: false };
+  }
+
+  if (orgMembership !== null) {
+    const page = await takeCapped(
+      ctx.db
+        .query("events")
+        .withIndex("by_orgId", (q) => q.eq("orgId", scope.orgId)),
+      EVENT_SCAN,
+    );
+    return {
+      events: page.rows,
+      capped: page.capped,
+      membershipsOnly: false,
+    };
+  }
+
+  const seats = await takeCapped(
+    ctx.db
+      .query("eventMembers")
+      .withIndex("by_userId_and_orgId", (q) =>
+        q.eq("userId", user._id).eq("orgId", scope.orgId),
+      ),
+    EVENT_MEMBERSHIP_SCAN,
+  );
+  const events: Array<Doc<"events">> = [];
+  const seen = new Set<string>();
+  for (const seat of seats.rows) {
+    if (seen.has(seat.eventId)) continue;
+    seen.add(seat.eventId);
+    const event = await ctx.db.get("events", seat.eventId);
+    if (event !== null) events.push(event);
+  }
+  return {
+    events,
+    capped: seats.capped,
+    membershipsOnly: seats.capped,
+  };
+}
+
+function eventGroup(
+  events: Array<Doc<"events">>,
+  readCapped: boolean,
+  term: string,
+  /** The read stopped at the MEMBERSHIP ceiling and nowhere else. */
+  membershipsOnly: boolean,
+): SearchGroup | null {
+  const { hits, more } = collect(
+    events.map((event) => {
+      const at = rank(event.name, term);
+      if (at === null) return null;
+      return {
+        rank: at,
+        tiebreak: event.name,
+        hit: {
+          kind: "event" as const,
+          id: event._id,
+          eventSlug: event.slug,
+          title: event.name,
+          subtitle:
+            event.archivedAt === undefined ? undefined : "Archived event",
+        },
+      };
+    }),
+  );
+  const capped = more || readCapped;
+  if (hits.length === 0 && !capped) return null;
+  return {
+    kind: "event",
+    label: "Events",
+    hits,
+    capped,
+    sentence: groupSentence(
+      { one: "Event", many: "events", where: "My StageStack" },
+      hits.length,
+      capped,
+      events.length,
+      // Only the memberships ran out: what is known is that the reading
+      // stopped, NOT that there are more events on the other side of it.
+      membershipsOnly && !more
+        ? "more memberships remained unread, so any events they carry were not searched"
+        : undefined,
+    ),
+  };
+}
+
+// ── Records inside one event ─────────────────────────────────────────────
+
+async function sessionGroup(
+  ctx: QueryCtx,
+  eventCaller: EventCaller,
+  term: string,
+): Promise<SearchGroup | null> {
+  const read = await takeCapped(
+    ctx.db
+      .query("sessions")
+      .withIndex("by_eventId", (q) => q.eq("eventId", eventCaller.event._id)),
+    SESSION_SCAN,
+  );
+  const { hits, more } = collect(
+    read.rows.map((session) => {
+      const at = rank(session.title, term);
+      if (at === null) return null;
+      return {
+        rank: at,
+        tiebreak: session.title,
+        hit: {
+          kind: "session" as const,
+          id: session._id,
+          eventSlug: eventCaller.event.slug,
+          title: session.title,
+          subtitle:
+            session.status === "cancelled" ? "Cancelled" : session.format,
+        },
+      };
+    }),
+  );
+  const capped = more || read.capped;
+  if (hits.length === 0 && !capped) return null;
+  return {
+    kind: "session",
+    label: "Sessions",
+    hits,
+    capped,
+    sentence: groupSentence(
+      { one: "Session", many: "sessions", where: "Sessions" },
+      hits.length,
+      capped,
+      read.rows.length,
+    ),
+  };
+}
+
+function contactName(contact: Doc<"eventContacts">): string {
+  return `${contact.firstName} ${contact.lastName}`.trim();
+}
+
+async function speakerGroup(
+  ctx: QueryCtx,
+  eventCaller: EventCaller,
+  term: string,
+): Promise<SearchGroup | null> {
+  const read = await takeCapped(
+    ctx.db
+      .query("eventContacts")
+      .withIndex("by_eventId", (q) => q.eq("eventId", eventCaller.event._id)),
+    CONTACT_SCAN,
+  );
+  const { hits, more } = collect(
+    read.rows.map((contact) => {
+      const name = contactName(contact);
+      const at = rank(name, term);
+      if (at === null) return null;
+      return {
+        rank: at,
+        tiebreak: name,
+        hit: {
+          kind: "speaker" as const,
+          id: contact._id,
+          eventSlug: eventCaller.event.slug,
+          title: name,
+          // Professional identity only. No email, no phone: a palette row is
+          // the last place a contact detail should be readable over someone's
+          // shoulder, and the workspace behind the row already has them.
+          subtitle: contact.tagline ?? contact.jobTitle ?? contact.company,
+        },
+      };
+    }),
+  );
+  const capped = more || read.capped;
+  if (hits.length === 0 && !capped) return null;
+  return {
+    kind: "speaker",
+    label: "Speakers",
+    hits,
+    capped,
+    sentence: groupSentence(
+      { one: "Speaker", many: "speakers", where: "Speakers" },
+      hits.length,
+      capped,
+      read.rows.length,
+    ),
+  };
+}
+
+/** The organizer's own words for a proposal's state (the abstracts table's
+ * vocabulary, so a palette row and the table cannot disagree). */
+const PROPOSAL_STATUS_LABEL: Record<Doc<"proposals">["status"], string> = {
+  draft: "Draft",
+  pending: "Submitted",
+  acceptQueue: "Accept queue",
+  declineQueue: "Decline queue",
+  accepted: "Accepted",
+  declined: "Declined",
+  withdrawn: "Withdrawn",
+};
+
+/** Organizer-side proposals: the whole event's, by title. */
+async function proposalGroup(
+  ctx: QueryCtx,
+  eventCaller: EventCaller,
+  term: string,
+): Promise<SearchGroup | null> {
+  const read = await takeCapped(
+    ctx.db
+      .query("proposals")
+      .withIndex("by_eventId", (q) => q.eq("eventId", eventCaller.event._id)),
+    PROPOSAL_SCAN,
+  );
+  const { hits, more } = collect(
+    read.rows.map((proposal) => {
+      const at = rank(proposal.title, term);
+      if (at === null) return null;
+      return {
+        rank: at,
+        tiebreak: proposal.title,
+        hit: {
+          kind: "proposal" as const,
+          id: proposal._id,
+          eventSlug: eventCaller.event.slug,
+          title: proposal.title,
+          subtitle: PROPOSAL_STATUS_LABEL[proposal.status],
+          // The proposals table filters itself by title from the URL, so the
+          // row lands on the proposal instead of on an unfiltered inbox.
+          query: proposal.title,
+        },
+      };
+    }),
+  );
+  const capped = more || read.capped;
+  if (hits.length === 0 && !capped) return null;
+  return {
+    kind: "proposal",
+    label: "Proposals",
+    hits,
+    capped,
+    sentence: groupSentence(
+      { one: "Proposal", many: "proposals", where: "Proposals" },
+      hits.length,
+      capped,
+      read.rows.length,
+    ),
+  };
+}
+
+/**
+ * A reviewer's proposals: their own assignments, and only those.
+ *
+ * Reached through `reviews` by (event, reviewer) — the same index
+ * `myAssignments` reads — so the set is bounded by what this person was given
+ * and cannot be widened by the term. Titles only: the reviewer's row carries
+ * no speaker name even in a non-blind round, because the palette has no round
+ * context to decide blinding with, and a title is enough to jump.
+ */
+async function assignedProposalGroup(
+  ctx: QueryCtx,
+  eventCaller: EventCaller,
+  term: string,
+): Promise<SearchGroup | null> {
+  const read = await takeCapped(
+    ctx.db
+      .query("reviews")
+      .withIndex("by_eventId_and_reviewerUserId", (q) =>
+        q
+          .eq("eventId", eventCaller.event._id)
+          .eq("reviewerUserId", eventCaller.user._id),
+      ),
+    REVIEW_SCAN,
+  );
+  const proposals = await Promise.all(
+    read.rows.map((review) => ctx.db.get("proposals", review.proposalId)),
+  );
+  const { hits, more } = collect(
+    proposals.map((proposal) => {
+      // A withdrawn proposal leaves every active queue (MILESTONES M1), so it
+      // must not be jumpable from here either.
+      if (proposal === null || proposal.status === "withdrawn") return null;
+      if (proposal.eventId !== eventCaller.event._id) return null;
+      const at = rank(proposal.title, term);
+      if (at === null) return null;
+      return {
+        rank: at,
+        tiebreak: proposal.title,
+        hit: {
+          kind: "review" as const,
+          id: proposal._id,
+          eventSlug: eventCaller.event.slug,
+          title: proposal.title,
+          subtitle: "Assigned to you",
+        },
+      };
+    }),
+  );
+  const capped = more || read.capped;
+  if (hits.length === 0 && !capped) return null;
+  return {
+    kind: "review",
+    label: "Your reviews",
+    hits,
+    capped,
+    sentence: groupSentence(
+      {
+        one: "Assigned proposal",
+        many: "assigned proposals",
+        where: "Reviews",
+      },
+      hits.length,
+      capped,
+      read.rows.length,
+    ),
+  };
+}
+
+// ── The capability ───────────────────────────────────────────────────────
+
+/**
+ * Search the caller's world.
+ *
+ * `eventCaller` is the event the palette was opened from, already resolved
+ * (and therefore already authorized) by the public wrapper; null when the
+ * palette is open outside an event, in which case only events are searched.
+ */
+export async function search(
+  ctx: QueryCtx,
+  user: Doc<"users">,
+  eventCaller: EventCaller | null,
+  rawTerm: string,
+  /** A credential's ceiling (D2). Absent → the signed-in palette's "every
+   * membership I hold", which is right for a person and wrong for a key. */
+  scope?: SearchScope,
+): Promise<SearchResults> {
+  const term = normalizeTerm(rawTerm);
+  if (term.length < MIN_TERM) {
+    return {
+      groups: [],
+      summary: `Type at least ${MIN_TERM} characters to search.`,
+    };
+  }
+
+  // A scoped caller may not search inside an event its scope excludes. The
+  // gate is here rather than at the call site so no future caller can pass a
+  // matching term with a mismatched event caller.
+  const inScopeCaller =
+    scope === undefined || eventCaller === null
+      ? eventCaller
+      : eventCaller.org._id !== scope.orgId ||
+          (scope.eventId !== undefined &&
+            eventCaller.event._id !== scope.eventId)
+        ? null
+        : eventCaller;
+
+  const reachable =
+    scope === undefined
+      ? await accessibleEvents(ctx, user)
+      : await scopedAccessibleEvents(ctx, user, scope);
+  const groups: Array<SearchGroup> = [];
+  const events = eventGroup(
+    reachable.events,
+    reachable.capped,
+    term,
+    reachable.membershipsOnly,
+  );
+  if (events !== null) groups.push(events);
+
+  if (inScopeCaller !== null) {
+    const inEvent =
+      inScopeCaller.role === "organizer"
+        ? await Promise.all([
+            sessionGroup(ctx, inScopeCaller, term),
+            speakerGroup(ctx, inScopeCaller, term),
+            proposalGroup(ctx, inScopeCaller, term),
+          ])
+        : // Reviewer: assignments only. Nothing above this line reads a
+          // session, a contact or an unassigned proposal for them.
+          [await assignedProposalGroup(ctx, inScopeCaller, term)];
+    for (const group of inEvent) {
+      if (group !== null) groups.push(group);
+    }
+  }
+
+  const capped = groups.some((group) => group.capped);
+  return {
+    groups,
+    summary: summarySentence(
+      rawTerm.trim(),
+      groups,
+      capped,
+      scope === undefined ? "person" : "agent",
+    ),
+  };
+}

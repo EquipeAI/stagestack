@@ -12,6 +12,9 @@ export interface MenuButtonProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, "children"> {
   /** Trigger text. A non-string label falls back to a "More actions" name. */
   label?: React.ReactNode;
+  /** The TRIGGER's accessible name. Pass it when the label is a value (a view
+   * name, a selection) that does not say what the menu is. */
+  "aria-label"?: string;
   icon?: string;
   iconRight?: string;
   variant?: "primary" | "brand" | "secondary" | "ghost" | "danger";

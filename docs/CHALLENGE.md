@@ -8,7 +8,10 @@ Source: [competition brief](reference/competition-brief.pdf) + [walkthrough vide
 
 ## Rules & logistics
 
-- **Deadline: Wednesday, Aug 12, 2026, 10:00 PM PT.**
+- **Deadline: Wednesday, Aug 12, 2026, 10:00 PM PT.** Post-deadline update
+  (organizer, Discord, Aug 13): the main part of the competition is done, but
+  **working on the submission stays allowed (optional) until Sunday, Aug 16,
+  2026** — see "Post-deadline update" below.
 - Submission = form + **open source repo** + **deployed site** they can test against the walkthrough.
 - Judged by the AIE team (not swyx) walking the deployed site through the requirements.
 - **Tiebreaker: product judgment calls they would actually use/buy.** This is the real bar.
@@ -91,10 +94,28 @@ Supporting surface shown in screenshots (expected in the walkthrough):
 | 19 | Frontend: TanStack Start over Next.js and SvelteKit | Only framework besides Next with the Convex+Clerk triangle officially documented; typed URL search params + TanStack Table v8 match the table-heavy judged surface (saved views = URL state); SSR public pages without Next's complexity tax and CVE-prone server surface; React+shadcn is the most AI-codegen-fluent UI stack. Versions pinned against its daily release cadence. |
 | 20 | Import agent LLM: GPT-5.6-Luna via OpenRouter, high thinking for planning, low for execution | Luna is purpose-built for extraction/classification at ~pennies per import; effort-as-ceiling keeps easy steps fast. Long-context weakness designed around via Node-side parsing + bounded chunks. OpenRouter gives provider failover and Exacto tool-calling routing without vendor lock. |
 
+## Post-deadline update (organizer announcement, Discord, Aug 13 2026)
+
+- **Submission + token-reimbursement form**: https://forms.gle/RJMXWp2jAD32uHvB9
+  (fill in ourselves — the form was delayed on their side; the team has
+  already reviewed a dozen early submissions).
+- **Optional extra reviewers** we may add to the repo/deployed site:
+  swyx@ai.engineer · sydney@ai.engineer · phlo@ai.engineer ·
+  kelsey@ai.engineer.
+- **Individual feedback** will be given per submission (optional to act on).
+- **Optional continued work until Sunday, Aug 16, 2026** — we may keep
+  improving the submission until then. Anything we want judged should be
+  merged to `main` (prod deploy) and on the develop preview (what the evals
+  hit) by that date.
+
 ## Open questions / freeze tracking
 
 - [x] Watch initial walkthrough video ([local copy](reference/walkthrough-1.mp4), [transcript](reference/walkthrough-1.en.srt); origin: youtu.be/vUuK4Knl7oc) — reviewed Aug 8: nothing beyond the screenshots/brief.
 - [ ] Absorb Saturday clarification video.
 - [ ] Absorb Sunday clarification video → **requirements freeze; update this doc, then stop touching it.**
 - [ ] Monitor Discord for clarifications that affect the six.
-- [ ] Confirm where the submission form will be posted.
+- [x] Confirm where the submission form will be posted — announced Aug 13:
+      https://forms.gle/RJMXWp2jAD32uHvB9 (see "Post-deadline update").
+- [ ] Submit the form (repo + deployed site + reimbursement details) — Alvaro.
+- [ ] Decide whether to add the optional reviewers as repo collaborators
+      and/or test accounts.

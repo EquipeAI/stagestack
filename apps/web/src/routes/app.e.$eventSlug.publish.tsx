@@ -61,7 +61,6 @@ function PublishConsole() {
   const skip = isOrganizer ? { eventSlug } : 'skip'
   const now = useNow()
   const state = useQuery(api.publish.state, skip)
-  const preview = useQuery(api.publish.preview, skip)
   const board = useQuery(api.agenda.board, skip)
   const diff = useQuery(api.publish.diff, skip)
   // W4: publication state is composed once in convex/model/readiness.ts and
@@ -88,7 +87,6 @@ function PublishConsole() {
   }
   if (
     state === undefined ||
-    preview === undefined ||
     board === undefined ||
     publication === undefined ||
     diff === undefined ||
@@ -96,6 +94,8 @@ function PublishConsole() {
   ) {
     return <p style={{ color: 'var(--text-tertiary)' }}>Loading…</p>
   }
+  // F6: the live preview rides on `state` — one projection for state+stale.
+  const preview = state.preview
 
   const slug = data.event.slug
   const zone = data.event.timezone

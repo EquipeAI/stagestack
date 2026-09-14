@@ -8,7 +8,7 @@ import {
   eventMutation,
   eventQuery,
 } from "./lib/functions";
-import { vv } from "./lib/validators";
+import { vProposalStatus, vv } from "./lib/validators";
 import { vAnswerValue, vFormDef } from "./shared/formDef";
 import * as Cfp from "./model/cfp";
 
@@ -19,16 +19,6 @@ import * as Cfp from "./model/cfp";
 //     without any org or event membership.
 // Everything here is a thin wrapper; the rules live in convex/model/cfp.ts.
 // ─────────────────────────────────────────────────────────────────────────
-
-const vProposalStatus = v.union(
-  v.literal("draft"),
-  v.literal("pending"),
-  v.literal("acceptQueue"),
-  v.literal("declineQueue"),
-  v.literal("accepted"),
-  v.literal("declined"),
-  v.literal("withdrawn"),
-);
 
 const vSpeakerInput = v.object({
   proposalSpeakerId: v.optional(v.id("proposalSpeakers")),

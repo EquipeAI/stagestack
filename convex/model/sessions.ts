@@ -8,7 +8,7 @@ import * as Agenda from "./agenda";
 import { logAudit } from "./audit";
 import { sendLoggedEmail, siteUrl } from "./comms";
 import { renderTemplate } from "./templates";
-import { findForm, proposalAbstract, proposalLink } from "./cfp";
+import { findForm, proposalAbstract, proposalLink } from "./cfpForms";
 import {
   assertDurationMinutes,
   loadFormats,
@@ -30,7 +30,17 @@ import {
 } from "../shared/sessionContent";
 import { instantiateForSession } from "./tasks";
 import { eventUserDisplayName } from "./userDisplay";
-import { assertEventActive, assertText, normalizeEmail } from "./validation";
+import {
+  assertEventActive,
+  assertText,
+  normalizeEmail,
+  takeCapped,
+} from "./validation";
+import {
+  CONTACT_SCAN,
+  PARTICIPANT_SCAN,
+  SESSION_SCAN,
+} from "../lib/readCaps";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Decisions & sessions (M2).
@@ -56,9 +66,6 @@ import { assertEventActive, assertText, normalizeEmail } from "./validation";
 const MAX_BULK = 100;
 const MAX_SPEAKERS_PER_PROPOSAL = 40;
 const MAX_PARTICIPANTS_PER_SESSION = 100;
-const SESSION_SCAN = 1000;
-const PARTICIPANT_SCAN = 5000;
-const CONTACT_SCAN = 2000;
 const MAX_NOTE = 2000;
 
 export type StageTarget = "pending" | "acceptQueue" | "declineQueue";
@@ -1080,32 +1087,65 @@ export type SessionRow = {
   participants: SessionParticipantRow[];
 };
 
-/** The M2 sessions list. Organizer-only: sessions carry post-acceptance
- * operational data, which reviewers must not see. */
-export async function listSessions(
+/**
+ * The M2 sessions list, WITH whether the read saw every session. Organizer-
+ * only: sessions carry post-acceptance operational data, which reviewers must
+ * not see.
+ *
+ * The `capped` half is for the agent surface (D2): a model told "these are the
+ * sessions" acts on that sentence, so a truncated list has to admit it is one.
+ */
+export async function listSessionsCapped(
   ctx: QueryCtx,
   caller: EventCaller,
-): Promise<SessionRow[]> {
+): Promise<{ rows: SessionRow[]; capped: boolean }> {
   requireOrganizer(caller);
   const eventId = caller.event._id;
-  const [sessions, participants, contacts] = await Promise.all([
-    ctx.db
-      .query("sessions")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(SESSION_SCAN),
-    ctx.db
-      .query("sessionParticipants")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(PARTICIPANT_SCAN),
-    ctx.db
-      .query("eventContacts")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .take(CONTACT_SCAN),
+  // Each read feeds the flag, but NOT in the same way — and the difference is
+  // the point.
+  //
+  // Sessions and participants: truncation IS loss. Every row the scan did not
+  // reach is a session or a speaker absent from the answer, and there is no
+  // later step that could notice — the rows that would have referenced them
+  // are the rows that were dropped. So `capped` takes those two flags
+  // directly.
+  //
+  // Contacts: truncation is only *potential* loss. The contact page exists to
+  // resolve the participants we did load, so what matters is whether a
+  // participant's `eventContactId` missed it — not how many unrelated
+  // contacts the event has. An event with one complete session and 2000 other
+  // contacts is a COMPLETE answer, and flagging it would teach every reader to
+  // ignore the flag. So the contact read contributes only through
+  // `unresolvedContact`, decided after the join.
+  const [sessionPage, participantPage, contactPage] = await Promise.all([
+    takeCapped(
+      ctx.db
+        .query("sessions")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+      SESSION_SCAN,
+    ),
+    takeCapped(
+      ctx.db
+        .query("sessionParticipants")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+      PARTICIPANT_SCAN,
+    ),
+    takeCapped(
+      ctx.db
+        .query("eventContacts")
+        .withIndex("by_eventId", (q) => q.eq("eventId", eventId)),
+      CONTACT_SCAN,
+    ),
   ]);
-  const contactById = new Map(contacts.map((c) => [c._id, c]));
+  const contactById = new Map(contactPage.rows.map((c) => [c._id, c]));
   const bySession = new Map<Id<"sessions">, SessionParticipantRow[]>();
-  for (const participant of participants) {
+  // A speaker we could not name. Either the contact sat past the scan's
+  // ceiling or its row is gone; both produce the same nameless participant,
+  // and both are something the answer has to admit.
+  let unresolvedContact = false;
+  for (const participant of participantPage.rows) {
     const contact = contactById.get(participant.eventContactId);
+    if (contact === undefined) unresolvedContact = true;
     const rows = bySession.get(participant.sessionId) ?? [];
     rows.push({
       participantId: participant._id,
@@ -1117,10 +1157,22 @@ export async function listSessions(
     });
     bySession.set(participant.sessionId, rows);
   }
-  return sessions.map((session) => ({
-    session,
-    participants: bySession.get(session._id) ?? [],
-  }));
+  return {
+    rows: sessionPage.rows.map((session) => ({
+      session,
+      participants: bySession.get(session._id) ?? [],
+    })),
+    capped: sessionPage.capped || participantPage.capped || unresolvedContact,
+  };
+}
+
+/** The sessions list as the web surface consumes it — same rows, without the
+ * ceiling flag. */
+export async function listSessions(
+  ctx: QueryCtx,
+  caller: EventCaller,
+): Promise<SessionRow[]> {
+  return (await listSessionsCapped(ctx, caller)).rows;
 }
 
 /** Content approval (W5, CNT-12): the editorial gate on public output.
@@ -1305,41 +1357,6 @@ export type RevisionRow = {
   before: SessionContentFields;
   after: SessionContentFields;
 };
-
-export async function listRevisions(
-  ctx: QueryCtx,
-  caller: EventCaller,
-  sessionId: Id<"sessions">,
-): Promise<RevisionRow[]> {
-  requireOrganizer(caller);
-  const session = await ctx.db.get("sessions", sessionId);
-  if (session === null || session.eventId !== caller.event._id) {
-    notFound("session", "No such session on this event.");
-  }
-  // Newest 200 — descending BEFORE the take, or a long history would keep
-  // the oldest rows and drop the recent ones (codex).
-  const rows = await ctx.db
-    .query("sessionRevisions")
-    .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
-    .order("desc")
-    .take(200);
-  const out: RevisionRow[] = [];
-  for (const row of rows) {
-    const editor = await ctx.db.get("users", row.editedBy);
-    out.push({
-      revisionId: row._id,
-      editedAt: row.editedAt,
-      editorName:
-        (await eventUserDisplayName(ctx, caller.event._id, editor)) ??
-        "Event team member",
-      editorEmail: editor?.email ?? null,
-      before: row.before,
-      after: row.after,
-    });
-  }
-  // Newest first — the history panel reads downward into the past.
-  return out.sort((a, b) => b.editedAt - a.editedAt);
-}
 
 // ── Snapshot projection (W3) ─────────────────────────────────────────────
 

@@ -118,6 +118,13 @@ export function formatDateTime(ms: number, zone: string) {
   return dt.isValid ? dt.toFormat('d LLL yyyy, HH:mm ZZZZ') : '—'
 }
 
+/** "14 Aug 2026" — the day alone, for a table column where the clock time is
+ * noise (when a key was minted, not when a session starts). */
+export function formatDate(ms: number, zone: string) {
+  const dt = at(ms, zone)
+  return dt.isValid ? dt.toFormat('d LLL yyyy') : '—'
+}
+
 /** "14–16 Apr 2026" · "14 Apr 2026, 09:00–17:00" — always in the event zone. */
 export function formatDateRange(startsAt: number, endsAt: number, zone: string) {
   const start = at(startsAt, zone)
